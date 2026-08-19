@@ -9,6 +9,10 @@ gpui_platform.workspace = true
 global-hotkey.workspace = true
 anyhow.workspace = true
 raw-window-handle = "0.6"
+i18n-embed.workspace = true
+i18n-embed-fl.workspace = true
+rust-embed.workspace = true
+unic-langid.workspace = true
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon.workspace = true

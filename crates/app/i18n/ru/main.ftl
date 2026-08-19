@@ -1,0 +1,3 @@
+search-placeholder = Поиск приложений или ввод команды...
+app-toggle = Показать / скрыть Steward
+app-quit = Выйти из Steward

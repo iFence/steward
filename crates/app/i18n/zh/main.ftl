@@ -1,0 +1,3 @@
+search-placeholder = 搜索应用或输入命令...
+app-toggle = 显示 / 隐藏 Steward
+app-quit = 退出 Steward

@@ -27,11 +27,13 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
 use gpui::{
-    actions, div, prelude::*, px, rgb, size, AnyWindowHandle, App, AppContext, AsyncApp, Bounds,
-    FocusHandle, FontWeight, KeyBinding, TitlebarOptions, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowKind, WindowOptions,
+    actions, div, prelude::*, px, rgb, size, Animation, AnimationExt, AnyWindowHandle, App,
+    AppContext, AsyncApp, Bounds, FocusHandle, KeyBinding, KeyDownEvent, TitlebarOptions, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowOptions,
 };
 use gpui_platform::application;
+
+mod i18n;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use tray_icon::{
@@ -41,12 +43,10 @@ use tray_icon::{
 
 actions!(steward, [HideWindow]);
 
-const TOGGLE_HOTKEY_HINT: &str = "Ctrl+Alt+Space 呼出/隐藏 · Esc 隐藏";
-
 /// The launcher bar is deliberately long and short: wide enough to hold a
 /// search box plus quick-launch chips, short enough to sit unobtrusively in
 /// the middle of the screen.
-const LAUNCHER_WIDTH: f32 = 960.0;
+const LAUNCHER_WIDTH: f32 = 800.0;
 const LAUNCHER_HEIGHT: f32 = 56.0;
 
 const MENU_TOGGLE: &str = "toggle";
@@ -54,89 +54,234 @@ const MENU_QUIT: &str = "quit";
 
 struct StewardApp {
     focus_handle: FocusHandle,
+    input: SearchInput,
+    i18n: Rc<i18n::Localization>,
+}
+
+struct SearchInput {
+    query: String,
+    /// Cursor position measured in characters.
+    cursor: usize,
+}
+
+/// Shared launcher state used by the foreground event loop: the (possibly
+/// closed) window handle plus the focus handle that must be re-focused every
+/// time the bar is summoned.
+struct LauncherState {
+    window: Option<AnyWindowHandle>,
+    focus: FocusHandle,
+}
+
+impl SearchInput {
+    fn char_count(&self) -> usize {
+        self.query.chars().count()
+    }
+
+    fn byte_index(&self) -> usize {
+        self.query
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(index, _)| index)
+            .unwrap_or(self.query.len())
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        self.query.insert(self.byte_index(), ch);
+        self.cursor += 1;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            let byte = self
+                .query
+                .char_indices()
+                .nth(self.cursor - 1)
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+            self.query.remove(byte);
+            self.cursor -= 1;
+        }
+    }
+
+    fn delete(&mut self) {
+        if self.cursor < self.char_count() {
+            let byte = self.byte_index();
+            self.query.remove(byte);
+        }
+    }
+
+    fn move_cursor(&mut self, delta: i32) {
+        self.cursor = (self.cursor as i32 + delta).clamp(0, self.char_count() as i32) as usize;
+    }
+
+    fn set_cursor(&mut self, index: usize) {
+        self.cursor = index.min(self.char_count());
+    }
+
+    fn before_cursor(&self) -> &str {
+        &self.query[..self.byte_index()]
+    }
+
+    fn after_cursor(&self) -> &str {
+        &self.query[self.byte_index()..]
+    }
 }
 
 impl Render for StewardApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .track_focus(&self.focus_handle)
             .on_action(|_: &HideWindow, window, cx| hide_window(window, cx))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.handle_key(event, window, cx);
+            }))
             .flex()
             .flex_row()
             .size_full()
             .items_center()
-            .gap_3()
             .px_4()
-            .bg(rgb(0x181825))
+            .bg(rgb(0x232332))
+            .text_sm()
             .text_color(rgb(0xcdd6f4))
-            .child(
-                div().flex().items_center().child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::BOLD)
-                        .child("Steward"),
-                ),
-            )
-            .child(
+            .window_control_area(WindowControlArea::Drag)
+            .child(if self.input.query.is_empty() {
                 div()
-                    .flex_1()
-                    .h_full()
+                    .flex()
+                    .flex_row()
                     .items_center()
-                    .px_3()
-                    .bg(rgb(0x232332))
-                    .rounded_md()
-                    .text_sm()
-                    .text_color(rgb(0x6c7086))
-                    .child("搜索应用或输入命令…"),
-            )
-            .child(launcher_chip("计算器"))
-            .child(launcher_chip("剪贴板历史"))
-            .child(
+                    .child(cursor())
+                    .child(
+                        div()
+                            .text_color(rgb(0x6c7086))
+                            .child(self.i18n.translate("search-placeholder")),
+                    )
+            } else {
                 div()
-                    .text_sm()
-                    .text_color(rgb(0x89b4fa))
-                    .child(TOGGLE_HOTKEY_HINT),
-            )
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(self.input.before_cursor().to_string())
+                    .child(cursor())
+                    .child(self.input.after_cursor().to_string())
+            })
     }
 }
 
-fn launcher_chip(label: &'static str) -> impl IntoElement {
+impl StewardApp {
+    fn handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &event.keystroke;
+        let modifiers = keystroke.modifiers;
+
+        // Insert the typed character (key_char also carries the shifted or
+        // AltGr variant). Skip when ctrl/alt/win are held, e.g. shortcuts.
+        if !modifiers.control && !modifiers.alt && !modifiers.platform {
+            if let Some(ch) = keystroke.key_char.as_deref().and_then(|s| s.chars().next()) {
+                if !ch.is_control() {
+                    self.input.insert_char(ch);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+            }
+        }
+
+        match keystroke.key.as_str() {
+            "space" => {
+                self.input.insert_char(' ');
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "backspace" => {
+                self.input.backspace();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "delete" => {
+                self.input.delete();
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "left" => {
+                self.input.move_cursor(-1);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "right" => {
+                self.input.move_cursor(1);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "home" => {
+                self.input.set_cursor(0);
+                cx.notify();
+                cx.stop_propagation();
+            }
+            "end" => {
+                self.input.set_cursor(self.input.char_count());
+                cx.notify();
+                cx.stop_propagation();
+            }
+            // Hide directly at the key level (the keybinding is a fallback):
+            // this is more robust than relying on action dispatch when the
+            // window just went through a drag or was re-activated.
+            "escape" => {
+                hide_window(window, cx);
+                cx.stop_propagation();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A blinking text cursor rendered as a thin vertical bar.
+fn cursor() -> impl IntoElement {
     div()
-        .px_2()
-        .py_1()
-        .bg(rgb(0x313244))
-        .rounded_md()
-        .text_sm()
-        .child(label)
+        .w(px(2.0))
+        .h(px(18.0))
+        .bg(rgb(0x89b4fa))
+        .with_animation(
+            "cursor-blink",
+            Animation::new(Duration::from_millis(530)).repeat_synced(),
+            |this, delta| this.opacity(if delta < 0.5 { 1.0 } else { 0.0 }),
+        )
 }
 
 fn main() {
     application().run(|cx: &mut App| {
         cx.bind_keys([KeyBinding::new("escape", HideWindow, None)]);
 
-        let window = open_launcher_window(cx);
-        let window_handle = Rc::new(RefCell::new(Some(window)));
+        let i18n = Rc::new(i18n::Localization::new().expect("failed to initialize localization"));
+        let focus = cx.focus_handle();
+        let window = open_launcher_window(cx, &focus, i18n.clone());
+        let state = Rc::new(RefCell::new(LauncherState {
+            window: Some(window),
+            focus,
+        }));
 
         // Closing the launcher (e.g. Alt+F4) must not kill the app: the tray
         // icon is the application shell, and the window is reopened on demand.
-        let closed_handle = window_handle.clone();
+        let closed_state = state.clone();
         cx.on_window_closed(move |_cx, _window_id| {
-            *closed_handle.borrow_mut() = None;
+            closed_state.borrow_mut().window = None;
         })
         .detach();
 
-        if let Err(error) = setup_global_hotkey(window_handle.clone(), cx) {
+        if let Err(error) = setup_global_hotkey(state.clone(), i18n.clone(), cx) {
             eprintln!("failed to register global hotkey: {error:#}");
         }
 
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        if let Err(error) = setup_tray(cx) {
+        if let Err(error) = setup_tray(cx, &i18n) {
             eprintln!("failed to create tray icon: {error:#}");
         }
     });
 }
 
-fn open_launcher_window(cx: &mut App) -> AnyWindowHandle {
+fn open_launcher_window(
+    cx: &mut App,
+    focus: &FocusHandle,
+    i18n: Rc<i18n::Localization>,
+) -> AnyWindowHandle {
     let bounds = Bounds::centered(None, size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)), cx);
     cx.open_window(
         WindowOptions {
@@ -160,9 +305,15 @@ fn open_launcher_window(cx: &mut App) -> AnyWindowHandle {
         |window, cx| {
             window.set_window_title("Steward");
             cx.new(|cx| {
-                let focus_handle = cx.focus_handle();
-                focus_handle.focus(window, cx);
-                StewardApp { focus_handle }
+                focus.focus(window, cx);
+                StewardApp {
+                    focus_handle: focus.clone(),
+                    input: SearchInput {
+                        query: String::new(),
+                        cursor: 0,
+                    },
+                    i18n,
+                }
             })
         },
     )
@@ -170,7 +321,11 @@ fn open_launcher_window(cx: &mut App) -> AnyWindowHandle {
     .into()
 }
 
-fn setup_global_hotkey(window: Rc<RefCell<Option<AnyWindowHandle>>>, cx: &mut App) -> Result<()> {
+fn setup_global_hotkey(
+    state: Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+    cx: &mut App,
+) -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("create global hotkey manager")?;
     let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
     manager.register(hotkey).context("register global hotkey")?;
@@ -187,7 +342,7 @@ fn setup_global_hotkey(window: Rc<RefCell<Option<AnyWindowHandle>>>, cx: &mut Ap
     cx.spawn(async move |cx| loop {
         while let Ok(event) = hotkey_events.try_recv() {
             if event.state == HotKeyState::Pressed {
-                toggle_launcher(&window, cx);
+                toggle_launcher(&state, i18n.clone(), cx);
             }
         }
 
@@ -201,14 +356,14 @@ fn setup_global_hotkey(window: Rc<RefCell<Option<AnyWindowHandle>>>, cx: &mut Ap
                     ..
                 }
             ) {
-                toggle_launcher(&window, cx);
+                toggle_launcher(&state, i18n.clone(), cx);
             }
         }
 
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         while let Ok(event) = menu_events.try_recv() {
             match event.id().as_ref() {
-                MENU_TOGGLE => toggle_launcher(&window, cx),
+                MENU_TOGGLE => toggle_launcher(&state, i18n.clone(), cx),
                 MENU_QUIT => cx.update(|cx| cx.quit()),
                 _ => {}
             }
@@ -224,33 +379,49 @@ fn setup_global_hotkey(window: Rc<RefCell<Option<AnyWindowHandle>>>, cx: &mut Ap
 }
 
 /// Summon or dismiss the launcher bar. Reopens the window if it was closed.
-fn toggle_launcher(window: &Rc<RefCell<Option<AnyWindowHandle>>>, cx: &mut AsyncApp) {
-    let handle = window.borrow();
-    match handle.as_ref() {
+fn toggle_launcher(
+    state: &Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+    cx: &mut AsyncApp,
+) {
+    let state_ref = state.borrow();
+    match state_ref.window.as_ref() {
         Some(handle) => {
+            let focus = state_ref.focus.clone();
             let _ = (*handle).update(cx, |_, window, cx| {
                 if platform::is_visible(window) {
                     hide_window(window, cx);
                 } else {
+                    focus.focus(window, cx);
                     show_window(window, cx);
                 }
             });
         }
         None => {
-            drop(handle);
-            show_launcher(window, cx);
+            drop(state_ref);
+            show_launcher(state, i18n, cx);
         }
     }
 }
 
 /// Show the launcher bar, reopening the window first if necessary.
-fn show_launcher(window: &Rc<RefCell<Option<AnyWindowHandle>>>, cx: &mut AsyncApp) {
-    if window.borrow().is_none() {
-        *window.borrow_mut() = Some(cx.update(open_launcher_window));
+fn show_launcher(
+    state: &Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+    cx: &mut AsyncApp,
+) {
+    if state.borrow().window.is_none() {
+        let focus = state.borrow().focus.clone();
+        let handle = cx.update(|cx| open_launcher_window(cx, &focus, i18n.clone()));
+        state.borrow_mut().window = Some(handle);
     }
-    let handle = window.borrow();
-    if let Some(handle) = handle.as_ref() {
-        let _ = (*handle).update(cx, |_, window, cx| show_window(window, cx));
+    let state_ref = state.borrow();
+    if let Some(handle) = state_ref.window.as_ref() {
+        let focus = state_ref.focus.clone();
+        let _ = (*handle).update(cx, |_, window, cx| {
+            focus.focus(window, cx);
+            show_window(window, cx);
+        });
     }
 }
 
@@ -268,10 +439,10 @@ fn show_window(window: &mut Window, _cx: &mut App) {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn setup_tray(_cx: &mut App) -> Result<()> {
+fn setup_tray(_cx: &mut App, i18n: &i18n::Localization) -> Result<()> {
     let icon = load_tray_icon()?;
-    let toggle = MenuItem::with_id(MENU_TOGGLE, "显示 / 隐藏 Steward", true, None);
-    let quit = MenuItem::with_id(MENU_QUIT, "退出 Steward", true, None);
+    let toggle = MenuItem::with_id(MENU_TOGGLE, i18n.translate("app-toggle"), true, None);
+    let quit = MenuItem::with_id(MENU_QUIT, i18n.translate("app-quit"), true, None);
     let menu = Menu::new();
     menu.append(&toggle)?;
     menu.append(&quit)?;
@@ -367,7 +538,8 @@ mod platform {
         GetMonitorInfoW(monitor, &mut info);
         let work = info.rcWork;
         let x = work.left + ((work.right - work.left) - width) / 2;
-        let y = work.top + ((work.bottom - work.top) - height) / 2;
+        // Horizontally centered; vertically in the upper third of the screen.
+        let y = work.top + ((work.bottom - work.top) - height) / 3;
 
         SetWindowPos(
             hwnd,

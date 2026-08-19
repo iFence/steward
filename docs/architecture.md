@@ -160,3 +160,19 @@ steward/
 - 托盘生命周期：应用真正的外壳是托盘图标（Windows 用 `Icon::from_resource(1)` 读取 embed-resource 嵌入的 ICO，macOS 用 `image` 解码内置 PNG）；左键单击与全局热键同路（切换显隐），右键菜单含“显示/隐藏”“退出”；关闭快速启动栏窗口（Alt+F4）不退出应用，下次呼出自动重建。
 - 图标嵌入：`crates/app/app.rc`（`1 ICON` + `32512 ICON` 双写）+ `embed-resource` 编译进 exe，Explorer/任务栏/托盘共用 `assets/icon.ico`；托盘事件/菜单事件与热键事件合并进同一个 10ms 前台轮询任务，回调线程不直接触碰 GPUI 状态。
 - 托盘目标平台：仅 Windows/macOS 启用（`tray-icon` 为 target 依赖）；Linux 默认不启用，避免 CI 引入 gtk/libappindicator 系统依赖，M4 再评估。
+
+### 2026-08-19（M0.2 单一输入框快速启动栏）
+
+- 宽度 960 → 800，垂直位置从屏幕正中改为上部约 1/3（`position_centered` 的 `y = work.top + (工作区高 - 条高) / 3`），水平仍居中。
+- 去掉标题/占位 chip/快捷键提示等所有杂项文字，整条 800×56 就是一个输入框：单一 `0x232332` 背景 + `text_sm` + 占位符“搜索应用或输入命令...”（走 i18n `search-placeholder`）。
+- 文本输入：根元素 `on_key_down` 直接处理字符（`keystroke.key_char`）、空格、退格、删除、左右/Home/End，光标用 2px 竖条 + `repeat_synced` 动画闪烁；Esc 在按键层直接隐藏（keybinding 仅作兜底）。
+- 拖动：`window_control_area(WindowControlArea::Drag)` 直接挂在根元素上，整条即原生 HTCAPTION 拖动区（Windows 由 DefWindowProc 起模态移动循环），输入不再需要点击（每次呼出自动聚焦）。
+- 焦点：`FocusHandle` 在 `main` 中创建并存入共享 `LauncherState`，每次 show（含隐藏后重新呼出、窗口被 Alt+F4 关闭后重建）都重新 `focus()`，修复“隐藏后再呼出无法输入”的问题。
+
+### 2026-08-19（i18n 国际化）
+
+- 采用与 Zed 一致的 Fluent 技术栈：`i18n-embed` 0.16（`fluent-system` + `desktop-requester`）＋ `i18n-embed-fl` 0.10 ＋ `rust-embed` 8 ＋ `unic-langid` 0.9；`.ftl` 资源放 `crates/app/i18n/{语言}/main.ftl`，编译期经 `rust-embed` 内嵌。
+- 支持语言：zh / en / fr / de / ru / ja / ko（7 种）。活动语言默认取系统语言，`DesktopLanguageRequester::requested_languages()` 末尾兜底 `en`，保证系统语言不在支持集时回退英文。
+- 范围：i18n 仅覆盖原生宿主自有文案（当前全部在 `crates/app/src/main.rs`：搜索占位符 + 两个托盘菜单项）；插件提供的 UI 文案由插件自身携带，暂不经宿主 Fluent 翻译（M2 再议）。
+- 品牌名 `Steward` 为专有名词，不随语言翻译。
+- 诊断性 `eprintln!` / `anyhow` 上下文保持英文（面向开发，不参与 i18n）。

@@ -29,3 +29,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 tracing = "0.1"
 anyhow = "1"
+
+# i18n (Fluent — Zed's localization stack)
+i18n-embed = { version = "0.16", features = ["desktop-requester", "fluent-system"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
+unic-langid = "0.9"
