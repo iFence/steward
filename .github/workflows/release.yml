@@ -1,0 +1,11 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+# 打包发布流程（cargo-bundle 等）计划 M3+ 启用，当前仅保留手动触发入口。
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Release workflow will be enabled in M3+"

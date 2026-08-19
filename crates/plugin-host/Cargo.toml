@@ -1,0 +1,6 @@
+[package]
+name = "steward-plugin-host"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

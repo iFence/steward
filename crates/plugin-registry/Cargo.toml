@@ -1,0 +1,6 @@
+[package]
+name = "steward-plugin-registry"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,15 @@
+{
+  "name": "@steward/extension-api",
+  "version": "0.1.0",
+  "description": "Type declarations and runtime polyfills for Steward plugin developers.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.js --sourcemap",
+    "typecheck": "tsc --noEmit"
+  }
+}

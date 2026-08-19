@@ -1,0 +1,21 @@
+# Rust
+target/
+
+# Node / pnpm
+node_modules/
+dist/
+
+# Database files (index caches, plugin metadata, etc.)
+*.db
+*.db-journal
+*.sqlite
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+
+# Logs and local env
+*.log
+.env
+.env.*

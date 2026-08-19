@@ -1,0 +1,154 @@
+# Steward —— 架构说明
+
+> 本文档第一版即建仓计划原文（来源：`steward-repo-plan.md`，入库时间 2026-08-19）。
+> 后续架构决策变更直接在本文件迭代记录；M0 建仓时做出的具体决策见文末“决策记录”。
+
+## 定位
+
+> 定位：Rust + GPUI 原生主进程，TypeScript 插件系统，主打内存占用低、响应速度快。
+> 本文档是可执行的建仓计划，按顺序照做即可跑起第一个可运行的骨架，并把插件规模化后的工程隐患提前落到里程碑里。
+
+## 0. 项目基本信息
+
+- 项目名：**Steward**
+- Bundle ID：`com.hiaspirin.steward`
+- Rust crate 前缀：`steward-*`（如 `steward-core-engine`）
+- npm scope：`@steward/*`（如 `@steward/extension-api`）
+- 许可证：MIT
+- 仓库形态：**Monorepo**（Rust workspace + TS 插件 SDK/官方插件 都放一个仓库）
+
+## 1. 仓库顶层结构
+
+```
+steward/
+├── Cargo.toml                     # workspace 根
+├── rust-toolchain.toml            # 固定 Rust 版本
+├── .gitignore
+├── LICENSE
+├── README.md
+├── crates/
+│   ├── app/                       # 二进制入口：GPUI 窗口/托盘/全局热键/生命周期
+│   ├── core-engine/                # 搜索、索引、模糊匹配、排序（无 UI 依赖，可单测）
+│   ├── plugin-host/                # 插件生命周期管理、路由、权限、IPC 网关
+│   ├── plugin-registry/            # 插件元数据缓存（SQLite），负责增量扫描/索引，M2 新增
+│   ├── storage/                    # SQLite 封装、配置文件读写
+│   ├── ui-components/              # 基于 gpui-component 的业务级 UI 组件
+│   └── ipc-protocol/               # 主进程 <-> 插件运行时共享的消息协议定义
+├── plugin-runtime/                # 独立的插件宿主进程（Rust 二进制，内嵌 QuickJS）
+│   └── src/
+│       ├── isolate_pool.rs         # 常规插件：进程内多实例池，内存/超时熔断
+│       └── isolated_process.rs     # 高风险插件：独立子进程隔离，M2 后期补
+├── packages/                      # TS 侧，pnpm workspace
+│   ├── extension-api/              # 面向插件开发者的 TS 类型声明 + 运行时 polyfill
+│   ├── create-plugin-cli/          # 脚手架 CLI（可选，后期做）
+│   └── plugins/
+│       ├── calculator/              # 官方示例插件 1
+│       └── clipboard-history/       # 官方示例插件 2
+├── docs/
+│   ├── architecture.md             # 架构说明（把讨论结论固化进去）
+│   ├── extension-api.md            # 插件 API 文档
+│   ├── plugin-manifest-spec.md     # manifest 字段规范，含触发条件/权限声明，M2 新增
+│   └── benchmarks.md               # 性能基准记录
+├── scripts/                        # 构建/打包/基准测试脚本
+└── .github/
+    └── workflows/
+        ├── ci.yml                   # rust fmt/clippy/test + ts lint/build
+        └── release.yml              # 打包发布（后期再启用）
+```
+
+## 2. 技术选型清单
+
+| 领域 | 选型 | 备注 |
+|---|---|---|
+| UI 框架 | `gpui`（Zed 仓库内 crate）+ `gpui-component`（Longbridge） | GPUI pre-1.0，git 依赖 + Cargo.lock 锁定 |
+| 全局热键/托盘 | `global-hotkey` + `tray-icon` | 跨平台 crate |
+| 模糊匹配 | `nucleo` | Helix 同款，性能优先 |
+| 数据库 | `rusqlite`（bundled feature） | 同步足够快，避免引入 async ORM |
+| 插件运行时 | `rquickjs`（QuickJS 绑定） | 内存优先，不追求 Node 全兼容 |
+| 插件 IPC | 自定义 JSON-RPC，走 Unix Domain Socket / Windows Named Pipe | 协议定义放 `ipc-protocol` crate |
+| 插件打包 | `esbuild` | TS -> 单文件 JS，产物不依赖 Node API |
+| TS 包管理 | `pnpm` workspace | 单仓多插件场景省心 |
+| CI | GitHub Actions | 先跑 fmt/clippy/test |
+
+## 3. 里程碑规划
+
+### M0：骨架能跑起来（1-2 周）
+- [x] `cargo new` workspace，`app` crate 用 GPUI 弹出一个空窗口
+- [x] 全局热键唤起/隐藏窗口，验证呼出延迟
+- [x] 基础 CI 跑通（`cargo fmt --check` / `cargo clippy` / `cargo test`）
+- [x] `docs/architecture.md` 写好，固化架构结论
+
+**验收标准**：冷启动到窗口可交互 < 50ms（release 构建、macOS 目标；当前在 Windows 开发机上记录基线数据）
+
+### M1：应用启动器 MVP（核心卖点验证阶段，重点投入）
+- [ ] `core-engine`：扫描本机已安装应用，建索引
+- [ ] 接入 `nucleo` 做模糊匹配 + 结果排序
+- [ ] `ui-components`：搜索框 + 虚拟滚动结果列表
+- [ ] `storage`：SQLite 存索引缓存和使用频率
+- [ ] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比
+
+**验收标准**：内存/速度数据要好看且可复现，这是对外最大的说服力来源
+
+### M2：插件系统 v1 ——按“规模化后不塌”的标准设计，不只是“跑通一个插件”
+
+这一阶段直接把 1000 插件规模下会暴露的问题设计进去，避免后面返工。
+
+**基础链路**
+- [ ] `ipc-protocol`：定义主进程 <-> 插件运行时消息格式（JSON-RPC）
+- [ ] `plugin-runtime`：独立二进制，内嵌 rquickjs，能加载 JS 文件并调用
+- [ ] `packages/extension-api`：暴露 `List`、`ActionPanel`、`showToast` 等最小 API 集
+- [ ] 用 `packages/plugins/calculator` 跑通端到端：TS -> esbuild -> QuickJS -> UI 渲染
+
+**规模化对策（4 项必须做，不是可选项）**
+- [ ] **元数据缓存**（`plugin-registry`）：插件 manifest 解析结果缓存进 SQLite，只有版本变化才重新扫描解析；启动时直接读缓存，杜绝全量文件 I/O 扫描拖慢冷启动
+- [ ] **触发条件路由**（`plugin-manifest-spec.md` + `plugin-host`）：manifest 声明命令名 / 关键字前缀 / 正则触发条件，搜索时先做路由过滤，绝不对未匹配插件发起唤起；对声明“动态参与”的插件加响应超时熔断（如 100ms 未返回则跳过本次渲染）
+- [ ] **分级隔离**（`isolate_pool.rs` + `isolated_process.rs`）：默认插件走进程内多实例池，设置 QuickJS 堆内存上限 + 执行超时，超限直接 kill 该实例；声明了网络/文件系统权限或依赖较重的插件升级为独立子进程隔离
+- [ ] **最小权限模型**：manifest 声明所需能力，主进程按声明开放对应 host function，插件默认零权限
+
+**验收标准**：模拟安装 500-1000 个插件（可脚本批量生成测试 manifest），验证冷启动时间、搜索响应延迟不随安装量线性劣化，只随“实际激活数”变化
+
+### M3：插件 API 覆盖面 + Node 兼容 polyfill + UI 打磨
+- [ ] 补齐 `Detail`、`Form`、`LocalStorage`、`Clipboard` 等 API
+- [ ] 覆盖最常用的 20-30 个 Node 内置模块 polyfill（fs、path、buffer、http 等），明确写文档说明不支持 native binding
+- [ ] 做第二个官方插件（`clipboard-history`）验证 API 够不够用
+- [ ] 主题/深色模式、动画细节打磨
+
+### M4：Windows 支持
+- [ ] 视 GPUI/gpui-component 在 Windows 上的成熟度决定方案
+- [ ] IPC 层的 Named Pipe 分支补齐并测试
+- [ ] 非 Windows 平台窗口显隐（`App::hide`/`activate` 回退）打磨
+
+### M5：插件生态基础设施
+- [ ] `create-plugin-cli` 脚手架
+- [ ] 插件签名/来源校验 + 自动化静态分析（依赖白名单、API 调用范围检查）
+- [ ] 简单的插件市场（本地 manifest 索引即可）
+
+## 4. 工程规范
+
+- **Rust**：`rustfmt` + `clippy -D warnings` 强制 CI 检查；commit 用 Conventional Commits
+- **TS**：`eslint` + `prettier`，插件包统一走 `esbuild` 构建，产物体积和依赖在 CI 里做检查
+- **性能基准**：从 M0 开始建立 `scripts/bench.sh`，记录冷启动时间、常驻内存（RSS）、呼出延迟三个核心指标，每个里程碑跑一次存进 `docs/benchmarks.md`
+- **规模化基准**（M2 起新增）：`scripts/gen-test-plugins.sh` 批量生成 N 个测试插件 manifest（N=100/500/1000），跑冷启动和搜索延迟回归测试，防止插件数量增长后悄悄劣化
+
+## 5. 待验证风险清单（建仓后前两周优先去趟一遍）
+
+1. GPUI 在目标平台（先 macOS，再 Linux）上的窗口置顶/失焦隐藏/多显示器行为是否符合预期
+2. `rquickjs` 沙箱内 host function 回调（Rust 侧）的性能开销，是否拖慢插件响应
+3. `gpui-component` 的组件覆盖面是否够用，哪些控件需要自己补
+4. 插件崩溃/死循环时的隔离和超时熔断机制的具体实现方式（`isolate_pool.rs` 的核心）
+5. QuickJS 堆内存上限设置的合理默认值（过小影响正常插件，过大失去熔断意义）
+
+## 决策记录
+
+### 2026-08-19（M0 建仓）
+
+- `gpui` 不从 crates.io 引入，直接从 Zed 仓库 git 引用（`git = "https://github.com/zed-industries/zed", package = "gpui"`），提交由 `Cargo.lock` 锁定（当前 `7a7c3e1d`）。
+- `gpui_platform`（Zed 仓库，`features = ["font-kit"]`）与 `gpui-component`（Longbridge 仓库）同样走 git，与 git 版 gpui 保持类型一致（crates.io 版 gpui-component 0.5.1 绑定 crates.io gpui 0.2.2，混用会产生两份 gpui 类型冲突）。
+- Rust 工具链固定 `1.95.0`（gpui 锁定的提交需要比 1.92 更新的编译器，`rust-toolchain.toml` 显式锁定）。
+- M0 窗口显隐：Windows 上通过原生 HWND `ShowWindow(SW_HIDE/SW_SHOW)` 实现（GPUI Windows 后端 `App::hide` 是空操作）；其他平台回退 `App::hide`/`App::activate`，M4 打磨。
+- M0 全局热键：`global-hotkey` 注册 `Ctrl+Alt+Space`，事件经 crossbeam channel 由 GPUI 前台任务每 10ms 轮询桥接（GPUI 无系统级热键 API，回调线程不能直接操作 GPUI 状态）。
+- Windows 上所有构建（含 debug）均启用 `windows_subsystem = "windows"`，避免启动时闪现控制台窗口；debug 下 `eprintln!` 无控制台输出属预期，M3 起引入 tracing 文件日志。
+- 图标：`assets/steward.png`（1254×1254）+ Pillow 生成多尺寸 `assets/icon.ico`（16/24/32/48/64/128/256），并写入 `steward-app` 的 `[package.metadata.bundle]`。
+- 许可证：MIT，版权持有者写 `Steward contributors`。
+- 依赖版本（crates.io，建仓当日确认）：`rusqlite` 0.40（bundled）、`nucleo` 0.5、`rquickjs` 0.12、`global-hotkey` 0.8、`tray-icon` 0.24。
+- `create-plugin-cli` 按计划“后期做”，建仓时不建包；`release.yml` 仅 `workflow_dispatch` 占位。

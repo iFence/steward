@@ -1,0 +1,10 @@
+{
+  "name": "@steward/plugin-calculator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Official example plugin: Calculator.",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.js --sourcemap"
+  }
+}

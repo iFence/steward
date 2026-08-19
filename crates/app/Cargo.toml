@@ -1,0 +1,23 @@
+[package]
+name = "steward-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+global-hotkey.workspace = true
+anyhow.workspace = true
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[package.metadata.bundle]
+name = "Steward"
+identifier = "com.hiaspirin.steward"
+icon = ["../../assets/icon.ico"]

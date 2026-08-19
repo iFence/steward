@@ -1,0 +1,20 @@
+{
+  "name": "steward",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Steward monorepo — Rust + GPUI native host with a TypeScript plugin system.",
+  "scripts": {
+    "build": "pnpm --filter @steward/extension-api build",
+    "typecheck": "pnpm --filter @steward/extension-api typecheck",
+    "lint": "eslint \"packages/**/*.{ts,js}\"",
+    "format:check": "prettier --check \"packages/**/*.{ts,js,json,md}\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}
