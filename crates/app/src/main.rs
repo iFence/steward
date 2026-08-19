@@ -46,8 +46,8 @@ actions!(steward, [HideWindow]);
 /// The launcher bar is deliberately long and short: wide enough to hold a
 /// search box plus quick-launch chips, short enough to sit unobtrusively in
 /// the middle of the screen.
-const LAUNCHER_WIDTH: f32 = 800.0;
-const LAUNCHER_HEIGHT: f32 = 56.0;
+const LAUNCHER_WIDTH: f32 = 760.0;
+const LAUNCHER_HEIGHT: f32 = 60.0;
 
 const MENU_TOGGLE: &str = "toggle";
 const MENU_QUIT: &str = "quit";

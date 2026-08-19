@@ -163,8 +163,8 @@ steward/
 
 ### 2026-08-19（M0.2 单一输入框快速启动栏）
 
-- 宽度 960 → 800，垂直位置从屏幕正中改为上部约 1/3（`position_centered` 的 `y = work.top + (工作区高 - 条高) / 3`），水平仍居中。
-- 去掉标题/占位 chip/快捷键提示等所有杂项文字，整条 800×56 就是一个输入框：单一 `0x232332` 背景 + `text_sm` + 占位符“搜索应用或输入命令...”（走 i18n `search-placeholder`）。
+- 宽度 960 → 760、高度 56 → 60，垂直位置从屏幕正中改为上部约 1/3（`position_centered` 的 `y = work.top + (工作区高 - 条高) / 3`），水平仍居中。
+- 去掉标题/占位 chip/快捷键提示等所有杂项文字，整条 760×60 就是一个输入框：单一 `0x232332` 背景 + `text_sm` + 占位符“搜索应用或输入命令...”（走 i18n `search-placeholder`）。
 - 文本输入：根元素 `on_key_down` 直接处理字符（`keystroke.key_char`）、空格、退格、删除、左右/Home/End，光标用 2px 竖条 + `repeat_synced` 动画闪烁；Esc 在按键层直接隐藏（keybinding 仅作兜底）。
 - 拖动：`window_control_area(WindowControlArea::Drag)` 直接挂在根元素上，整条即原生 HTCAPTION 拖动区（Windows 由 DefWindowProc 起模态移动循环），输入不再需要点击（每次呼出自动聚焦）。
 - 焦点：`FocusHandle` 在 `main` 中创建并存入共享 `LauncherState`，每次 show（含隐藏后重新呼出、窗口被 Alt+F4 关闭后重建）都重新 `focus()`，修复“隐藏后再呼出无法输入”的问题。
