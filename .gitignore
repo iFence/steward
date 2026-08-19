@@ -19,3 +19,26 @@ Thumbs.db
 *.log
 .env
 .env.*
+!.env.example
+
+# Rust
+/target
+**/*.rs.bk
+
+# Build output
+dist/
+build/
+coverage/
+
+# pnpm
+.pnpm-store/
+pnpm-debug.log*
+
+# Editor
+.vscode/
+.vs/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

@@ -152,3 +152,11 @@ steward/
 - 许可证：MIT，版权持有者写 `Steward contributors`。
 - 依赖版本（crates.io，建仓当日确认）：`rusqlite` 0.40（bundled）、`nucleo` 0.5、`rquickjs` 0.12、`global-hotkey` 0.8、`tray-icon` 0.24。
 - `create-plugin-cli` 按计划“后期做”，建仓时不建包；`release.yml` 仅 `workflow_dispatch` 占位。
+
+### 2026-08-19（M0.1 托盘 + 快速启动栏）
+
+- 启动静默：主窗口以 `show: false` 创建（Windows 后端不会应用 GPUI 计算的 placement），呼出时由 `platform::show` 自行按主显示器工作区居中（`GetDpiForWindow` 换算物理像素，`GetMonitorInfoW` 取工作区），再 `ShowWindow(SW_SHOW)` + `SetForegroundWindow`（含 AttachThreadInput 抢焦点技巧）。
+- 快速启动栏形态：`WindowKind::PopUp`（Windows 上即 `WS_EX_TOOLWINDOW | WS_EX_TOPMOST`，无任务栏入口、置顶）+ `appears_transparent: true`（无系统标题栏）+ `is_resizable: false`，尺寸 960×56 居中于主屏；内容区为横向 flex：标题、搜索占位框、两个官方插件占位 chip、快捷键提示。
+- 托盘生命周期：应用真正的外壳是托盘图标（Windows 用 `Icon::from_resource(1)` 读取 embed-resource 嵌入的 ICO，macOS 用 `image` 解码内置 PNG）；左键单击与全局热键同路（切换显隐），右键菜单含“显示/隐藏”“退出”；关闭快速启动栏窗口（Alt+F4）不退出应用，下次呼出自动重建。
+- 图标嵌入：`crates/app/app.rc`（`1 ICON` + `32512 ICON` 双写）+ `embed-resource` 编译进 exe，Explorer/任务栏/托盘共用 `assets/icon.ico`；托盘事件/菜单事件与热键事件合并进同一个 10ms 前台轮询任务，回调线程不直接触碰 GPUI 状态。
+- 托盘目标平台：仅 Windows/macOS 启用（`tray-icon` 为 target 依赖）；Linux 默认不启用，避免 CI 引入 gtk/libappindicator 系统依赖，M4 再评估。

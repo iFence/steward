@@ -1,10 +1,14 @@
 # Steward
 
+<p align="center">
+  <img src="assets/steward.png" alt="Steward" width="300">
+</p>
+
 > 定位：Rust + GPUI 原生主进程，TypeScript 插件系统，主打内存占用低、响应速度快。
 
 Steward 是一个启动器/插件平台骨架：原生主进程基于 [GPUI](https://gpui.rs)（直接从 Zed 仓库 git 引用），插件系统计划使用内嵌 QuickJS 的独立宿主进程，TS 插件通过 esbuild 打成单文件 JS。
 
-当前仓库状态：M0 骨架 —— GPUI 空窗口 + 全局热键呼出/隐藏已经跑通，插件链路（M2）为占位。
+当前仓库状态：M0.1 —— 启动后静默驻留系统托盘（Windows/macOS），主界面是屏幕正中央一条无标题栏的快速启动栏（长 960、高 56），由全局热键或托盘呼出/隐藏；插件链路（M2）为占位。
 
 ## 仓库结构
 
@@ -41,7 +45,14 @@ pnpm install
 pnpm build
 ```
 
-M0 快捷键：`Ctrl+Alt+Space` 呼出/隐藏窗口，`Esc` 隐藏窗口，关闭窗口退出应用。
+启动后不会弹出窗口，应用驻留系统托盘；退出请用托盘菜单「退出 Steward」。
+
+快捷键/交互：
+
+- `Ctrl+Alt+Space`：呼出/隐藏快速启动栏
+- `Esc`：隐藏快速启动栏
+- 托盘左键：呼出/隐藏快速启动栏
+- 托盘右键菜单：显示/隐藏、退出
 
 ## 文档
 
@@ -52,7 +63,7 @@ M0 快捷键：`Ctrl+Alt+Space` 呼出/隐藏窗口，`Esc` 隐藏窗口，关�
 
 ## 里程碑
 
-- [x] M0：骨架能跑起来（GPUI 窗口 + 全局热键）
+- [x] M0：骨架能跑起来（GPUI 快速启动栏 + 全局热键 + 系统托盘）
 - [ ] M1：应用启动器 MVP（应用扫描 + nucleo 模糊匹配 + SQLite 索引）
 - [ ] M2：插件系统 v1（JSON-RPC IPC + QuickJS 运行时 + 规模化对策）
 - [ ] M3：插件 API 覆盖面 + Node polyfill + UI 打磨

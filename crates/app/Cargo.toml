@@ -10,12 +10,23 @@ global-hotkey.workspace = true
 anyhow.workspace = true
 raw-window-handle = "0.6"
 
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
 ] }
+
+[build-dependencies]
+embed-resource = "3"
 
 [package.metadata.bundle]
 name = "Steward"
