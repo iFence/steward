@@ -9,10 +9,14 @@ gpui_platform.workspace = true
 global-hotkey.workspace = true
 anyhow.workspace = true
 raw-window-handle = "0.6"
+dirs.workspace = true
 i18n-embed.workspace = true
 i18n-embed-fl.workspace = true
 rust-embed.workspace = true
 unic-langid.workspace = true
+steward-core-engine = { path = "../core-engine" }
+steward-storage = { path = "../storage" }
+steward-ui-components = { path = "../ui-components" }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon.workspace = true
@@ -27,7 +31,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_Ime",
 ] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]
 embed-resource = "3"

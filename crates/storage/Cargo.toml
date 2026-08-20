@@ -4,3 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+rusqlite.workspace = true
+dirs.workspace = true
+anyhow.workspace = true
+steward-core-engine = { path = "../core-engine" }

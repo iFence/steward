@@ -1,3 +1,4 @@
 search-placeholder = Rechercher des applications ou saisir une commande...
 app-toggle = Afficher / Masquer Steward
 app-quit = Quitter Steward
+application = Application

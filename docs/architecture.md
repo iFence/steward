@@ -81,11 +81,11 @@ steward/
 **验收标准**：冷启动到窗口可交互 < 50ms（release 构建、macOS 目标；当前在 Windows 开发机上记录基线数据）
 
 ### M1：应用启动器 MVP（核心卖点验证阶段，重点投入）
-- [ ] `core-engine`：扫描本机已安装应用，建索引
-- [ ] 接入 `nucleo` 做模糊匹配 + 结果排序
-- [ ] `ui-components`：搜索框 + 虚拟滚动结果列表
-- [ ] `storage`：SQLite 存索引缓存和使用频率
-- [ ] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比
+- [x] `core-engine`：扫描本机已安装应用，建索引
+- [x] 接入 `nucleo` 做模糊匹配 + 结果排序
+- [x] `ui-components`：搜索框 + 虚拟滚动结果列表
+- [x] `storage`：SQLite 存索引缓存和使用频率
+- [~] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比（Windows 开发机 debug 数据已记录；uTools/Raycast 对比待 release 数据积累后补齐）
 
 **验收标准**：内存/速度数据要好看且可复现，这是对外最大的说服力来源
 
@@ -176,3 +176,22 @@ steward/
 - 范围：i18n 仅覆盖原生宿主自有文案（当前全部在 `crates/app/src/main.rs`：搜索占位符 + 两个托盘菜单项）；插件提供的 UI 文案由插件自身携带，暂不经宿主 Fluent 翻译（M2 再议）。
 - 品牌名 `Steward` 为专有名词，不随语言翻译。
 - 诊断性 `eprintln!` / `anyhow` 上下文保持英文（面向开发，不参与 i18n）。
+
+### 2026-08-19（M1 应用启动器 MVP）
+
+- 应用扫描（Windows 优先）：`core-engine` 的 `WinAppsScanner` 遍历当前用户与全体用户的开始菜单 `Programs` 目录，递归收集 `.lnk`，经 ShellLink COM（`IShellLinkW`/`IPersistFile`）解析目标，只保留直接指向 `.exe` 的去重条目；`GetPath` 不带 `SLGP_RAWPATH`（flags 0），让 ShellLink 展开 `%windir%` 等环境变量，保证路径可启动、可取图标；其他平台返回空 `NoopScanner`（M4 补齐）。`platform_scanner()` 为平台分发入口。
+- 冷启动加速（缓存优先）：启动时先跑一次扫描建索引用 `mark_seen` 写回 SQLite；若扫描为空（如平台未实现）则回退读 `cached_apps()`，保证冷启动不因扫描失败而阻塞。
+- 模糊匹配 + 频率加权排序：`nucleo::Matcher::new(Config::DEFAULT)`（大小写不敏感、拉丁归一化）逐条 `fuzzy_match`；排序分 = 模糊分 + `20 * ln(1 + 使用次数)`，空查询按使用次数倒序。满足“Windows 优先 + 接通启动 + 模糊分×频率加权”的验收口径。
+- 结果列表 UI：`ui-components` 用 `gpui-component` 的 `ListState`/`ListDelegate` 做虚拟滚动（固定行高 48px，最多展示 8 行后滚动）。一个关键约束：`Context<T>` 只实现 `AppContext` 而非 `VisualContext`，因此结果更新走 `Entity::update`（无需 window），只有选中/确认需要 window 时再以参数传入；`set_results` 无 window 即可刷新。
+- Enter 启动并在委托回调里 `upsert_usage` 记账：回调只触碰 `Rc` 共享的索引与缓存、绝不操作 UI，故可在 `ListState` 的 update 内安全触发；启动后由 app 层 `after_confirm` 统一复位查询、重置窗口高度并隐藏。
+- 动态窗口高度：搜索时按可见结果数实时 `SetWindowPos` 改高度（保留左上角、只增高度向下展开，物理像素按 `GetDpiForWindow` 换算）；呼出时复用 `LauncherState::height()` 重建窗口尺寸。
+- 错误处理从简：`launch` 用 `Command::new(path).spawn()` 分离子进程；非 Windows 平台启动为 stub（`anyhow::bail!`）。
+
+### 2026-08-19（M1 下拉样式修复）
+
+- DPI 感知：应用此前未声明 DPI 感知，在 200% 缩放（192 DPI）显示器上被系统按 96 DPI 虚拟化放大/模糊。现于 `main` 启动时调用 `SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)`，让启动器像其他应用一样**跟随系统缩放**：尺寸均为逻辑像素（760×60 条、48px 行、字号 rem），GPUI 按显示器 scale 渲染为物理像素（200% 下 1520×120/888）。窗口创建尺寸被 GPUI Windows `check_given_bounds` 在显示器边角误判拒绝时，show 时由平台层强制设置 `760 × 窗口 DPI/96` 物理宽 + 当前结果高度。
+- 动态窗口高度：`SetWindowPos` 在窗口可见时直接改高会让 DirectX 渲染器 viewport 失步，下拉区域呈现清屏白色（即"白色区域遮挡"的真身）；改为调用 GPUI 自身的 `window.resize()`（经前台 executor 异步执行），渲染器同步正常。窗口高度公式（`60 + 48 × min(结果数, 8)`，按 DPI 换算）不变。
+- 结果列表渲染：`gpui-component` 的 `List`/虚拟列表在 Windows 上渲染损坏（行文字缺失或变淡、下拉右下角纯白 quad）。M1 结果数上限 8 行，不需要虚拟化，`results_list` 改为简单 div 堆叠列表（滚动容器 + 行高/字号按 DPI 缩放），选中行为 `#89b4fa` 20% 透明度 + 蓝色边框，悬停为 `#313244`；`ResultList`/`ResultListDelegate` 公开 API 保持兼容。
+- 应用图标：`app_icons`（Windows）用 `SHGetFileInfoW(SHGFI_ICON | SHGFI_LARGEICON)` 取 exe 的 shell 大图标，`DrawIconEx` 画进 32 位 DIB 保留透明通道，转 RGBA 后用 `image` 编码 PNG 包装为 `gpui::Image`；按路径缓存，只对可见 8 行提取（入口先展开路径中的 `%VAR%` 作防御），行左侧以 24 逻辑 px 渲染；行右侧不再显示可执行文件路径，改为本地化的类型标签（`application`，如"应用"），经 `ResultListDelegate::type_label` 传入。
+- 中文输入：启动器查询框实现 GPUI `EntityInputHandler`（查询为单行文档，IME 组字走 `replace_and_mark_text_in_range`、提交走 `replace_text_in_range`），渲染时组字区加下划线；`LauncherInputElement` 在 paint 阶段注册输入处理器。Windows 上 GPUI 的 IME 上下文关联依赖 WM_PAINT 且会因输入处理器被临时取走而误禁用，故每帧调用 `ImmAssociateContextEx(IACE_DEFAULT)` 重新关联，保证拼音等输入法可组字；组字期间编辑/导航键（含 Enter/Esc）交给输入法，不作启动/隐藏处理。IME 提交在光标处插入、组字只替换组字区（带单测覆盖"你好 + 说话 → 你好说话"），不会整体替换查询。
+- 布局与视觉：结果列表包在 `h(result_height) + mx(margin)` 固定高度容器内，输入行不再被压缩；`init_theme` 切换 `ThemeMode::Dark`；行内应用名与路径均省略号截断；保持不透明矩形窗口（圆角/透明化留待后续）。呼出时自动执行一次空查询（按使用频率排序），打开即显示常用应用。

@@ -4,3 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+steward-core-engine = { path = "../core-engine" }
