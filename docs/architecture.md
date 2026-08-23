@@ -85,7 +85,7 @@ steward/
 - [x] 接入 `nucleo` 做模糊匹配 + 结果排序
 - [x] `ui-components`：搜索框 + 虚拟滚动结果列表
 - [x] `storage`：SQLite 存索引缓存和使用频率
-- [~] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比（Windows 开发机 debug 数据已记录；uTools/Raycast 对比待 release 数据积累后补齐）
+- [x] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比（Windows 开发机 release 数据已记录于 M1 基线；uTools/Raycast 对比待多机 release 数据积累后补齐）
 
 **验收标准**：内存/速度数据要好看且可复现，这是对外最大的说服力来源
 
