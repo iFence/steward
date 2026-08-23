@@ -21,10 +21,10 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::{
-    cell::RefCell, collections::HashMap, ops::Range, process::Command, rc::Rc, sync::Arc,
-    time::Duration,
-};
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Duration};
+
+#[cfg(target_os = "windows")]
+use std::process::Command;
 
 use anyhow::{Context as _, Result};
 use global_hotkey::{
@@ -88,7 +88,9 @@ const RESULT_ROW_HEIGHT: f32 = 48.0;
 /// Maximum number of results shown before the drop-down scrolls.
 const MAX_RESULT_ROWS: usize = 8;
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const MENU_SETTINGS: &str = "settings";
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const MENU_QUIT: &str = "quit";
 
 /// Whether hiding the launcher destroys its window — reclaiming the
@@ -98,6 +100,7 @@ const MENU_QUIT: &str = "quit";
 /// DirectWrite text system are platform-level and stay allocated for the GPUI
 /// session — while re-summoning then costs ~150 ms. Keeping the window hidden
 /// re-summons in ~10-30 ms at the same memory, so hide is the default.
+#[cfg(target_os = "windows")]
 const CLOSE_ON_HIDE: bool = false;
 
 /// The launcher's accent color when no theme color is configured (Tinycast's
@@ -273,13 +276,14 @@ fn launch(path: &std::path::Path) -> Result<()> {
         // `Command::new` resolves the path; keep the child detached by not
         // holding a handle to it.
         let _child = Command::new(path).spawn().context("launch application")?;
+        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
         // Non-Windows launching is stubbed for M1.
+        let _ = path;
         anyhow::bail!("launching is not yet implemented on this platform");
     }
-    Ok(())
 }
 
 struct StewardApp {
@@ -748,6 +752,8 @@ impl Render for StewardApp {
         // available to the launcher.
         #[cfg(target_os = "windows")]
         platform::enable_ime(window);
+        #[cfg(not(target_os = "windows"))]
+        let _ = window;
 
         let result_count = self.results.visible_count(cx);
         let primary = cx.theme().primary;
