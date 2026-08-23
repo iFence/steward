@@ -1,12 +1,12 @@
 //! Steward desktop entry point.
 //!
 //! Startup is silent: the app registers a system tray icon (Windows/macOS)
-//! and the global summon hotkey (default `Ctrl+Alt+Space`, changeable in
-//! Settings), but opens no window. The launcher bar — a wide, short,
-//! borderless popup centered on the primary display — is summoned on demand
-//! via the hotkey or the tray icon, and hidden again with `Esc` (or the
-//! hotkey), or automatically when another application takes activation
-//! (clicking away).
+//! and two global hotkeys — summon (`Ctrl+Alt+Space`) and settings
+//! (`Ctrl+,`), both changeable in Settings — but opens no window. The launcher
+//! bar — a wide, short, borderless popup centered on the primary display — is
+//! summoned on demand via the hotkey or the tray icon, and hidden again with
+//! `Esc` (or the hotkey), or automatically when another application takes
+//! activation (clicking away).
 //!
 //! GPUI does not provide a system-level hotkey API, so registration is
 //! delegated to the `global-hotkey` crate and events are bridged into the
@@ -34,7 +34,7 @@ use global_hotkey::{
 use gpui::{
     actions, div, point, prelude::*, px, rgb, size, Anchor, Animation, AnimationExt, AnyElement,
     AnyWindowHandle, App, AppContext, AsyncApp, Bounds, Div, Element, ElementId,
-    ElementInputHandler, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
     InspectorElementId, InteractiveElement, KeyBinding, KeyDownEvent, Keystroke, LayoutId, Pixels,
     QuitMode, SharedString, Subscription, TitlebarOptions, UTF16Selection, Window,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowOptions,
@@ -116,6 +116,8 @@ const LANGUAGE_SETTING: &str = "language";
 /// Storage key for the persisted summon hotkey (a `HotKey::into_string()`
 /// string, e.g. `control+alt+Space`).
 const SUMMON_HOTKEY_SETTING: &str = "summon_hotkey";
+/// Storage key for the persisted settings-window hotkey (e.g. `control+comma`).
+const SETTINGS_HOTKEY_SETTING: &str = "settings_hotkey";
 /// Preset accent colors offered by the settings page.
 const ACCENT_PRESETS: [u32; 4] = [
     0x89b4fa, // sea blue (default)
@@ -340,6 +342,9 @@ struct LauncherState {
     /// The currently registered summon hotkey, kept so a change can unregister
     /// the old binding and the settings field can display the active one.
     summon_hotkey: Option<HotKey>,
+    /// The currently registered settings-window hotkey (`None` when no binding
+    /// could be registered at startup, e.g. it collided with another app).
+    settings_hotkey: Option<HotKey>,
 }
 
 impl LauncherState {
@@ -1063,6 +1068,7 @@ fn main() {
         scan_rx: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
+        settings_hotkey: None,
     }));
 
     // GPUI starts at boot and the launcher window is created hidden, so every
@@ -1256,10 +1262,10 @@ struct SettingsApp {
     accent: u32,
     /// Currently selected language code (e.g. `zh`), drives the dropdown.
     language: String,
-    /// Whether the summon-hotkey field is waiting for the next key
-    /// combination. While set, the window's keystroke interceptor turns the
-    /// next valid combination into the new hotkey.
-    recording_hotkey: bool,
+    /// Which global-hotkey field is waiting for the next key combination.
+    /// While set, the window's keystroke interceptor turns the next valid
+    /// combination into the new hotkey for that field.
+    recording: Option<HotkeyField>,
     /// Keeps the keystroke interceptor alive for the window's lifetime; the
     /// subscription is dropped (and the interceptor unregistered) when the
     /// settings window closes.
@@ -1276,17 +1282,23 @@ impl Render for SettingsApp {
         let view_language_set = view.clone();
         let view_hotkey = view.clone();
         let view_hotkey_toggle = view.clone();
+        let view_settings_hotkey = view.clone();
+        let view_settings_toggle = view.clone();
         let i18n = self.i18n.clone();
         let i18n_hotkey = i18n.clone();
+        let i18n_settings = i18n.clone();
         let state = self.state.clone();
         let state_hotkey = self.state.clone();
+        let state_settings = self.state.clone();
         let storage = self.storage.clone();
         let storage_language = storage.clone();
         let general_title = self.i18n.translate("settings-general");
         let autostart_label = self.i18n.translate("app-autostart");
         let theme_title = self.i18n.translate("settings-theme");
         let language_title = self.i18n.translate("settings-language");
-        let summon_hotkey_title = self.i18n.translate("settings-summon-hotkey");
+        let hotkeys_title = self.i18n.translate("settings-hotkeys");
+        let global_hotkey_title = self.i18n.translate("settings-global-hotkey");
+        let settings_hotkey_title = self.i18n.translate("settings-settings-hotkey");
         let about_title = self.i18n.translate("settings-about");
         let version_label = self.i18n.translate("settings-version");
         let language_options: Vec<(SharedString, SharedString)> = SUPPORTED_LANGUAGES
@@ -1313,130 +1325,121 @@ impl Render for SettingsApp {
                 SettingPage::new(general_title)
                     .default_open(true)
                     .icon(Icon::new(IconName::Settings2))
-                    .groups(vec![SettingGroup::new()
-                        .item(SettingItem::new(
-                            language_title,
-                            SettingField::render(move |_options, _window, cx| {
-                                let code = view_language_value.read(cx).language.clone();
-                                let current_label = SUPPORTED_LANGUAGES
-                                    .iter()
-                                    .find(|(c, _)| *c == code)
-                                    .map(|(_, name)| SharedString::from(*name))
-                                    .unwrap_or_else(|| SharedString::from(code.clone()));
-                                let on_select = {
-                                    let storage_language = storage_language.clone();
-                                    let i18n = i18n.clone();
-                                    let state = state.clone();
-                                    let view = view_language_set.clone();
-                                    move |code: SharedString, cx: &mut App| {
-                                        let _ = storage_language
-                                            .borrow()
-                                            .set_setting(LANGUAGE_SETTING, &code);
-                                        i18n.select_language(&code);
-                                        // Keep gpui-component's own widgets (the
-                                        // settings search box) in sync, and
-                                        // refresh the launcher's row type label.
-                                        gpui_component::set_locale(gpui_component_locale(&code));
-                                        update_launcher_label(&state, cx);
-                                        view.update(cx, |app, cx| {
-                                            app.language = code.to_string();
-                                            cx.notify();
-                                        });
-                                    }
-                                };
-                                dropdown_field(
-                                    "language-dropdown",
-                                    SharedString::from(code),
-                                    current_label,
-                                    language_options.clone(),
-                                    on_select,
-                                )
-                            }),
-                        ))
-                        .item(SettingItem::new(
-                            theme_title,
-                            SettingField::render(move |_options, _window, cx| {
-                                let accent = view_theme_value.read(cx).accent;
-                                let value = SharedString::from(format!("#{accent:06x}"));
-                                let current_label = theme_options
-                                    .iter()
-                                    .find(|(option_value, _)| *option_value == value)
-                                    .map(|(_, label)| label.clone())
-                                    .unwrap_or_else(|| value.clone());
-                                let on_select = {
-                                    let storage = storage.clone();
-                                    let view = view_theme_set.clone();
-                                    move |hex: SharedString, cx: &mut App| {
-                                        if let Some(color) = parse_hex_color(&hex) {
-                                            let _ = storage
+                    .groups(vec![
+                        SettingGroup::new()
+                            .item(SettingItem::new(
+                                language_title,
+                                SettingField::render(move |_options, _window, cx| {
+                                    let code = view_language_value.read(cx).language.clone();
+                                    let current_label = SUPPORTED_LANGUAGES
+                                        .iter()
+                                        .find(|(c, _)| *c == code)
+                                        .map(|(_, name)| SharedString::from(*name))
+                                        .unwrap_or_else(|| SharedString::from(code.clone()));
+                                    let on_select = {
+                                        let storage_language = storage_language.clone();
+                                        let i18n = i18n.clone();
+                                        let state = state.clone();
+                                        let view = view_language_set.clone();
+                                        move |code: SharedString, cx: &mut App| {
+                                            let _ = storage_language
                                                 .borrow()
-                                                .set_setting(THEME_COLOR_SETTING, &hex);
-                                            apply_steward_theme(cx, color);
+                                                .set_setting(LANGUAGE_SETTING, &code);
+                                            i18n.select_language(&code);
+                                            // Keep gpui-component's own widgets (the
+                                            // settings search box) in sync, and
+                                            // refresh the launcher's row type label.
+                                            gpui_component::set_locale(gpui_component_locale(
+                                                &code,
+                                            ));
+                                            update_launcher_label(&state, cx);
                                             view.update(cx, |app, cx| {
-                                                app.accent = color;
+                                                app.language = code.to_string();
                                                 cx.notify();
                                             });
                                         }
-                                    }
-                                };
-                                dropdown_field(
-                                    "theme-dropdown",
-                                    value,
-                                    current_label,
-                                    theme_options.clone(),
-                                    on_select,
-                                )
-                            }),
-                        ))
-                        .item(SettingItem::new(
-                            summon_hotkey_title,
-                            SettingField::render(move |_options, _window, cx| {
-                                // Click to enter recording mode; the window's
-                                // keystroke interceptor (registered in
-                                // `open_settings_window`) turns the next key
-                                // combination into the new hotkey.
-                                let view = view_hotkey.clone();
-                                let view_toggle = view_hotkey_toggle.clone();
-                                let state = state_hotkey.clone();
-                                let recording = view.read(cx).recording_hotkey;
-                                let label = if recording {
-                                    SharedString::from(
-                                        i18n_hotkey.translate("settings-summon-hotkey-recording"),
+                                    };
+                                    dropdown_field(
+                                        "language-dropdown",
+                                        SharedString::from(code),
+                                        current_label,
+                                        language_options.clone(),
+                                        on_select,
                                     )
-                                } else {
-                                    let hotkey = state
-                                        .borrow()
-                                        .summon_hotkey
-                                        .unwrap_or_else(default_summon_hotkey);
-                                    SharedString::from(format_hotkey(&hotkey))
-                                };
-                                Button::new("summon-hotkey-button")
-                                    .label(label)
-                                    .outline()
-                                    .w(px(150.0))
-                                    .on_click(move |_, _window, cx| {
-                                        view_toggle.update(cx, |app, cx| {
-                                            app.recording_hotkey = !app.recording_hotkey;
-                                            cx.notify();
-                                        });
-                                    })
-                                    .into_any_element()
-                            }),
-                        ))
-                        .item(SettingItem::new(
-                            autostart_label,
-                            SettingField::switch(
-                                |_cx: &App| autostart_enabled(),
-                                move |enabled: bool, cx: &mut App| {
-                                    // Write the registry, then re-render so the
-                                    // switch reflects the state that actually
-                                    // took effect.
-                                    set_autostart(enabled);
-                                    view_autostart.update(cx, |_, cx| cx.notify());
-                                },
-                            )
-                            .default_value(false),
-                        ))]),
+                                }),
+                            ))
+                            .item(SettingItem::new(
+                                theme_title,
+                                SettingField::render(move |_options, _window, cx| {
+                                    let accent = view_theme_value.read(cx).accent;
+                                    let value = SharedString::from(format!("#{accent:06x}"));
+                                    let current_label = theme_options
+                                        .iter()
+                                        .find(|(option_value, _)| *option_value == value)
+                                        .map(|(_, label)| label.clone())
+                                        .unwrap_or_else(|| value.clone());
+                                    let on_select = {
+                                        let storage = storage.clone();
+                                        let view = view_theme_set.clone();
+                                        move |hex: SharedString, cx: &mut App| {
+                                            if let Some(color) = parse_hex_color(&hex) {
+                                                let _ = storage
+                                                    .borrow()
+                                                    .set_setting(THEME_COLOR_SETTING, &hex);
+                                                apply_steward_theme(cx, color);
+                                                view.update(cx, |app, cx| {
+                                                    app.accent = color;
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }
+                                    };
+                                    dropdown_field(
+                                        "theme-dropdown",
+                                        value,
+                                        current_label,
+                                        theme_options.clone(),
+                                        on_select,
+                                    )
+                                }),
+                            ))
+                            .item(SettingItem::new(
+                                autostart_label,
+                                SettingField::switch(
+                                    |_cx: &App| autostart_enabled(),
+                                    move |enabled: bool, cx: &mut App| {
+                                        // Write the registry, then re-render so the
+                                        // switch reflects the state that actually
+                                        // took effect.
+                                        set_autostart(enabled);
+                                        view_autostart.update(cx, |_, cx| cx.notify());
+                                    },
+                                )
+                                .default_value(false),
+                            )),
+                        SettingGroup::new()
+                            .title(hotkeys_title)
+                            .item(SettingItem::new(
+                                global_hotkey_title,
+                                hotkey_setting_field(
+                                    HotkeyField::Summon,
+                                    view_hotkey,
+                                    view_hotkey_toggle,
+                                    state_hotkey,
+                                    i18n_hotkey,
+                                ),
+                            ))
+                            .item(SettingItem::new(
+                                settings_hotkey_title,
+                                hotkey_setting_field(
+                                    HotkeyField::Settings,
+                                    view_settings_hotkey,
+                                    view_settings_toggle,
+                                    state_settings,
+                                    i18n_settings,
+                                ),
+                            )),
+                    ]),
                 SettingPage::new(about_title)
                     .resettable(false)
                     .icon(Icon::new(IconName::Info))
@@ -1537,6 +1540,49 @@ fn dropdown_field(
         .into_any_element()
 }
 
+/// A settings field for a global hotkey: a fixed-width outline button showing
+/// the active binding, or the recording prompt while the window's keystroke
+/// interceptor waits for the next combination. Clicking toggles recording for
+/// `field` (the interceptor in `open_settings_window` applies the result).
+fn hotkey_setting_field(
+    field: HotkeyField,
+    view: Entity<SettingsApp>,
+    view_toggle: Entity<SettingsApp>,
+    state: Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+) -> SettingField<SharedString> {
+    SettingField::render(move |_options, _window, cx| {
+        let recording = view.read(cx).recording == Some(field);
+        let label = if recording {
+            SharedString::from(i18n.translate("settings-hotkey-recording"))
+        } else {
+            let hotkey = field
+                .active_hotkey(&state.borrow())
+                .unwrap_or_else(|| field.default_hotkey());
+            SharedString::from(format_hotkey(&hotkey))
+        };
+        let view_toggle = view_toggle.clone();
+        Button::new(match field {
+            HotkeyField::Summon => "summon-hotkey-button",
+            HotkeyField::Settings => "settings-hotkey-button",
+        })
+        .label(label)
+        .outline()
+        .w(px(150.0))
+        .on_click(move |_, _window, cx| {
+            view_toggle.update(cx, |app, cx| {
+                app.recording = if app.recording == Some(field) {
+                    None
+                } else {
+                    Some(field)
+                };
+                cx.notify();
+            });
+        })
+        .into_any_element()
+    })
+}
+
 /// Open (or focus) the settings window. Keeps `LauncherState.settings_window`
 /// in sync: the handle is cleared when the window is closed so a later menu
 /// click reopens it instead of touching a stale handle.
@@ -1602,11 +1648,11 @@ fn open_settings_window(
                     state: state.clone(),
                     accent,
                     language,
-                    recording_hotkey: false,
+                    recording: None,
                     _hotkey_subscription: None,
                 });
 
-                // While recording a new summon hotkey, capture the next key
+                // While a hotkey field is recording, capture the next key
                 // combination pressed in *this* window. The interceptor fires
                 // before all other key handling, so the captured combo never
                 // reaches the settings widget itself.
@@ -1614,11 +1660,12 @@ fn open_settings_window(
                 let hotkey_view = view.clone();
                 let hotkey_state = state.clone();
                 let subscription = cx.intercept_keystrokes(move |event, window, cx| {
-                    if window.window_handle() != settings_window_handle
-                        || !hotkey_view.read(cx).recording_hotkey
-                    {
+                    if window.window_handle() != settings_window_handle {
                         return;
                     }
+                    let Some(field) = hotkey_view.read(cx).recording else {
+                        return;
+                    };
                     let mods = &event.keystroke.modifiers;
                     let has_modifier = mods.control || mods.alt || mods.shift || mods.platform;
                     // A bare Escape cancels recording; modifier-only presses
@@ -1626,7 +1673,7 @@ fn open_settings_window(
                     if event.keystroke.key == "escape" && !has_modifier {
                         cx.stop_propagation();
                         hotkey_view.update(cx, |app, cx| {
-                            app.recording_hotkey = false;
+                            app.recording = None;
                             cx.notify();
                         });
                         return;
@@ -1635,9 +1682,9 @@ fn open_settings_window(
                         return;
                     };
                     cx.stop_propagation();
-                    apply_summon_hotkey(&hotkey_state, hotkey);
+                    apply_hotkey(&hotkey_state, field, hotkey);
                     hotkey_view.update(cx, |app, cx| {
-                        app.recording_hotkey = false;
+                        app.recording = None;
                         cx.notify();
                     });
                 });
@@ -1748,58 +1795,131 @@ fn set_autostart(_enabled: bool) -> bool {
     false
 }
 
-/// Default summon hotkey, used when nothing is persisted yet or the persisted
-/// value cannot be parsed.
-fn default_summon_hotkey() -> HotKey {
-    HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
+/// Which global hotkey a settings field edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotkeyField {
+    /// Summons the launcher bar.
+    Summon,
+    /// Opens the settings window.
+    Settings,
+}
+
+impl HotkeyField {
+    /// Storage key persisting this hotkey as a `HotKey::into_string()` value.
+    fn setting_key(self) -> &'static str {
+        match self {
+            HotkeyField::Summon => SUMMON_HOTKEY_SETTING,
+            HotkeyField::Settings => SETTINGS_HOTKEY_SETTING,
+        }
+    }
+
+    /// The currently registered hotkey for this field (`None` only when no
+    /// binding could be registered at startup, e.g. it collided with another
+    /// application).
+    fn active_hotkey(self, state: &LauncherState) -> Option<HotKey> {
+        match self {
+            HotkeyField::Summon => state.summon_hotkey,
+            HotkeyField::Settings => state.settings_hotkey,
+        }
+    }
+
+    /// The built-in binding, used when nothing is persisted yet or the
+    /// persisted value cannot be parsed.
+    fn default_hotkey(self) -> HotKey {
+        match self {
+            HotkeyField::Summon => {
+                HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
+            }
+            HotkeyField::Settings => HotKey::new(Some(Modifiers::CONTROL), Code::Comma),
+        }
+    }
 }
 
 /// Read the persisted summon hotkey, falling back to the default on a missing
 /// or unparseable value.
 fn read_summon_hotkey(state: &Rc<RefCell<LauncherState>>) -> HotKey {
+    read_hotkey(state, HotkeyField::Summon)
+}
+
+/// Read the persisted settings-window hotkey, falling back to the default on a
+/// missing or unparseable value.
+fn read_settings_hotkey(state: &Rc<RefCell<LauncherState>>) -> HotKey {
+    read_hotkey(state, HotkeyField::Settings)
+}
+
+fn read_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField) -> HotKey {
     state
         .borrow()
         .storage
         .borrow()
-        .get_setting(SUMMON_HOTKEY_SETTING)
+        .get_setting(field.setting_key())
         .and_then(|value| value.parse::<HotKey>().ok())
-        .unwrap_or_else(default_summon_hotkey)
+        .unwrap_or_else(|| field.default_hotkey())
 }
 
-/// Create the global hotkey manager, register the persisted summon hotkey (or
-/// the default when the persisted one fails), and store both in `state`. The
-/// manager is kept in `LauncherState` instead of leaked so the settings window
-/// can re-register the hotkey later; its hidden window delivers `WM_HOTKEY` to
-/// whichever message pump owns the event-loop thread.
+/// Create the global hotkey manager, register the persisted summon and settings
+/// hotkeys (falling back to the defaults when a persisted one fails), and store
+/// everything in `state`. The manager is kept in `LauncherState` instead of
+/// leaked so the settings window can re-register hotkeys later; its hidden
+/// window delivers `WM_HOTKEY` to whichever message pump owns the event-loop
+/// thread.
 fn setup_global_hotkey(state: &Rc<RefCell<LauncherState>>) -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("create global hotkey manager")?;
-    let mut hotkey = read_summon_hotkey(state);
-    if let Err(error) = manager.register(hotkey) {
+    let mut summon = read_summon_hotkey(state);
+    if let Err(error) = manager.register(summon) {
         eprintln!(
-            "failed to register configured summon hotkey {hotkey}: {error:#}; \
+            "failed to register configured summon hotkey {summon}: {error:#}; \
              falling back to the default"
         );
-        hotkey = default_summon_hotkey();
+        summon = HotkeyField::Summon.default_hotkey();
         manager
-            .register(hotkey)
+            .register(summon)
             .context("register default global hotkey")?;
     }
+    let settings = register_settings_hotkey(&manager, state);
     let mut state_ref = state.borrow_mut();
     state_ref.hotkey_manager = Some(manager);
-    state_ref.summon_hotkey = Some(hotkey);
+    state_ref.summon_hotkey = Some(summon);
+    state_ref.settings_hotkey = settings;
     Ok(())
 }
 
-/// Replace the active summon hotkey: unregister the old binding, register the
-/// new one, and persist it. When the new binding cannot be registered (e.g. it
-/// is already taken by another application) the old binding is restored and
-/// nothing is persisted. Returns whether the change took effect.
-fn apply_summon_hotkey(state: &Rc<RefCell<LauncherState>>, hotkey: HotKey) -> bool {
+/// Register the persisted settings hotkey, falling back to the default on a
+/// failure (including a collision with the summon hotkey). Returns `None` only
+/// when no candidate could be registered.
+fn register_settings_hotkey(
+    manager: &GlobalHotKeyManager,
+    state: &Rc<RefCell<LauncherState>>,
+) -> Option<HotKey> {
+    let configured = read_settings_hotkey(state);
+    let default = HotkeyField::Settings.default_hotkey();
+    let candidates = if configured == default {
+        vec![configured]
+    } else {
+        vec![configured, default]
+    };
+    for candidate in candidates {
+        match manager.register(candidate) {
+            Ok(()) => return Some(candidate),
+            Err(error) => {
+                eprintln!("failed to register settings hotkey {candidate}: {error:#}");
+            }
+        }
+    }
+    None
+}
+
+/// Replace the active hotkey for `field`: unregister the old binding, register
+/// the new one, and persist it. When the new binding cannot be registered (e.g.
+/// it is already taken by another application, or collides with the other
+/// global hotkey) the old binding is restored and nothing is persisted. Returns
+/// whether the change took effect.
+fn apply_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField, hotkey: HotKey) -> bool {
     let mut state_ref = state.borrow_mut();
     let Some(manager) = state_ref.hotkey_manager.as_ref() else {
         return false;
     };
-    let previous = state_ref.summon_hotkey;
+    let previous = field.active_hotkey(&state_ref);
     if previous == Some(hotkey) {
         return true;
     }
@@ -1811,25 +1931,31 @@ fn apply_summon_hotkey(state: &Rc<RefCell<LauncherState>>, hotkey: HotKey) -> bo
             let _ = state_ref
                 .storage
                 .borrow()
-                .set_setting(SUMMON_HOTKEY_SETTING, &hotkey.to_string());
-            state_ref.summon_hotkey = Some(hotkey);
+                .set_setting(field.setting_key(), &hotkey.to_string());
+            match field {
+                HotkeyField::Summon => state_ref.summon_hotkey = Some(hotkey),
+                HotkeyField::Settings => state_ref.settings_hotkey = Some(hotkey),
+            }
             true
         }
         Err(error) => {
-            eprintln!("failed to register summon hotkey {hotkey}: {error:#}");
+            eprintln!("failed to register {field:?} hotkey {hotkey}: {error:#}");
             if let Some(previous) = previous {
                 let _ = manager.register(previous);
             }
-            state_ref.summon_hotkey = previous;
+            match field {
+                HotkeyField::Summon => state_ref.summon_hotkey = previous,
+                HotkeyField::Settings => state_ref.settings_hotkey = previous,
+            }
             false
         }
     }
 }
 
 /// Convert a GPUI keystroke into a global `HotKey`. Requires at least one
-/// modifier (control/alt/shift/super) so the summon hotkey never hijacks a
-/// plain key, and a main key that maps to a physical `Code` (modifier-only
-/// presses and unmappable keys return `None`).
+/// modifier (control/alt/shift/super) so a global hotkey never hijacks a plain
+/// key, and a main key that maps to a physical `Code` (modifier-only presses
+/// and unmappable keys return `None`).
 fn keystroke_to_hotkey(keystroke: &Keystroke) -> Option<HotKey> {
     let mut parts: Vec<&str> = Vec::with_capacity(4);
     let mods = &keystroke.modifiers;
@@ -1914,7 +2040,7 @@ fn gpui_key_to_hotkey_token(key: &str) -> Option<String> {
     None
 }
 
-/// Human-readable summon hotkey label for the settings field, e.g.
+/// Human-readable global hotkey label for a settings field, e.g.
 /// `Ctrl + Alt + Space`.
 fn format_hotkey(hotkey: &HotKey) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(5);
@@ -1967,7 +2093,25 @@ fn spawn_event_poll_task(
         state.borrow().apply_scan_results();
 
         while let Ok(event) = hotkey_events.try_recv() {
-            if event.state == HotKeyState::Pressed {
+            if event.state != HotKeyState::Pressed {
+                continue;
+            }
+            // `HotKey::id` is derived from the modifier/key combination, so a
+            // registered hotkey can be matched to its event by id alone.
+            let (is_settings, is_summon) = {
+                let state_ref = state.borrow();
+                (
+                    state_ref
+                        .settings_hotkey
+                        .is_some_and(|hotkey| hotkey.id() == event.id),
+                    state_ref
+                        .summon_hotkey
+                        .is_some_and(|hotkey| hotkey.id() == event.id),
+                )
+            };
+            if is_settings {
+                toggle_settings_window(&state, i18n.clone(), cx);
+            } else if is_summon {
                 toggle_launcher(&state, i18n.clone(), cx);
             }
         }
@@ -1989,19 +2133,7 @@ fn spawn_event_poll_task(
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         while let Ok(event) = menu_events.try_recv() {
             match event.id().as_ref() {
-                MENU_SETTINGS => {
-                    let state_ref = state.borrow();
-                    if let Some(handle) = state_ref.settings_window.as_ref() {
-                        let _ = handle.update(cx, |_, window, cx| {
-                            cx.activate(true);
-                            window.refresh();
-                        });
-                    } else {
-                        drop(state_ref);
-                        let handle = cx.update(|cx| open_settings_window(cx, i18n.clone(), &state));
-                        state.borrow_mut().settings_window = Some(handle);
-                    }
-                }
+                MENU_SETTINGS => toggle_settings_window(&state, i18n.clone(), cx),
                 MENU_QUIT => cx.update(|cx| cx.quit()),
                 _ => {}
             }
@@ -2014,6 +2146,26 @@ fn spawn_event_poll_task(
     .detach();
 
     Ok(())
+}
+
+/// Show the settings window, focusing it if it is already open (reopening it
+/// if it was closed). Shared by the tray menu and the settings global hotkey.
+fn toggle_settings_window(
+    state: &Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+    cx: &mut AsyncApp,
+) {
+    let state_ref = state.borrow();
+    if let Some(handle) = state_ref.settings_window.as_ref() {
+        let _ = handle.update(cx, |_, window, cx| {
+            cx.activate(true);
+            window.refresh();
+        });
+    } else {
+        drop(state_ref);
+        let handle = cx.update(|cx| open_settings_window(cx, i18n, state));
+        state.borrow_mut().settings_window = Some(handle);
+    }
 }
 
 /// Summon or dismiss the launcher bar. Reopens the window if it was closed.
@@ -2572,8 +2724,12 @@ mod tests {
 
     #[test]
     fn format_hotkey_is_human_readable() {
-        let default = default_summon_hotkey();
+        let default = HotkeyField::Summon.default_hotkey();
         assert_eq!(format_hotkey(&default), "Ctrl + Alt + Space");
+        let settings = HotkeyField::Settings.default_hotkey();
+        assert_eq!(format_hotkey(&settings), "Ctrl + Comma");
+        assert_eq!(settings.to_string(), "control+Comma");
+        assert_eq!(settings.to_string().parse::<HotKey>().unwrap(), settings);
         let combo = HotKey::new(Some(Modifiers::SHIFT | Modifiers::SUPER), Code::KeyA);
         assert_eq!(format_hotkey(&combo), "Win + Shift + A");
     }

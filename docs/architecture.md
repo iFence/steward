@@ -140,6 +140,14 @@ steward/
 
 ## 决策记录
 
+### 2026-08-23（全局快捷键组 + 设置快捷键）
+
+- 热键设置收拢为独立"快捷键"选项组（`SettingGroup::title`），原"全局唤醒快捷键"改名"全局快捷键"（`settings-summon-hotkey` → `settings-global-hotkey`），并新增"设置快捷键"（`settings-settings-hotkey`），默认 `Ctrl+,`（`HotKey::new(CONTROL, Code::Comma)`，持久化串 `control+Comma`），全局按下即打开/聚焦设置窗口。
+- 引入 `HotkeyField` 枚举（`Summon` / `Settings`），承载热键的存储键（`summon_hotkey` / `settings_hotkey`）、当前生效值（`LauncherState.summon_hotkey` / `settings_hotkey`）与默认值；`apply_summon_hotkey` 泛化为 `apply_hotkey(state, field, hotkey)`（注销旧键 → 注册新键 → 按字段持久化 → 失败回滚旧键），录制拦截逻辑按 `recording: Option<HotkeyField>` 复用同一字段渲染。
+- `setup_global_hotkey` 同时注册两个热键；设置热键先试持久化值，失败（被占用或与唤醒热键撞键）回退默认，两者皆失败则置 `None`（该键项显示默认值）。
+- 事件路由改为按 `HotKey::id()`（由修饰键位 + 主键确定的整数）比对 `event.id` 区分唤醒/设置，不再无条件切换启动器；`toggle_settings_window` 从托盘 `MENU_SETTINGS` 分支抽为公共函数，菜单与热键共用。
+- i18n 调整（7 语言）：`settings-summon-hotkey-recording` → `settings-hotkey-recording`（两字段共用），新增 `settings-hotkeys` / `settings-settings-hotkey`。
+
 ### 2026-08-23（全局激活快捷键设置项）
 
 - 唤醒热键从硬编码 `Ctrl+Alt+Space` 改为可配置：设置面板"通用"页新增"全局唤醒快捷键"项，点击按钮进入录制态，下一次在该窗口内按下的组合键即为新热键（`Esc` 取消，仅修饰键按下忽略）；要求至少含 Ctrl/Alt/Shift/Win 之一，避免全局热键劫持单键输入。
