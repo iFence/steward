@@ -140,6 +140,14 @@ steward/
 
 ## 决策记录
 
+### 2026-08-20（设置面板组件化 + 托盘菜单收拢）
+
+- 设置窗口改用 `gpui_component::setting` 的 `Settings` 组件：左侧可搜索/缩放的侧栏 + 右侧页面，页面由 `SettingPage → SettingGroup → SettingItem → SettingField` 层级组成。当前两页——"通用"（开机自动启动 Switch，读注册表真值、写后以实际生效状态重渲染）与"关于"（版本号）；`Settings` 内置搜索、重置按钮（`default_value(false)` 使开启自启后可一键复位）。窗口改为 720×440、可缩放。
+- 组件栈初始化：`steward_ui_components::init_components` 从仅初始化主题改为调用 `gpui_component::init` 完整初始化（global state / root / popover / menu / list 等），`Settings` 的搜索输入、下拉、tooltip 依赖这些全局；设置窗口根视图包一层 `gpui_component::Root`（弹层/通知/tooltip 的宿主，`Settings` 的 dropdown 与 reset tooltip 需要）。app crate 直接依赖 `gpui-component.workspace`。
+- 托盘菜单收拢：移除"开机自动启动"勾选项及 `MENU_AUTOSTART` 路由、`AutostartItem` 句柄跨窗口同步机制，菜单只剩"设置/分隔线/退出"；自启开关统一收进设置面板（`set_autostart`/`autostart_enabled` 注册表逻辑保留在 app crate）。
+- 托盘菜单深色：原生菜单无法套 GPUI 主题，改在启动早期调用 `uxtheme` 未文档化 API（序数 135 `SetPreferredAppMode(ForceDark)` + 136 `FlushMenuThemes`，与 win32-darkmode/tao 同法）强制进程级深色，使托盘右键菜单与设置窗口标题栏跟随深色；`windows-sys` 增加 `Win32_System_LibraryLoader` feature。
+- i18n 新增 `settings-general` / `settings-general-description` / `settings-startup` / `settings-autostart-description` / `settings-about` / `settings-about-description` / `settings-version`（7 语言）。
+
 ### 2026-08-19（M0 建仓）
 
 - `gpui` 不从 crates.io 引入，直接从 Zed 仓库 git 引用（`git = "https://github.com/zed-industries/zed", package = "gpui"`），提交由 `Cargo.lock` 锁定（当前 `7a7c3e1d`）。
@@ -179,7 +187,7 @@ steward/
 
 ### 2026-08-19（M1 应用启动器 MVP）
 
-- 应用扫描（Windows 优先）：`core-engine` 的 `WinAppsScanner` 遍历当前用户与全体用户的开始菜单 `Programs` 目录，递归收集 `.lnk`，经 ShellLink COM（`IShellLinkW`/`IPersistFile`）解析目标，只保留直接指向 `.exe` 的去重条目；`GetPath` 不带 `SLGP_RAWPATH`（flags 0），让 ShellLink 展开 `%windir%` 等环境变量，保证路径可启动、可取图标；其他平台返回空 `NoopScanner`（M4 补齐）。`platform_scanner()` 为平台分发入口。
+- 应用扫描（Windows 优先）：`core-engine` 的 `WinAppsScanner` 遍历当前用户与全体用户的开始菜单 `Programs` 目录，递归收集 `.lnk`，经 ShellLink COM（`IShellLinkW`/`IPersistFile`）解析目标；`GetPath` 不带 `SLGP_RAWPATH`（flags 0）展开 `%windir%` 等环境变量；目标为空的 shell 命名空间快捷方式（如控制面板）回退保留 `.lnk` 本身，由 ShellExecute 解析启动。另用 `IShellItem` 枚举 `shell:AppsFolder` 补充 UWP 应用（计算器、设置、画图、终端等），路径归一化为 `shell:AppsFolder\<AUMID>`，按名称去重（保留 `.lnk`/exe 条目）；其他平台返回空 `NoopScanner`（M4 补齐）。
 - 冷启动加速（缓存优先）：启动时先跑一次扫描建索引用 `mark_seen` 写回 SQLite；若扫描为空（如平台未实现）则回退读 `cached_apps()`，保证冷启动不因扫描失败而阻塞。
 - 模糊匹配 + 频率加权排序：`nucleo::Matcher::new(Config::DEFAULT)`（大小写不敏感、拉丁归一化）逐条 `fuzzy_match`；排序分 = 模糊分 + `20 * ln(1 + 使用次数)`，空查询按使用次数倒序。满足“Windows 优先 + 接通启动 + 模糊分×频率加权”的验收口径。
 - 结果列表 UI：`ui-components` 用 `gpui-component` 的 `ListState`/`ListDelegate` 做虚拟滚动（固定行高 48px，最多展示 8 行后滚动）。一个关键约束：`Context<T>` 只实现 `AppContext` 而非 `VisualContext`，因此结果更新走 `Entity::update`（无需 window），只有选中/确认需要 window 时再以参数传入；`set_results` 无 window 即可刷新。
@@ -192,6 +200,61 @@ steward/
 - DPI 感知：应用此前未声明 DPI 感知，在 200% 缩放（192 DPI）显示器上被系统按 96 DPI 虚拟化放大/模糊。现于 `main` 启动时调用 `SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)`，让启动器像其他应用一样**跟随系统缩放**：尺寸均为逻辑像素（760×60 条、48px 行、字号 rem），GPUI 按显示器 scale 渲染为物理像素（200% 下 1520×120/888）。窗口创建尺寸被 GPUI Windows `check_given_bounds` 在显示器边角误判拒绝时，show 时由平台层强制设置 `760 × 窗口 DPI/96` 物理宽 + 当前结果高度。
 - 动态窗口高度：`SetWindowPos` 在窗口可见时直接改高会让 DirectX 渲染器 viewport 失步，下拉区域呈现清屏白色（即"白色区域遮挡"的真身）；改为调用 GPUI 自身的 `window.resize()`（经前台 executor 异步执行），渲染器同步正常。窗口高度公式（`60 + 48 × min(结果数, 8)`，按 DPI 换算）不变。
 - 结果列表渲染：`gpui-component` 的 `List`/虚拟列表在 Windows 上渲染损坏（行文字缺失或变淡、下拉右下角纯白 quad）。M1 结果数上限 8 行，不需要虚拟化，`results_list` 改为简单 div 堆叠列表（滚动容器 + 行高/字号按 DPI 缩放），选中行为 `#89b4fa` 20% 透明度 + 蓝色边框，悬停为 `#313244`；`ResultList`/`ResultListDelegate` 公开 API 保持兼容。
-- 应用图标：`app_icons`（Windows）用 `SHGetFileInfoW(SHGFI_ICON | SHGFI_LARGEICON)` 取 exe 的 shell 大图标，`DrawIconEx` 画进 32 位 DIB 保留透明通道，转 RGBA 后用 `image` 编码 PNG 包装为 `gpui::Image`；按路径缓存，只对可见 8 行提取（入口先展开路径中的 `%VAR%` 作防御），行左侧以 24 逻辑 px 渲染；行右侧不再显示可执行文件路径，改为本地化的类型标签（`application`，如"应用"），经 `ResultListDelegate::type_label` 传入。
+- 应用图标：`app_icons`（Windows）用 `SHGetFileInfoW(SHGFI_ICON | SHGFI_LARGEICON)` 取 exe 的 shell 大图标，`DrawIconEx` 画进 32 位 DIB 保留透明通道，转 RGBA 后用 `image` 编码 PNG 包装为 `gpui::Image`；按路径缓存（入口先展开 `%VAR%`），搜索结果的全部行在后台线程异步补全图标后经 `set_icons` 刷新，滚动到任意行都有图标；`shell:` 的 UWP 别名当前取不到 shell 图标（留待后续）。行左侧以 24 逻辑 px 渲染；行右侧显示本地化类型标签（`application`，如"应用"）。
 - 中文输入：启动器查询框实现 GPUI `EntityInputHandler`（查询为单行文档，IME 组字走 `replace_and_mark_text_in_range`、提交走 `replace_text_in_range`），渲染时组字区加下划线；`LauncherInputElement` 在 paint 阶段注册输入处理器。Windows 上 GPUI 的 IME 上下文关联依赖 WM_PAINT 且会因输入处理器被临时取走而误禁用，故每帧调用 `ImmAssociateContextEx(IACE_DEFAULT)` 重新关联，保证拼音等输入法可组字；组字期间编辑/导航键（含 Enter/Esc）交给输入法，不作启动/隐藏处理。IME 提交在光标处插入、组字只替换组字区（带单测覆盖"你好 + 说话 → 你好说话"），不会整体替换查询。
 - 布局与视觉：结果列表包在 `h(result_height) + mx(margin)` 固定高度容器内，输入行不再被压缩；`init_theme` 切换 `ThemeMode::Dark`；行内应用名与路径均省略号截断；保持不透明矩形窗口（圆角/透明化留待后续）。呼出时自动执行一次空查询（按使用频率排序），打开即显示常用应用。
+- 结果列表滚动：结果行容器（`overflow_y_scroll` + `track_scroll`）随选中行滚动——`select_relative` 按行高与视口高度直接计算偏移并 `set_offset`，超过 8 行后用下/上键继续导航会自动滚动，选中行始终可见。
+
+### 2026-08-20（MSI 安装包）
+
+- 用 `cargo wix`（WiX Toolset v3.14）打 MSI：`crates/app/wix/main.wxs` 定义产品"Steward"（perMachine、MajorUpgrade、Program Files、Add/Remove 程序图标复用 `assets/icon.ico`、开始菜单快捷方式），`wix/License.rtf` 由 `cargo wix init` 从 MIT 许可生成。
+- 打包入口 `scripts/package-msi.ps1`（`cargo wix -p steward-app -L -sval`；`-sval` 跳过 ICE 校验，避免在无 Windows Installer 服务的环境失败）。License.rtf 的路径写为 `../../crates/app/wix/License.rtf`，兼容 candle（包目录）与 light（`target/wix`）的不同工作目录。
+- `release.yml` 的手动发布入口启用 Windows job：装 WiX 与 cargo-wix 后执行打包脚本并上传 MSI 产物。
+
+### 2026-08-20（托盘右键菜单完善）
+
+- 菜单结构：禁用态品牌项 `Steward` 置顶，分隔线后依次为"显示 / 隐藏 Steward"、"开机自动启动"（勾选项）、"刷新应用列表"，再一条分隔线后为"退出 Steward"；文案全部走 i18n（`app-toggle`/`app-autostart`/`app-refresh`/`app-quit`），品牌名 `Steward` 不翻译。
+- 样式统一口径：系统托盘菜单是原生控件，muda 在 Windows 上只保存 `IconMenuItem` 的图标字段、不绘制位图，GPUI 深色主题无法套进原生菜单；因此"样式统一"落在文案、结构与状态上（品牌头、分组分隔线、勾选态），不尝试改原生配色/图标。
+- 开机自启：Windows 读写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（`RegGetValueW`/`RegSetKeyValueW`/`RegDeleteKeyValueW`，值名 `Steward`，值为 `current_exe()` 路径；`windows-sys` 增加 `Win32_System_Registry` feature）。启动时以注册表真值初始化勾选；点击后 muda 已自动翻转原生勾选，事件处理以注册表写入后的实际状态为准再同步勾选（`set_checked`），写失败时勾选回弹。非 Windows 平台该项禁用、事件为空操作（M4 补齐）。
+- 刷新应用列表：重新执行 `platform_scanner().scan()` + `mark_seen`，重建 `Engine` 索引，并在已打开的窗口上以 `AnyWindowHandle::downcast::<StewardApp>` 拿到根视图后重跑当前查询（结果、图标、下拉高度一起刷新）；窗口未打开时无需处理，下次呼出本来就重新扫描。
+- 事件路由：`setup_tray` 返回自动启动勾选项句柄（`Option<AutostartItem>`）注入 `setup_global_hotkey` 的 10ms 轮询任务，`MENU_AUTOSTART`/`MENU_REFRESH` 与既有 `MENU_TOGGLE`/`MENU_QUIT` 同路处理。
+
+### 2026-08-20（下拉高度修复 + 深色托盘图标 + 托盘菜单精简与设置窗口）
+
+- 下拉高度：根因是两个叠加的尺寸缺口——`launcher_height` 漏算上下两条 4px 拖拽边距，且 Windows 原生边框未计入尺寸，客户端区域总比设计矮约 14.5 逻辑 px，flex 列会压缩下拉容器、把最后一行裁掉（结果多时第 8 行只剩约 70%，即"匹配多反而矮"）。修复：`launcher_height = 60 + 2×4 + 结果高度`；Windows 平台 `platform::resize` 用 `GetWindowRect - GetClientRect` 实测边框差并加回，保证客户端区域精确等于请求的逻辑尺寸（实测 8 行时 client = 760×452）。`window.resize`（GPUI 自带）在该锁定版本内部 scale/边框处理不可靠，Windows 搜索路径改用平台层 resize，`WM_SIZE` 照常驱动 DirectX viewport 同步。
+- 深色托盘图标：新增 `scripts/generate-icons.py`，把 `assets/steward.png` 的字形重绘为启动器强调蓝 `#89b4fa`，放在 `#232332` 圆角底上，输出 `assets/steward-dark.png`（macOS 用）与多尺寸 `assets/icon-dark.ico`；`app.rc` 增加资源 `2 ICON`，Windows 托盘改从资源 2 加载（资源 1/32512 仍是 exe/任务栏图标）。
+- 托盘菜单精简：去掉顶部品牌项、显示/隐藏、刷新，菜单仅保留"设置"、"开机自动启动"（勾选）与"退出"（i18n `app-quit` 去掉了 Steward 字样）；左键单击托盘与全局热键的显隐功能不变。删除 `MENU_TOGGLE`/`MENU_REFRESH` 及 `refresh_apps`，i18n 移除 `app-toggle`/`app-refresh`，新增 `app-settings`（7 语言）。
+- 设置窗口：托盘"设置"打开一个小 GPUI 窗口（340×180，普通窗口带标题栏，深色 `#232332` 背景），当前仅含"开机自动启动"开关；与托盘勾选项共享 `AutostartItem` 句柄，任一侧切换都同步另一侧。窗口句柄存 `LauncherState.settings_window`，关闭时按 `window_id` 精确清理，再次点击菜单可重新打开/聚焦。
+
+### 2026-08-20（键盘选中/滚动修复）
+
+- 症状：键盘下键前 8 行内高亮正常下移，越过第 8 行后出现"页面在滚、选中行位置错乱/不再下移"。
+- 根因：锁定版 GPUI 的 Windows 绘制路径里，`overflow_y_scroll` 容器的**裁剪是失效的**——子元素全部按原样绘制，不被容器裁剪。结果列表（161 行 × 48px）在滚动后从容器底部溢出，填满整个窗口（用 PrintWindow 逐帧验证：截图中可见 12~16 行、高亮出现在窗口中部/顶部等错误位置）。之前的 `select_relative` 用 `ScrollHandle::set_offset` + `track_scroll` 滚动容器，状态数学完全正确，但绘制层不裁剪导致视觉错乱。
+- 修复：彻底去掉滚动容器/`ScrollHandle`，改为**手工可见窗口**：`ResultListState::visible_range()` 按当前选中项计算 8 行切片（`top = selected.saturating_sub(7)`），渲染时只输出这 8 行，容器不再有溢出，也不需要裁剪。高亮永远落在选中行上；超过 8 行后选中行停在底部、内容按行切换，符合启动器常规交互。同时修掉"首次按下键选中第 2 行"的问题：`selected=None` 视为 -1，第一次 Down 落在第 0 行。
+- 验证：用 `PostMessage(WM_KEYDOWN/UP)` 注入方向键 + PrintWindow 逐帧截图测量高亮位置：第 1 次按下高亮在第 1 行（130–221）、第 7 次在第 7 行（706–797）、第 8/12/20 次均在第 8 行底部（802–893），第 8 行以下无任何溢出内容。
+
+### 2026-08-20（可见态 resize 回归修复）
+
+- 症状回归：搜索路径在 Windows 上改回同步 `platform::resize`（`SetWindowPos`）后，"窗口可见时结果数变化"会再次触发渲染错乱——输入约 3 个汉字或 5 个字母（结果数开始收窄、窗口需实时变高/变矮）时，输入文字消失或错位、结果区不渲染、下拉底部出现白色条；输入"控制面板"能出结果时同样在应用下方出现白色条。
+- 根因：同步 `SetWindowPos` 在输入派发（`WM_CHAR`/`WM_IME_*`）调用栈内直接改窗口高度，会让锁定版 GPUI 的 Windows DirectX 渲染器 viewport 失步（08-19 决策已记录过该问题及异步 `window.resize` 修复，08-20 为精确客户端尺寸换回同步 resize 造成回归）。
+- 修复：`search()` 在 Windows 分支不再调用同步 `platform::resize`，统一改用 GPUI 自身的异步 `window.resize`（前台 executor 执行 `SetWindowPos`，WM_SIZE 在事件循环干净点到达，渲染器正确同步）；后端用 `border_offset`（`GetWindowRect − GetClientRect`，与手测 13×7 边框同源）补偿原生边框，客户端尺寸仍精确等于 `760 × launcher_height(count)`。`LauncherState` 记录 `last_applied_height`，目标高度未变化时跳过 resize，避免 IME 组字期间每个拼音按键重复触发。同步 `platform::resize` 仅保留在呼出/隐藏路径（隐藏态 resize 已验证安全）；`after_confirm` 改为先隐藏再复位高度。
+- 验证：`cargo test -p steward-app`（IME 单测）、`cargo clippy -D warnings`；注入脚本（Add-Type + `PostMessage` + PrintWindow）验证 5 字母/3 汉字/`控制面板` 场景下客户端尺寸 = 760 × `launcher_height(count)`、底部无白色像素、输入文字对齐可见。
+
+### 2026-08-20（启动后重新呼出显示常用应用 + UWP 图标）
+
+- 症状：选中应用回车启动后，再次呼出启动器结果列表为空（需按退格才会重新出现常用应用）；且列表里部分应用（主要是 `shell:AppsFolder` 的 UWP 应用）不显示图标。
+- 根因一：`after_confirm` 清空查询与结果后直接隐藏，而"常用应用"只在窗口创建时播种一次（`open_launcher_window` 里的一次空查询），启动一次后每次呼出都只剩空条。
+- 修复一：`after_confirm` 清空查询后重新执行一次空查询 `search()`，把常用应用重新播种进结果列表（窗口此时隐藏，尺寸同步由 `show_launcher` 在下次呼出时应用）。
+- 根因二：图标提取只走 `SHGetFileInfoW`，对 `shell:` 解析名（UWP 别名）无法解析，恒返回 `None`。
+- 修复二：`app_icons` 增加 `shell:` 分支——`SHCreateItemFromParsingName` + `IShellItemImageFactory::GetImage`（32px、`SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK`）取 32 位 DIB 位图，`GetObjectW` 取尺寸、`GetDIBits` 读 BGRA 转 RGBA 后 PNG 编码；函数自带 COM 初始化（`CoInitializeEx(STA)` + 配对 `CoUninitialize`），不依赖 GPUI 启动时的 OLE 初始化。app crate 新增 target 依赖 `windows = "0.61"`（与 core-engine 同版本）。
+- 验证：单测覆盖 `C:\Windows\System32\notepad.exe` 与全部 `shell:AppsFolder` 别名（本机 104 个别名全部提取成功且含可见像素）；实机注入验证"选择→Enter 启动→热键重新呼出"后窗口恢复 773×459（8 行常用应用）。
+
+### 2026-08-20（启动架构回退：恢复启动即加载 GPUI，保留缓存/构建优化）
+
+- **回退惰性加载**：曾实现 Windows"常驻态去 GPUI"（原生托盘/热键 + 消息泵，首呼才 `application().run`），实测首呼 0.5–4.5 s（一次性 DirectX/DirectWrite/着色器初始化），对启动器不可接受；已回退为 `application().run` 启动即加载、隐藏建窗，呼出即 `ShowWindow`（首呼 14 ms）。双进程与"空闲预热"都只能转移这笔成本，无法消除，暂不采用。
+- **保留：`QuitMode::Explicit`**：GPUI Windows 后端默认"最后一个窗口关闭即退出"，与托盘外壳模型冲突（Esc/失焦/Alt+F4 关窗会杀进程）；显式 `cx.set_quit_mode(QuitMode::Explicit)`，只有托盘"退出"才结束进程。
+- **保留：共享状态上移**：`Engine`（索引 + pinyin haystack）、图标缓存、后台扫描结果通道在 `LauncherState`，窗口重建（Alt+F4 后重呼）不再重扫、不重取图标。
+- **保留：扫描缓存优先**：SQLite `settings` 表新增 `last_scan` 时间戳（24h TTL）；冷启动直接读缓存建索引，缓存缺失/过期时后台线程全量扫描，结果经通道由前台轮询任务落库（`mark_seen` 改为按 path 增量 upsert + 删除消失项，替代全表重写）。
+- **保留：窗口隐藏策略（实测后定）**：关闭窗口回收极少——DirectX 设备与 DirectWrite 字体是平台级资源，GPUI 会话内常驻——而重建窗口使二次呼出增加 ~150 ms；默认 `CLOSE_ON_HIDE=false`（隐藏窗口，二次呼出 21 ms）。
+- **保留：查询路径**：`nucleo::Matcher` 从每次查询新建改为 `Engine` 内复用。
+- **保留：release 构建**：`[profile.release] lto="thin"`、`codegen-units=1`、`panic="abort"`、`strip=true`，二进制 26.7 MB → 17.8 MB。

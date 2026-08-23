@@ -4,7 +4,9 @@
 //! cache (so cold start can skip full file scanning until it changes) and per-
 //! application usage frequency used to rank launcher results.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
@@ -12,6 +14,12 @@ use steward_core_engine::AppEntry;
 
 /// The on-disk database file name inside the data directory.
 const DB_FILE: &str = "steward.db";
+/// How long a completed app scan is trusted before the next boot re-scans in
+/// the background. Cold start reads the cache within this window and never
+/// blocks on the scanner.
+const SCAN_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Settings-table key storing the UNIX timestamp of the last full scan.
+const LAST_SCAN_SETTING: &str = "last_scan";
 
 /// Thin wrapper over a SQLite connection with a stable application schema.
 pub struct Storage {
@@ -61,9 +69,53 @@ impl Storage {
                     path TEXT PRIMARY KEY,
                     count INTEGER NOT NULL DEFAULT 0,
                     last_used INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );",
             )
             .context("run schema migrations")
+    }
+
+    /// Read a persisted application setting, or `None` when it was never set.
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", (key,), |row| {
+                row.get::<_, String>(0)
+            })
+            .ok()
+    }
+
+    /// Persist an application setting (insert or replace).
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            .context("set setting")?;
+        Ok(())
+    }
+
+    /// Whether the cached app index can be trusted without a re-scan: the
+    /// cache is fresh for [`SCAN_CACHE_TTL`] after the last successful scan.
+    pub fn is_cache_fresh(&self) -> bool {
+        self.last_scan()
+            .is_some_and(|t| t.elapsed().map(|age| age < SCAN_CACHE_TTL).unwrap_or(false))
+    }
+
+    /// Timestamp of the last completed scan, if any.
+    fn last_scan(&self) -> Option<SystemTime> {
+        self.get_setting(LAST_SCAN_SETTING)
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
+    /// Record that a full scan completed just now.
+    pub fn touch_scan(&self) -> Result<()> {
+        self.set_setting(LAST_SCAN_SETTING, &unix_seconds().to_string())
     }
 
     /// Record that `path` was launched: bump the count and update last-used.
@@ -117,24 +169,53 @@ impl Storage {
             .context("collect cached apps")
     }
 
-    /// Replace the set of scanned apps. Simple approach for M1: clear and
-    /// re-insert on each full scan.
+    /// Merge the result of a full scan into the cache: upsert seen apps and
+    /// drop entries that existed in a previous scan but were not seen this
+    /// time. Unlike the previous clear-and-reinsert approach this avoids
+    /// rewriting unchanged rows on every boot, and it records the scan time
+    /// so subsequent cold starts can read the cache without re-scanning.
     pub fn mark_seen(&mut self, apps: &[AppEntry]) -> Result<()> {
         let now = unix_seconds();
-        self.conn
-            .execute("DELETE FROM apps", [])
-            .context("clear apps cache")?;
         let tx = self.conn.transaction().context("begin scan transaction")?;
         {
             let mut stmt = tx
-                .prepare("INSERT INTO apps(path, name, last_seen) VALUES (?1, ?2, ?3)")
-                .context("prepare app insert")?;
+                .prepare(
+                    "INSERT INTO apps(path, name, last_seen) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(path) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen",
+                )
+                .context("prepare app upsert")?;
+            let mut seen: HashSet<String> = HashSet::with_capacity(apps.len());
             for app in apps {
-                stmt.execute((path_key(&app.path), &app.name, now))
-                    .context("insert app cache")?;
+                let key = path_key(&app.path);
+                stmt.execute((&key, &app.name, now))
+                    .context("upsert app cache")?;
+                seen.insert(key);
+            }
+            // Remove cached entries that were not present in this scan
+            // (deleting by path instead of by timestamp so scans in the same
+            // second still prune correctly).
+            let existing = {
+                let mut all = tx
+                    .prepare("SELECT path FROM apps")
+                    .context("prepare cached paths query")?;
+                let paths = all
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .context("query cached paths")?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .context("collect cached paths")?;
+                paths
+            };
+            let mut remove = tx
+                .prepare("DELETE FROM apps WHERE path = ?1")
+                .context("prepare stale app delete")?;
+            for path in existing {
+                if !seen.contains(&path) {
+                    remove.execute([&path]).context("delete stale cached app")?;
+                }
             }
         }
         tx.commit().context("commit scan transaction")?;
+        self.touch_scan()?;
         Ok(())
     }
 }
@@ -181,9 +262,54 @@ mod tests {
             entry("Calculator", "C:/calc.exe"),
             entry("Terminal", "C:/term.exe"),
         ];
+        assert!(!storage.is_cache_fresh());
         storage.mark_seen(&apps).unwrap();
+        assert!(storage.is_cache_fresh());
         let cached = storage.cached_apps().unwrap();
         assert_eq!(cached.len(), 2);
         assert!(cached.iter().any(|a| a.name == "Calculator"));
+    }
+
+    #[test]
+    fn mark_seen_is_incremental_and_removes_missing_apps() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        storage
+            .mark_seen(&[
+                entry("Calculator", "C:/calc.exe"),
+                entry("Terminal", "C:/term.exe"),
+            ])
+            .unwrap();
+        // Second scan keeps the still-present app, adds a new one, and drops
+        // the app that disappeared.
+        storage
+            .mark_seen(&[
+                entry("Calculator", "C:/calc.exe"),
+                entry("Paint", "C:/paint.exe"),
+            ])
+            .unwrap();
+        let cached = storage.cached_apps().unwrap();
+        assert_eq!(cached.len(), 2);
+        assert!(cached.iter().any(|a| a.name == "Calculator"));
+        assert!(cached.iter().any(|a| a.name == "Paint"));
+        assert!(!cached.iter().any(|a| a.name == "Terminal"));
+    }
+
+    #[test]
+    fn settings_roundtrip_and_overwrite() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(storage.get_setting("theme_color"), None);
+
+        storage.set_setting("theme_color", "#89b4fa").unwrap();
+        assert_eq!(
+            storage.get_setting("theme_color").as_deref(),
+            Some("#89b4fa")
+        );
+
+        // Setting the same key again replaces the value.
+        storage.set_setting("theme_color", "#a6e3a1").unwrap();
+        assert_eq!(
+            storage.get_setting("theme_color").as_deref(),
+            Some("#a6e3a1")
+        );
     }
 }

@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use nucleo::{Config, Matcher, Utf32Str, Utf32String};
+use pinyin::ToPinyinMulti;
 use serde::{Deserialize, Serialize};
 
 pub use nucleo;
@@ -42,7 +43,12 @@ struct ScoredApp {
 /// once per entry and re-read on each query.
 pub struct Engine {
     entries: Vec<AppEntry>,
-    haystacks: RefCell<Vec<Utf32String>>,
+    /// Per-entry haystack variants to fuzzy-match against: the display name
+    /// plus, for Chinese names, pinyin spellings (see [`pinyin_variants`]).
+    haystacks: RefCell<Vec<Vec<Utf32String>>>,
+    /// Reusable fuzzy matcher kept across queries so per-keystroke allocation
+    /// stays flat instead of building a fresh matcher every time.
+    matcher: RefCell<Matcher>,
 }
 
 impl Engine {
@@ -50,17 +56,13 @@ impl Engine {
         Self {
             entries: Vec::new(),
             haystacks: RefCell::new(Vec::new()),
+            matcher: RefCell::new(Matcher::new(Config::DEFAULT)),
         }
     }
 
     /// Rebuild the index from a fresh scan result.
     pub fn set_entries(&mut self, entries: Vec<AppEntry>) {
-        self.haystacks = RefCell::new(
-            entries
-                .iter()
-                .map(|e| Utf32String::from(e.name.as_str()))
-                .collect(),
-        );
+        self.haystacks = RefCell::new(entries.iter().map(|e| search_haystacks(&e.name)).collect());
         self.entries = entries;
     }
 
@@ -76,7 +78,7 @@ impl Engine {
     pub fn query(&self, query: &str, freq: &dyn Fn(&str) -> u32) -> Vec<AppEntry> {
         // nucleo's default config is case-insensitive with latin normalization,
         // which is well suited to launcher search.
-        let mut matcher = Matcher::new(Config::DEFAULT);
+        let mut matcher = self.matcher.borrow_mut();
         let mut needle_buf = Vec::new();
         let needle = Utf32Str::new(query, &mut needle_buf);
         let haystacks = self.haystacks.borrow();
@@ -92,9 +94,17 @@ impl Engine {
                 .collect()
         } else {
             let mut matches = Vec::new();
-            for (app, haystack) in self.entries.iter().zip(haystacks.iter()) {
-                let hay: Utf32Str<'_> = haystack.slice(..);
-                if let Some(score) = matcher.fuzzy_match(hay, needle) {
+            for (app, variants) in self.entries.iter().zip(haystacks.iter()) {
+                // Match against every search form (name, full pinyin, spaced
+                // pinyin, initials) and keep the best score for the entry.
+                let mut best: Option<u16> = None;
+                for haystack in variants {
+                    let hay: Utf32Str<'_> = haystack.slice(..);
+                    if let Some(score) = matcher.fuzzy_match(hay, needle) {
+                        best = Some(best.map_or(score, |current| current.max(score)));
+                    }
+                }
+                if let Some(score) = best {
                     matches.push(ScoredApp {
                         app: app.clone(),
                         score,
@@ -122,6 +132,118 @@ impl Engine {
     fn path_key(&self, app: &AppEntry) -> String {
         app.path.to_string_lossy().into_owned()
     }
+}
+
+/// Build the search haystack variants for one app name: the name itself plus,
+/// for Chinese text, compact full pinyin (`zidongbofang`), full pinyin with
+/// spaces (`zi dong bo fang`) and first-letter initials (`zdbf`), so queries
+/// like `zd` can find 终端 / 自动播放 / 设置向导 the way other launchers do.
+/// Characters without a pinyin reading (Latin, digits, punctuation) are copied
+/// through, keeping mixed names such as "QQ音乐" searchable by either part.
+fn search_haystacks(name: &str) -> Vec<Utf32String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut variants = Vec::new();
+    for text in std::iter::once(name.to_owned()).chain(pinyin_variants(name)) {
+        if seen.insert(text.clone()) {
+            variants.push(Utf32String::from(text));
+        }
+    }
+    variants
+}
+
+/// Pinyin search forms for `name`. Pure-Latin names yield no extra variants
+/// (the caller keeps the original name, and nucleo is case-insensitive).
+fn pinyin_variants(name: &str) -> Vec<String> {
+    let mut full_variants = vec![String::new()];
+    let mut spaced_variants = vec![String::new()];
+    let mut initials_variants = vec![String::new()];
+
+    for ch in name.chars() {
+        if let Some(multi) = ch.to_pinyin_multi() {
+            let mut readings = Vec::new();
+            let mut letters = Vec::new();
+            for syllable in multi {
+                readings.push(syllable.plain());
+                letters.push(syllable.first_letter());
+            }
+            // Cartesian product over all readings (polyphones like 乐 have
+            // yue/le, 行 has xing/hang), capped so names with several
+            // polyphones cannot blow up the index.
+            full_variants =
+                expand_pinyin(full_variants, &readings, |acc, part| format!("{acc}{part}"));
+            spaced_variants = expand_pinyin(spaced_variants, &readings, |acc, part| {
+                if acc.is_empty() {
+                    part.to_string()
+                } else {
+                    format!("{acc} {part}")
+                }
+            });
+            initials_variants = expand_pinyin(initials_variants, &letters, |acc, part| {
+                format!("{acc}{part}")
+            });
+        } else if !ch.is_whitespace() {
+            let c = ch.to_ascii_lowercase();
+            for variant in &mut full_variants {
+                variant.push(c);
+            }
+            for variant in &mut spaced_variants {
+                if !variant.is_empty() {
+                    variant.push(' ');
+                }
+                variant.push(c);
+            }
+            for variant in &mut initials_variants {
+                variant.push(c);
+            }
+        }
+    }
+
+    let lowercase = name.to_ascii_lowercase();
+    let mut variants = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for text in full_variants
+        .into_iter()
+        .chain(spaced_variants)
+        .chain(initials_variants)
+    {
+        if text.is_empty() || text == lowercase {
+            continue;
+        }
+        if seen.insert(text.clone()) {
+            variants.push(text);
+        }
+        if variants.len() >= MAX_PINYIN_HANSTACKS {
+            break;
+        }
+    }
+    variants
+}
+
+/// Upper bound on pinyin search forms generated per app name.
+const MAX_PINYIN_HANSTACKS: usize = 12;
+
+/// Combine every existing variant with every reading, stopping once
+/// [`MAX_PINYIN_HANSTACKS`] is reached.
+fn expand_pinyin(
+    variants: Vec<String>,
+    parts: &[&str],
+    combine: impl Fn(String, &str) -> String,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(
+        variants
+            .len()
+            .saturating_mul(parts.len())
+            .min(MAX_PINYIN_HANSTACKS),
+    );
+    'outer: for variant in variants {
+        for part in parts {
+            if out.len() >= MAX_PINYIN_HANSTACKS {
+                break 'outer;
+            }
+            out.push(combine(variant.clone(), part));
+        }
+    }
+    out
 }
 
 impl ScoredApp {
@@ -221,5 +343,120 @@ mod tests {
         let result = engine.query("", &freq);
         assert_eq!(result[0].name, "Terminal");
         assert_eq!(result[1].name, "Firefox");
+    }
+
+    fn chinese_entries() -> Vec<AppEntry> {
+        vec![
+            AppEntry {
+                name: "终端".into(),
+                path: PathBuf::from("C:/terminal-cn.lnk"),
+            },
+            AppEntry {
+                name: "自动播放".into(),
+                path: PathBuf::from("C:/autoplay-cn.lnk"),
+            },
+            AppEntry {
+                name: "设置向导".into(),
+                path: PathBuf::from("C:/wizard-cn.lnk"),
+            },
+            AppEntry {
+                name: "QQ音乐".into(),
+                path: PathBuf::from("C:/qqmusic-cn.lnk"),
+            },
+            AppEntry {
+                name: "Steward".into(),
+                path: PathBuf::from("C:/steward.exe"),
+            },
+        ]
+    }
+
+    #[test]
+    fn pinyin_initials_match_chinese_names() {
+        let mut engine = Engine::new();
+        engine.set_entries(chinese_entries());
+        let result = engine.query("zd", &NO_FREQ);
+        let names: Vec<_> = result.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            names.contains(&"终端"),
+            "zd should find 终端, got {names:?}"
+        );
+        assert!(
+            names.contains(&"自动播放"),
+            "zd should find 自动播放, got {names:?}"
+        );
+        assert!(
+            names.contains(&"设置向导"),
+            "zd should find 设置向导, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn pinyin_full_spelling_matches() {
+        let mut engine = Engine::new();
+        engine.set_entries(chinese_entries());
+        assert!(engine
+            .query("zidong", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "自动播放"));
+        assert!(engine
+            .query("shezhi", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "设置向导"));
+        assert!(engine
+            .query("zhongduan", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "终端"));
+    }
+
+    #[test]
+    fn pinyin_with_spaces_matches() {
+        let mut engine = Engine::new();
+        engine.set_entries(chinese_entries());
+        assert!(engine
+            .query("zi dong", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "自动播放"));
+    }
+
+    #[test]
+    fn mixed_latin_chinese_matches_by_both_parts() {
+        let mut engine = Engine::new();
+        engine.set_entries(chinese_entries());
+        assert!(engine
+            .query("qq", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "QQ音乐"));
+        assert!(engine
+            .query("yy", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "QQ音乐"));
+    }
+
+    #[test]
+    fn polyphone_names_match_all_readings() {
+        let mut engine = Engine::new();
+        engine.set_entries(chinese_entries());
+        // 乐 is polyphonic: yue (music) and le (happy). Both readings must be
+        // searchable so "QQ音乐" is found by its actual pronunciation.
+        assert!(engine
+            .query("yinyue", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "QQ音乐"));
+        assert!(engine
+            .query("yinle", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "QQ音乐"));
+    }
+
+    #[test]
+    fn pinyin_query_does_not_match_unrelated_latin_names() {
+        let mut engine = Engine::new();
+        engine.set_entries(chinese_entries());
+        // "zd" has no z/d in "Steward" (or "Firefox"), so pure-Latin entries
+        // must not leak into pinyin results.
+        assert!(!engine
+            .query("zd", &NO_FREQ)
+            .iter()
+            .any(|a| a.name == "Steward"));
     }
 }

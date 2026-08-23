@@ -1,0 +1,113 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  WiX installer for the Steward launcher.
+
+  Build with:
+
+      cargo wix -p steward-app
+
+  The installer installs steward-app.exe to Program Files, registers the
+  product icon in Add/Remove Programs, and adds a Start Menu shortcut.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Steward'
+        UpgradeCode='9A77B532-62EB-479B-8422-32164A65BFA9'
+        Manufacturer='Steward contributors'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Manufacturer='Steward contributors'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='Steward Installation'/>
+
+        <Icon Id='ProductICO' SourceFile='../../assets/icon.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='ProductICO'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Steward'>
+                    <Component Id='License' Guid='*'>
+                        <File Id='LicenseFile'
+                            DiskId='1'
+                            Source='../../crates/app/wix/License.rtf'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <Component Id='binary0' Guid='*'>
+                        <File
+                            Id='exe0'
+                            Name='steward-app.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\steward-app.exe'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='Steward'/>
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id='ApplicationProgramsFolder'>
+            <Component Id='ApplicationShortcut' Guid='*'>
+                <Shortcut Id='ApplicationStartMenuShortcut'
+                    Name='Steward'
+                    Description='Steward launcher'
+                    Target='[#exe0]'
+                    WorkingDirectory='APPLICATIONFOLDER'/>
+                <RemoveFolder Id='RemoveApplicationProgramsFolder' On='uninstall'/>
+                <RegistryValue Root='HKCU' Key='Software\Steward' Name='installed'
+                    Type='integer' Value='1' KeyPath='yes'/>
+            </Component>
+        </DirectoryRef>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs the Steward launcher.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='License'/>
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='ApplicationShortcut'/>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='../../crates/app/wix/License.rtf'/>
+
+    </Product>
+
+</Wix>

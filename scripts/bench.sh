@@ -5,8 +5,9 @@
 #   scripts/bench.sh             # 测量已构建的 debug 二进制
 #   scripts/bench.sh --release   # 先构建 release 再测量
 #
-# 注意：M0 阶段“冷启动到窗口可交互”需要应用内插桩（--ready-fd），
-# 当前以“进程存活”近似；呼出延迟为手动秒表测量。
+# Windows（M2 起）：请用 scripts/bench-resident.ps1，测量
+# 启动→托盘就绪（含一次性 GPUI 初始化）/ 常驻 RSS / 首呼与二次呼出延迟；
+# 本脚本保留给 POSIX 平台使用。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -3,9 +3,26 @@ name: Release
 on:
   workflow_dispatch:
 
-# 打包发布流程（cargo-bundle 等）计划 M3+ 启用，当前仅保留手动触发入口。
 jobs:
-  placeholder:
-    runs-on: ubuntu-latest
+  build-msi:
+    runs-on: windows-latest
     steps:
-      - run: echo "Release workflow will be enabled in M3+"
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install WiX Toolset and cargo-wix
+        shell: pwsh
+        run: |
+          choco install wixtoolset -y --no-progress
+          cargo install cargo-wix
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: ./scripts/package-msi.ps1
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steward-msi
+          path: target/wix/*.msi

@@ -29,6 +29,7 @@ Thumbs.db
 dist/
 build/
 coverage/
+/*.wxs
 
 # pnpm
 .pnpm-store/

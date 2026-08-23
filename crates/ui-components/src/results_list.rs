@@ -17,10 +17,11 @@
 use std::{rc::Rc, sync::Arc};
 
 use gpui::{
-    div, img, prelude::FluentBuilder, px, rgb, App, AppContext as _, Context, ElementId, Entity,
-    Image, ImageSource, InteractiveElement, IntoElement, ParentElement as _, Render,
+    div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context, ElementId, Entity, Image,
+    ImageSource, InteractiveElement, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement, Styled as _,
 };
+use gpui_component::ActiveTheme;
 
 use steward_core_engine::AppEntry;
 
@@ -28,6 +29,11 @@ use steward_core_engine::AppEntry;
 /// these with the display DPI like any other app UI.
 const DESIGN_ROW_HEIGHT: f32 = 48.0;
 const DESIGN_ICON_SIZE: f32 = 24.0;
+/// Rows visible at once in the drop-down. Must match the app's
+/// `MAX_RESULT_ROWS`; the list renders exactly this many rows so the pinned
+/// GPUI Windows revision never has to clip overflowing children (its scroll
+/// container paints them unclipped, spilling below the drop-down).
+pub const VISIBLE_ROWS: usize = 8;
 
 /// The state backing the results list. Kept as its own entity so updates
 /// (`set_results`, selection moves) can happen without a window.
@@ -35,29 +41,57 @@ pub struct ResultListState {
     items: Vec<AppEntry>,
     icons: Vec<Option<Arc<Image>>>,
     type_label: String,
+    max_height: f32,
     selected: Option<usize>,
     on_confirm: Option<Rc<dyn Fn(usize)>>,
 }
 
 impl Render for ResultListState {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self.items.clone();
-        let icons = self.icons.clone();
         let type_label = self.type_label.clone();
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .children(items.iter().enumerate().map(|(index, app)| {
+        let range = self.visible_range();
+        let selected = self.selected;
+        let rows = self.items[range.clone()]
+            .iter()
+            .enumerate()
+            .map(|(offset, app)| {
+                let index = range.start + offset;
                 render_row(
                     app,
-                    icons.get(index).cloned().flatten(),
+                    self.icons.get(index).cloned().flatten(),
                     &type_label,
-                    self.selected == Some(index),
+                    selected == Some(index),
                     index,
                     cx,
                 )
-            }))
+            })
+            .collect::<Vec<_>>();
+        // Exactly `VISIBLE_ROWS` rows are rendered; nothing overflows, so the
+        // container needs no scroll/clip machinery (which is broken in the
+        // pinned GPUI revision on Windows).
+        div()
+            .id(ElementId::from("results-rows"))
+            .flex()
+            .flex_col()
+            .w_full()
+            .children(rows)
+    }
+}
+
+impl ResultListState {
+    /// The slice of items to render: a `VISIBLE_ROWS`-tall window anchored so
+    /// the selected row is always visible (at the bottom once the list is long
+    /// enough to scroll).
+    fn visible_range(&self) -> std::ops::Range<usize> {
+        let viewport_rows = (self.max_height / DESIGN_ROW_HEIGHT).max(1.0) as usize;
+        let len = self.items.len();
+        let top = self
+            .selected
+            .unwrap_or(0)
+            .min(len.saturating_sub(1))
+            .saturating_sub(viewport_rows.saturating_sub(1))
+            .min(len);
+        top..(top + viewport_rows).min(len)
     }
 }
 
@@ -84,9 +118,8 @@ fn render_row(
         .cursor_pointer()
         .bg(rgb(0x232332))
         .when(selected, |this| {
-            this.bg(rgb(0x89b4fa).opacity(0.2))
-                .border_1()
-                .border_color(rgb(0x89b4fa).opacity(0.6))
+            let primary = cx.theme().primary;
+            this.bg(primary.opacity(0.2))
         })
         .when(!selected, |this| {
             this.hover(|style| style.bg(rgb(0x313244).opacity(0.8)))
@@ -158,6 +191,7 @@ impl Default for ResultListDelegate {
 /// The launcher results list: a plain stacked list of rows. Rows are pushed in
 /// from the app; the drop-down height is derived from
 /// [`ResultList::visible_count`] by the enclosing window.
+#[derive(Clone)]
 pub struct ResultList {
     state: Entity<ResultListState>,
 }
@@ -173,6 +207,7 @@ impl ResultList {
             items: Vec::new(),
             icons: Vec::new(),
             type_label: delegate.type_label,
+            max_height: 0.0,
             selected: None,
             on_confirm: delegate.on_confirm,
         });
@@ -191,7 +226,18 @@ impl ResultList {
         self.state.update(cx, |this, cx| {
             this.items = items;
             this.icons = icons;
-            this.selected = None;
+            // Default-select the first row so Enter (or the highlight) works
+            // immediately after typing, without a manual Down press.
+            this.selected = (!this.items.is_empty()).then_some(0);
+            cx.notify();
+        });
+    }
+
+    /// Replace the icons (aligned with the current `items`) without touching
+    /// the rows or selection — used when icons finish loading asynchronously.
+    pub fn set_icons<C: AppContext>(&self, icons: Vec<Option<Arc<Image>>>, cx: &mut C) {
+        self.state.update(cx, |this, cx| {
+            this.icons = icons;
             cx.notify();
         });
     }
@@ -199,6 +245,16 @@ impl ResultList {
     /// Number of results from the latest update (used for window sizing).
     pub fn visible_count(&self, cx: &App) -> usize {
         self.state.read(cx).items.len()
+    }
+
+    /// Replace the type label shown on the right of every row. Used when the
+    /// UI language changes at runtime — the label is stored state, so it does
+    /// not re-translate on its own.
+    pub fn set_type_label<C: AppContext>(&self, label: impl Into<String>, cx: &mut C) {
+        self.state.update(cx, |this, cx| {
+            this.type_label = label.into();
+            cx.notify();
+        });
     }
 
     /// Move selection by `delta` rows (negative moves up), clamping to bounds.
@@ -211,7 +267,9 @@ impl ResultList {
         let mut next = None;
         self.state.update(cx, |this, cx| {
             if !this.items.is_empty() {
-                let current = this.selected.unwrap_or(0) as i32;
+                // The first press selects the first row (not the second):
+                // treat "nothing selected" as -1 so `+1` lands on index 0.
+                let current = this.selected.map(|i| i as i32).unwrap_or(-1);
                 let index = (current + delta).clamp(0, this.items.len() as i32 - 1) as usize;
                 this.selected = Some(index);
                 next = Some(index);
@@ -243,11 +301,12 @@ impl ResultList {
     /// Render the scrollable list element, capped at `max_height` so rows
     /// beyond the visible drop-down can be scrolled into view.
     pub fn render<C>(&self, max_height: f32, cx: &mut Context<C>) -> impl IntoElement {
-        let _ = cx;
+        self.state.update(cx, |this, _| {
+            this.max_height = max_height;
+        });
         div()
             .id(ElementId::from("results-list"))
             .h(px(max_height))
-            .overflow_y_scroll()
             .child(self.state.clone())
     }
 }

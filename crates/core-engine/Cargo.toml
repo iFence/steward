@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 nucleo.workspace = true
+pinyin.workspace = true
 serde.workspace = true
 anyhow.workspace = true
 
