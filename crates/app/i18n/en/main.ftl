@@ -13,6 +13,7 @@ settings-global-hotkey = Global Hotkey
 settings-hotkeys = Hotkeys
 settings-settings-hotkey = Settings Hotkey
 settings-hotkey-recording = Press a key combination...
+settings-theme-violet = Violet
 settings-theme-blue = Sea Blue
 settings-theme-jade = Jade
 settings-theme-rose = Rose

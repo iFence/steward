@@ -13,6 +13,7 @@ settings-global-hotkey = 전역 단축키
 settings-hotkeys = 단축키
 settings-settings-hotkey = 설정 단축키
 settings-hotkey-recording = 키 조합을 누르세요...
+settings-theme-violet = 바이올렛
 settings-theme-blue = 바다색
 settings-theme-jade = 비취
 settings-theme-rose = 로즈

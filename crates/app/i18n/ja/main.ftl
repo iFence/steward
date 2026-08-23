@@ -13,6 +13,7 @@ settings-global-hotkey = グローバルショートカット
 settings-hotkeys = ショートカット
 settings-settings-hotkey = 設定ショートカット
 settings-hotkey-recording = キーの組み合わせを押してください...
+settings-theme-violet = バイオレット
 settings-theme-blue = 海の青
 settings-theme-jade = ひすい
 settings-theme-rose = ローズ

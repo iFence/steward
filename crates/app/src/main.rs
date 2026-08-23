@@ -33,7 +33,7 @@ use global_hotkey::{
 };
 use gpui::{
     actions, div, point, prelude::*, px, rgb, size, Anchor, Animation, AnimationExt, AnyElement,
-    AnyWindowHandle, App, AppContext, AsyncApp, Bounds, Div, Element, ElementId,
+    AnyWindowHandle, App, AppContext, AsyncApp, Bounds, ClipboardItem, Div, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
     InspectorElementId, InteractiveElement, KeyBinding, KeyDownEvent, Keystroke, LayoutId, Pixels,
     QuitMode, SharedString, Subscription, TitlebarOptions, UTF16Selection, Window,
@@ -48,7 +48,7 @@ use gpui_component::{
 };
 use gpui_platform::application;
 use steward_core_engine::Engine;
-use steward_ui_components::{ResultList, ResultListDelegate};
+use steward_ui_components::{ResultItem, ResultList, ResultListDelegate};
 
 mod i18n;
 
@@ -100,15 +100,11 @@ const MENU_QUIT: &str = "quit";
 /// re-summons in ~10-30 ms at the same memory, so hide is the default.
 const CLOSE_ON_HIDE: bool = false;
 
-/// The launcher's accent color when no theme color is configured (Catppuccin
-/// Mocha blue). Doubles as the default selection/caret color.
-const DEFAULT_ACCENT: u32 = 0x89b4fa;
-/// Surface colors shared by the launcher bar and the settings window. The
-/// settings window renders on the gpui-component dark theme's near-black
-/// background by default, which reads much darker than the launcher's bar.
-const PANEL_BACKGROUND: u32 = 0x232332;
-const PANEL_BACKGROUND_ALT: u32 = 0x2a2a3c;
-const PANEL_BORDER: u32 = 0x3a3a4c;
+/// The launcher's accent color when no theme color is configured (Tinycast's
+/// brand violet). Doubles as the default selection/caret color. Surface and
+/// ink colors live in `steward_ui_components::palette`, adapted from
+/// Tinycast's design system.
+const DEFAULT_ACCENT: u32 = steward_ui_components::palette::ACCENT;
 /// Storage key for the persisted theme color (a `#rrggbb` hex string).
 const THEME_COLOR_SETTING: &str = "theme_color";
 /// Storage key for the persisted language code (e.g. `zh`, `en`).
@@ -118,9 +114,11 @@ const LANGUAGE_SETTING: &str = "language";
 const SUMMON_HOTKEY_SETTING: &str = "summon_hotkey";
 /// Storage key for the persisted settings-window hotkey (e.g. `control+comma`).
 const SETTINGS_HOTKEY_SETTING: &str = "settings_hotkey";
-/// Preset accent colors offered by the settings page.
-const ACCENT_PRESETS: [u32; 4] = [
-    0x89b4fa, // sea blue (default)
+/// Preset accent colors offered by the settings page. The default (violet) is
+/// Tinycast's brand hue; the rest are pleasant neighbors on the surface.
+const ACCENT_PRESETS: [u32; 5] = [
+    0x863bff, // violet (default)
+    0x89b4fa, // sea blue
     0x94e2d5, // jade
     0xf38ba8, // rose
     0xf9e2af, // amber
@@ -168,18 +166,22 @@ fn parse_hex_color(text: &str) -> Option<u32> {
         .flatten()
 }
 
-/// Apply the Steward palette (surface colors matching the launcher bar) and
-/// the given accent color to the global gpui-component theme, then rebuild the
-/// derived semantic tokens and the Base-layer theme (scrollbars, resize
-/// handles). Call once at startup after `init_components`, and again whenever
-/// the user picks a new theme color in the settings window.
+/// Apply the Steward palette (surface colors matching the launcher bar, drawn
+/// from Tinycast's design system) and the given accent color to the global
+/// gpui-component theme, then rebuild the derived semantic tokens and the
+/// Base-layer theme (scrollbars, resize handles). Call once at startup after
+/// `init_components`, and again whenever the user picks a new theme color in
+/// the settings window.
 fn apply_steward_theme(cx: &mut App, accent: u32) {
-    let background = Hsla::from(rgb(PANEL_BACKGROUND));
-    let background_alt = Hsla::from(rgb(PANEL_BACKGROUND_ALT));
-    let border = Hsla::from(rgb(PANEL_BORDER));
-    let foreground = Hsla::from(rgb(0xcdd6f4));
-    let muted_foreground = Hsla::from(rgb(0x6c7086));
+    let background = Hsla::from(rgb(steward_ui_components::palette::BACKGROUND));
+    let background_alt = Hsla::from(rgb(steward_ui_components::palette::BACKGROUND_ALT));
+    let border = Hsla::from(rgb(steward_ui_components::palette::BORDER));
+    let foreground = Hsla::from(rgb(steward_ui_components::palette::FOREGROUND));
+    let muted_foreground = Hsla::from(rgb(steward_ui_components::palette::MUTED_FOREGROUND));
     let accent = Hsla::from(rgb(accent));
+    // Tinycast paints ink as white at fixed alpha stops (`selection` white
+    // 0.10, `rowHover` white 0.05) rather than tinting it with the accent.
+    let white = Hsla::from(rgb(0xffffff));
 
     let theme = Theme::global_mut(cx);
     // Surfaces: the settings window's background, side bar, groups and popups
@@ -194,11 +196,11 @@ fn apply_steward_theme(cx: &mut App, accent: u32) {
     theme.muted_foreground = muted_foreground;
     theme.secondary = background_alt;
     theme.secondary_foreground = foreground;
-    theme.secondary_hover = Hsla::from(rgb(0x313244));
+    theme.secondary_hover = white.opacity(0.05);
     theme.accent = background_alt;
     theme.accent_foreground = foreground;
     theme.colors.list = background;
-    theme.list_hover = background_alt;
+    theme.list_hover = white.opacity(0.05);
     theme.group_box = background;
     theme.group_box_foreground = foreground;
     theme.sidebar = background;
@@ -213,20 +215,21 @@ fn apply_steward_theme(cx: &mut App, accent: u32) {
     theme.tab_bar = background;
     theme.tab = background;
     theme.tab_active = background_alt;
-    // Accent: selection, caret, focus ring and primary controls follow the
-    // chosen theme color.
+    // Accent: caret, focus ring, primary controls and the selected-row border
+    // follow the chosen theme color; the selected-row fill itself is the
+    // neutral white 0.10 wash, exactly like Tinycast's list selection.
     theme.primary = accent;
     theme.primary_hover = accent.opacity(0.85);
     theme.primary_active = accent.opacity(0.75);
-    theme.primary_foreground = Hsla::from(rgb(0x11111b));
+    theme.primary_foreground = white;
     theme.button_primary = accent;
     theme.button_primary_hover = accent.opacity(0.85);
     theme.button_primary_active = accent.opacity(0.75);
-    theme.button_primary_foreground = Hsla::from(rgb(0x11111b));
+    theme.button_primary_foreground = white;
     theme.caret = accent;
     theme.selection = accent.opacity(0.35);
     theme.ring = accent;
-    theme.list_active = accent.opacity(0.2);
+    theme.list_active = white.opacity(0.10);
     theme.list_active_border = accent.opacity(0.6);
     theme.drop_target = accent.opacity(0.2);
 
@@ -288,8 +291,8 @@ struct StewardApp {
     /// SQLite cache plus usage-frequency tracking.
     storage: Rc<RefCell<steward_storage::Storage>>,
     /// Current result rows, mirrored for the `on_confirm` callback to resolve
-    /// the selected index into an app path.
-    last_results: Rc<RefCell<Vec<steward_core_engine::AppEntry>>>,
+    /// the selected index into an app path (or a calculator result to copy).
+    last_results: Rc<RefCell<Vec<ResultItem>>>,
     results: ResultList,
     /// Result count is published here so the tray/hotkey path can size the
     /// window when it is summoned.
@@ -418,6 +421,17 @@ impl SearchInput {
     fn insert_char(&mut self, ch: char) {
         self.query.insert(self.byte_index(), ch);
         self.cursor += 1;
+    }
+
+    /// Insert `text` at the caret (used for clipboard paste). Clipboard text is
+    /// normalized to a single line before it reaches this point.
+    fn insert_str(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let byte = self.byte_at_char(self.cursor);
+        self.query.insert_str(byte, text);
+        self.cursor += text.chars().count();
     }
 
     fn backspace(&mut self) {
@@ -749,9 +763,9 @@ impl Render for StewardApp {
             // Fully opaque surface (the window itself is opaque too): the
             // launcher keeps its fixed dark look regardless of the system
             // theme, so no translucent tint or OS backdrop is involved.
-            .bg(rgb(0x232332))
+            .bg(rgb(steward_ui_components::palette::BACKGROUND))
             .text_lg()
-            .text_color(rgb(0xcdd6f4))
+            .text_color(rgb(steward_ui_components::palette::FOREGROUND))
             .child(drag_strip().h(px(LAUNCHER_MARGIN)))
             .child(
                 div()
@@ -776,7 +790,9 @@ impl Render for StewardApp {
                                         .child(cursor(primary))
                                         .child(
                                             div()
-                                                .text_color(rgb(0x6c7086))
+                                                .text_color(rgb(
+                                                    steward_ui_components::palette::MUTED_FOREGROUND,
+                                                ))
                                                 .child(self.i18n.translate("search-placeholder")),
                                         )
                                 } else {
@@ -787,10 +803,11 @@ impl Render for StewardApp {
                     .child(drag_strip().w(px(LAUNCHER_MARGIN))),
             )
             .when(result_count > 0, |this| {
-                // A subtle light-gray hairline separates the search box from
-                // the results list; it only shows while the drop-down is open.
+                // A subtle light hairline separates the search box from the
+                // results list (Tinycast's `separator`, white 0.10); it only
+                // shows while the drop-down is open.
                 let drop_height = result_height(result_count);
-                this.child(div().w_full().h(px(1.0)).bg(rgb(0xffffff).opacity(0.12)))
+                this.child(div().w_full().h(px(1.0)).bg(rgb(0xffffff).opacity(0.10)))
                     // Pin the drop-down to exactly its result height so it never
                     // grows into the input bar, and inset it by the same margin as
                     // the drag strips so rows align with the bar content.
@@ -875,6 +892,20 @@ impl StewardApp {
             }
         }
 
+        // Paste from the clipboard. The launcher uses a hand-rolled input, so
+        // Ctrl+V has no built-in handler; read the platform clipboard and
+        // insert it at the caret. Newlines are collapsed to spaces because the
+        // query is a single-line document (e.g. copying a path from Explorer).
+        if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "v" {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+                self.input.insert_str(&text);
+                self.search(window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+
         match keystroke.key.as_str() {
             "space" => {
                 self.input.insert_char(' ');
@@ -941,10 +972,21 @@ impl StewardApp {
 
     /// Run the current input through the engine and refresh the results list,
     /// mirroring the results for the confirm callback to resolve against, then
-    /// resize the window to fit the new drop-down height.
+    /// resize the window to fit the new drop-down height. A query that is a
+    /// complete arithmetic expression additionally gets a calculator row on
+    /// top showing the computed value.
     fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let query = self.input.query.clone();
-        let items = self
+
+        let mut items: Vec<ResultItem> = Vec::new();
+        if let Some(value) = steward_core_engine::calc::try_evaluate(&query) {
+            items.push(ResultItem::Action {
+                title: steward_core_engine::calc::format_value(value),
+                subtitle: query.trim().to_owned(),
+            });
+        }
+
+        let apps = self
             .engine
             .borrow()
             .query(&query, &|path| self.storage.borrow().frequency_str(path));
@@ -956,8 +998,7 @@ impl StewardApp {
         // the shared launcher state so a recreated window keeps its icons.
         let icons = {
             let state = self.state.borrow();
-            items
-                .iter()
+            apps.iter()
                 .take(MAX_RESULT_ROWS)
                 .map(|app| {
                     // `let` ends the temporary borrow before `unwrap_or_else`,
@@ -974,10 +1015,18 @@ impl StewardApp {
                 })
                 .collect::<Vec<_>>()
         };
-        let missing = items.len().saturating_sub(icons.len());
+        let missing = apps.len().saturating_sub(icons.len());
         let icons = icons
             .into_iter()
             .chain(std::iter::repeat_n(None, missing))
+            .collect::<Vec<_>>();
+
+        // Prepend the calculator row (with no icon) ahead of the apps; action
+        // rows always sit above any fuzzy matches so Enter hits the answer.
+        let action_count = items.len();
+        items.extend(apps.into_iter().map(ResultItem::App));
+        let icons = std::iter::repeat_n(None, action_count)
+            .chain(icons)
             .collect::<Vec<_>>();
 
         *self.last_results.borrow_mut() = items.clone();
@@ -1191,19 +1240,37 @@ fn open_launcher_window(
             // The shared index was seeded in `ensure_app_index` at boot and is
             // refreshed in the background; the window only takes a handle to
             // it. Mirror the current entries into the delegate so Enter can
-            // resolve a row to its path.
+            // resolve a row to its action.
             let storage = state.borrow().storage.clone();
             let engine = state.borrow().engine.clone();
-            let last_results = Rc::new(RefCell::new(engine.borrow().entries().to_vec()));
+            let last_results = Rc::new(RefCell::new(
+                engine
+                    .borrow()
+                    .entries()
+                    .iter()
+                    .cloned()
+                    .map(ResultItem::App)
+                    .collect::<Vec<_>>(),
+            ));
             let results_for_cb = last_results.clone();
             let confirm_storage = storage.clone();
-            let on_confirm = move |index: usize| {
-                let entry = results_for_cb.borrow().get(index).cloned();
-                if let Some(app) = entry {
-                    let _ = confirm_storage.borrow().upsert_usage(&app.path);
-                    if let Err(error) = launch(&app.path) {
-                        eprintln!("failed to launch {}: {error:#}", app.path.display());
+            let on_confirm = move |index: usize, cx: &mut App| {
+                let item = results_for_cb.borrow().get(index).cloned();
+                match item {
+                    // An application: launch it and bump its usage frequency.
+                    Some(ResultItem::App(app)) => {
+                        let _ = confirm_storage.borrow().upsert_usage(&app.path);
+                        if let Err(error) = launch(&app.path) {
+                            eprintln!("failed to launch {}: {error:#}", app.path.display());
+                        }
                     }
+                    // A calculator result: put the answer on the clipboard. The
+                    // window is hidden afterwards by `after_confirm` (Enter) or
+                    // by the activation observer once focus is lost (click).
+                    Some(ResultItem::Action { title, .. }) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(title));
+                    }
+                    None => {}
                 }
             };
             let delegate = ResultListDelegate::new()
@@ -1328,123 +1395,127 @@ impl Render for SettingsApp {
                 SettingPage::new(general_title)
                     .default_open(true)
                     .icon(Icon::new(IconName::Settings2))
-                    .group(SettingGroup::new()
-                        .item(SettingItem::new(
-                            language_title,
-                            SettingField::render(move |_options, _window, cx| {
-                                let code = view_language_value.read(cx).language.clone();
-                                let current_label = SUPPORTED_LANGUAGES
-                                    .iter()
-                                    .find(|(c, _)| *c == code)
-                                    .map(|(_, name)| SharedString::from(*name))
-                                    .unwrap_or_else(|| SharedString::from(code.clone()));
-                                let on_select = {
-                                    let storage_language = storage_language.clone();
-                                    let i18n = i18n.clone();
-                                    let state = state.clone();
-                                    let view = view_language_set.clone();
-                                    move |code: SharedString, cx: &mut App| {
-                                        let _ = storage_language
-                                            .borrow()
-                                            .set_setting(LANGUAGE_SETTING, &code);
-                                        i18n.select_language(&code);
-                                        // Keep gpui-component's own widgets (the
-                                        // settings search box) in sync, and
-                                        // refresh the launcher's row type label.
-                                        gpui_component::set_locale(gpui_component_locale(
-                                            &code,
-                                        ));
-                                        update_launcher_label(&state, cx);
-                                        view.update(cx, |app, cx| {
-                                            app.language = code.to_string();
-                                            cx.notify();
-                                        });
-                                    }
-                                };
-                                dropdown_field(
-                                    "language-dropdown",
-                                    SharedString::from(code),
-                                    current_label,
-                                    language_options.clone(),
-                                    on_select,
-                                )
-                            }),
-                        ))
-                        .item(SettingItem::new(
-                            theme_title,
-                            SettingField::render(move |_options, _window, cx| {
-                                let accent = view_theme_value.read(cx).accent;
-                                let value = SharedString::from(format!("#{accent:06x}"));
-                                let current_label = theme_options
-                                    .iter()
-                                    .find(|(option_value, _)| *option_value == value)
-                                    .map(|(_, label)| label.clone())
-                                    .unwrap_or_else(|| value.clone());
-                                let on_select = {
-                                    let storage = storage.clone();
-                                    let view = view_theme_set.clone();
-                                    move |hex: SharedString, cx: &mut App| {
-                                        if let Some(color) = parse_hex_color(&hex) {
-                                            let _ = storage
+                    .group(
+                        SettingGroup::new()
+                            .item(SettingItem::new(
+                                language_title,
+                                SettingField::render(move |_options, _window, cx| {
+                                    let code = view_language_value.read(cx).language.clone();
+                                    let current_label = SUPPORTED_LANGUAGES
+                                        .iter()
+                                        .find(|(c, _)| *c == code)
+                                        .map(|(_, name)| SharedString::from(*name))
+                                        .unwrap_or_else(|| SharedString::from(code.clone()));
+                                    let on_select = {
+                                        let storage_language = storage_language.clone();
+                                        let i18n = i18n.clone();
+                                        let state = state.clone();
+                                        let view = view_language_set.clone();
+                                        move |code: SharedString, cx: &mut App| {
+                                            let _ = storage_language
                                                 .borrow()
-                                                .set_setting(THEME_COLOR_SETTING, &hex);
-                                            apply_steward_theme(cx, color);
+                                                .set_setting(LANGUAGE_SETTING, &code);
+                                            i18n.select_language(&code);
+                                            // Keep gpui-component's own widgets (the
+                                            // settings search box) in sync, and
+                                            // refresh the launcher's row type label.
+                                            gpui_component::set_locale(gpui_component_locale(
+                                                &code,
+                                            ));
+                                            update_launcher_label(&state, cx);
                                             view.update(cx, |app, cx| {
-                                                app.accent = color;
+                                                app.language = code.to_string();
                                                 cx.notify();
                                             });
                                         }
-                                    }
-                                };
-                                dropdown_field(
-                                    "theme-dropdown",
-                                    value,
-                                    current_label,
-                                    theme_options.clone(),
-                                    on_select,
+                                    };
+                                    dropdown_field(
+                                        "language-dropdown",
+                                        SharedString::from(code),
+                                        current_label,
+                                        language_options.clone(),
+                                        on_select,
+                                    )
+                                }),
+                            ))
+                            .item(SettingItem::new(
+                                theme_title,
+                                SettingField::render(move |_options, _window, cx| {
+                                    let accent = view_theme_value.read(cx).accent;
+                                    let value = SharedString::from(format!("#{accent:06x}"));
+                                    let current_label = theme_options
+                                        .iter()
+                                        .find(|(option_value, _)| *option_value == value)
+                                        .map(|(_, label)| label.clone())
+                                        .unwrap_or_else(|| value.clone());
+                                    let on_select = {
+                                        let storage = storage.clone();
+                                        let view = view_theme_set.clone();
+                                        move |hex: SharedString, cx: &mut App| {
+                                            if let Some(color) = parse_hex_color(&hex) {
+                                                let _ = storage
+                                                    .borrow()
+                                                    .set_setting(THEME_COLOR_SETTING, &hex);
+                                                apply_steward_theme(cx, color);
+                                                view.update(cx, |app, cx| {
+                                                    app.accent = color;
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }
+                                    };
+                                    dropdown_field(
+                                        "theme-dropdown",
+                                        value,
+                                        current_label,
+                                        theme_options.clone(),
+                                        on_select,
+                                    )
+                                }),
+                            ))
+                            .item(SettingItem::new(
+                                autostart_label,
+                                SettingField::switch(
+                                    |_cx: &App| autostart_enabled(),
+                                    move |enabled: bool, cx: &mut App| {
+                                        // Write the registry, then re-render so the
+                                        // switch reflects the state that actually
+                                        // took effect.
+                                        set_autostart(enabled);
+                                        view_autostart.update(cx, |_, cx| cx.notify());
+                                    },
                                 )
-                            }),
-                        ))
-                        .item(SettingItem::new(
-                            autostart_label,
-                            SettingField::switch(
-                                |_cx: &App| autostart_enabled(),
-                                move |enabled: bool, cx: &mut App| {
-                                    // Write the registry, then re-render so the
-                                    // switch reflects the state that actually
-                                    // took effect.
-                                    set_autostart(enabled);
-                                    view_autostart.update(cx, |_, cx| cx.notify());
-                                },
-                            )
-                            .default_value(false),
-                        ))),
+                                .default_value(false),
+                            )),
+                    ),
                 // Global shortcut keys live on their own page, not as a sub-group
                 // of the General page: both hotkeys share one recording flow and
                 // deserve a dedicated, self-contained settings surface.
                 SettingPage::new(hotkeys_title)
                     .icon(Icon::new(IconName::Settings))
-                    .group(SettingGroup::new()
-                        .item(SettingItem::new(
-                            global_hotkey_title,
-                            hotkey_setting_field(
-                                HotkeyField::Summon,
-                                view_hotkey,
-                                view_hotkey_toggle,
-                                state_hotkey,
-                                i18n_hotkey,
-                            ),
-                        ))
-                        .item(SettingItem::new(
-                            settings_hotkey_title,
-                            hotkey_setting_field(
-                                HotkeyField::Settings,
-                                view_settings_hotkey,
-                                view_settings_toggle,
-                                state_settings,
-                                i18n_settings,
-                            ),
-                        ))),
+                    .group(
+                        SettingGroup::new()
+                            .item(SettingItem::new(
+                                global_hotkey_title,
+                                hotkey_setting_field(
+                                    HotkeyField::Summon,
+                                    view_hotkey,
+                                    view_hotkey_toggle,
+                                    state_hotkey,
+                                    i18n_hotkey,
+                                ),
+                            ))
+                            .item(SettingItem::new(
+                                settings_hotkey_title,
+                                hotkey_setting_field(
+                                    HotkeyField::Settings,
+                                    view_settings_hotkey,
+                                    view_settings_toggle,
+                                    state_settings,
+                                    i18n_settings,
+                                ),
+                            )),
+                    ),
                 SettingPage::new(about_title)
                     .resettable(false)
                     .icon(Icon::new(IconName::Info))
@@ -1478,6 +1549,7 @@ impl Render for SettingsApp {
 /// i18n key for an accent preset's localized name.
 fn accent_label_key(color: u32) -> &'static str {
     match color {
+        0x863bff => "settings-theme-violet",
         0x94e2d5 => "settings-theme-jade",
         0xf38ba8 => "settings-theme-rose",
         0xf9e2af => "settings-theme-amber",

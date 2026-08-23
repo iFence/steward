@@ -13,6 +13,7 @@ settings-global-hotkey = Globale Tastenkombination
 settings-hotkeys = Tastenkombinationen
 settings-settings-hotkey = Einstellungen-Tastenkombination
 settings-hotkey-recording = Tastenkombination drücken...
+settings-theme-violet = Violett
 settings-theme-blue = Meeresblau
 settings-theme-jade = Jade
 settings-theme-rose = Rose
