@@ -4,8 +4,6 @@
 //! shortcuts and resolve their targets via the ShellLink COM interface.
 //! Other platforms are stubbed until later milestones.
 
-use std::path::PathBuf;
-
 use crate::AppEntry;
 
 /// Platform abstraction for discovering installed applications.
@@ -31,6 +29,7 @@ mod imp {
     use super::*;
     use std::collections::HashSet;
     use std::path::Path;
+    use std::path::PathBuf;
     use windows::core::Interface;
     use windows::core::PCWSTR;
     use windows::Win32::System::Com::{

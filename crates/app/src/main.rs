@@ -21,10 +21,10 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::{
-    cell::RefCell, collections::HashMap, ops::Range, process::Command, rc::Rc, sync::Arc,
-    time::Duration,
-};
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Duration};
+
+#[cfg(target_os = "windows")]
+use std::process::Command;
 
 use anyhow::{Context as _, Result};
 use global_hotkey::{
@@ -88,7 +88,9 @@ const RESULT_ROW_HEIGHT: f32 = 48.0;
 /// Maximum number of results shown before the drop-down scrolls.
 const MAX_RESULT_ROWS: usize = 8;
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const MENU_SETTINGS: &str = "settings";
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const MENU_QUIT: &str = "quit";
 
 /// Whether hiding the launcher destroys its window — reclaiming the
@@ -98,6 +100,7 @@ const MENU_QUIT: &str = "quit";
 /// DirectWrite text system are platform-level and stay allocated for the GPUI
 /// session — while re-summoning then costs ~150 ms. Keeping the window hidden
 /// re-summons in ~10-30 ms at the same memory, so hide is the default.
+#[cfg(target_os = "windows")]
 const CLOSE_ON_HIDE: bool = false;
 
 /// The launcher's accent color when no theme color is configured (Tinycast's
@@ -273,13 +276,14 @@ fn launch(path: &std::path::Path) -> Result<()> {
         // `Command::new` resolves the path; keep the child detached by not
         // holding a handle to it.
         let _child = Command::new(path).spawn().context("launch application")?;
+        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
         // Non-Windows launching is stubbed for M1.
+        let _ = path;
         anyhow::bail!("launching is not yet implemented on this platform");
     }
-    Ok(())
 }
 
 struct StewardApp {
@@ -748,6 +752,8 @@ impl Render for StewardApp {
         // available to the launcher.
         #[cfg(target_os = "windows")]
         platform::enable_ime(window);
+        #[cfg(not(target_os = "windows"))]
+        let _ = window;
 
         let result_count = self.results.visible_count(cx);
         let primary = cx.theme().primary;
@@ -760,10 +766,14 @@ impl Render for StewardApp {
             .flex()
             .flex_col()
             .size_full()
-            // Fully opaque surface (the window itself is opaque too): the
-            // launcher keeps its fixed dark look regardless of the system
-            // theme, so no translucent tint or OS backdrop is involved.
-            .bg(rgb(steward_ui_components::palette::BACKGROUND))
+            // Translucent scrim over the window's blurred backdrop (Windows
+            // Acrylic / macOS vibrancy): the launcher keeps its fixed dark
+            // look regardless of the system theme, but the frosted glass
+            // behind it shows through at SCRIM_ALPHA.
+            .bg(
+                rgb(steward_ui_components::palette::BACKGROUND)
+                    .opacity(steward_ui_components::palette::SCRIM_ALPHA),
+            )
             .text_lg()
             .text_color(rgb(steward_ui_components::palette::FOREGROUND))
             .child(drag_strip().h(px(LAUNCHER_MARGIN)))
@@ -1203,16 +1213,16 @@ fn open_launcher_window(
     i18n: Rc<i18n::Localization>,
     state: &Rc<RefCell<LauncherState>>,
 ) -> AnyWindowHandle {
-    // Fully opaque window background. The launcher used to paint a translucent
-    // dark tint over the Windows Mica / macOS vibrancy backdrop, which follows
-    // the OS theme: in light mode the Mica turned light gray, the light
-    // backdrop bled through as white edges, and the white query text lost all
-    // contrast. The launcher must look identical in both system modes, so it
-    // owns its surface color outright instead of compositing over the OS.
-    #[cfg(target_os = "windows")]
-    let window_background = WindowBackgroundAppearance::Opaque;
-    #[cfg(not(target_os = "windows"))]
-    let window_background = WindowBackgroundAppearance::Opaque;
+    // Frosted-glass backdrop: the launcher composits a fixed dark scrim (see
+    // `render` and `palette::SCRIM_ALPHA`) over a blurred window background —
+    // Windows Acrylic, macOS vibrancy. The launcher used to paint a
+    // translucent tint over the Windows Mica / macOS vibrancy backdrop without
+    // any blur, which followed the OS theme: in light mode the Mica turned
+    // light gray, the light backdrop bled through as white edges, and the
+    // white query text lost all contrast. Blurring the backdrop and keeping
+    // our own fixed dark tint (instead of letting the OS theme drive it)
+    // preserves the identical dark look in both system modes.
+    let window_background = WindowBackgroundAppearance::Blurred;
 
     let bounds = Bounds::centered(None, size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)), cx);
     cx.open_window(

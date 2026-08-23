@@ -1,9 +1,10 @@
 name: CI
 
 on:
-  push:
-    branches: [main, master]
+  # Not every push: the launcher repo is developed by pushing directly to
+  # master, so CI runs on pull requests and on demand instead of per commit.
   pull_request:
+  workflow_dispatch:
 
 jobs:
   rust:
