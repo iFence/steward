@@ -136,7 +136,10 @@ fn render_row(
         .gap_2()
         .px_3()
         .cursor_pointer()
-        .bg(rgb(crate::palette::BACKGROUND))
+        // No own background: the window root paints the single translucent
+        // scrim (palette::BACKGROUND at palette::SCRIM_ALPHA) across the whole
+        // launcher, so rows stay transparent and the frosted-glass backdrop
+        // shows uniformly under the drop-down too.
         .when(selected, |this| this.bg(cx.theme().list_active))
         .when(!selected, |this| {
             this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))

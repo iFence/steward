@@ -1,15 +1,23 @@
 //! Steward's visual palette, adapted from Tinycast's design system
 //! (github.com/abue-ammar/tinycast, docs/ui.md). Tinycast paints a dark
 //! neutral panel — black 40% scrim over behind-window vibrancy — with white
-//! ink at fixed alpha stops and a violet brand hue. Steward's windows are
-//! opaque by design (the launcher must look identical over any desktop), so
-//! the scrim is folded into a solid neutral surface and the white ramp is
-//! pre-blended onto it. Keep the alpha stops in sync with Tinycast's tokens;
-//! the surface is the one judgment call.
+//! ink at fixed alpha stops and a violet brand hue. Steward renders that
+//! scrim as [`BACKGROUND`] composited over the window's blurred backdrop
+//! (Windows Acrylic / macOS vibrancy) at [`SCRIM_ALPHA`], so the frosted
+//! glass shows through while the launcher keeps a fixed dark look regardless
+//! of the OS theme. Opaque windows (the settings window) use the full
+//! [`BACKGROUND`]. Keep the alpha stops in sync with Tinycast's tokens; the
+//! surface is the one judgment call.
 
 /// Main surface: launcher bar, result rows, settings window. Stands in for
-/// Tinycast's `panelScrim` (black 0.40 over vibrancy), made opaque.
+/// Tinycast's `panelScrim` (black 0.40 over vibrancy), made opaque for
+/// opaque windows.
 pub const BACKGROUND: u32 = 0x202024;
+/// Opacity at which translucent launcher surfaces paint [`BACKGROUND`] over
+/// the window's blurred backdrop. Tuned so the Acrylic/vibrancy blur reads
+/// clearly while the white ink keeps contrast; raise toward 1.0 for a more
+/// opaque, uniform surface.
+pub const SCRIM_ALPHA: f32 = 0.55;
 /// Alt surface: hover fill, secondary controls, active tabs. Tinycast's
 /// `rowHover` (white 0.05) blended onto [`BACKGROUND`].
 pub const BACKGROUND_ALT: u32 = 0x2c2c31;
