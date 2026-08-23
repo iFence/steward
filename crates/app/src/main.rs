@@ -730,8 +730,10 @@ impl Render for StewardApp {
             .flex()
             .flex_col()
             .size_full()
-            // Semi-transparent so the window-level blur shows through.
-            .bg(rgb(0x232332).opacity(0.62))
+            // Fully opaque surface (the window itself is opaque too): the
+            // launcher keeps its fixed dark look regardless of the system
+            // theme, so no translucent tint or OS backdrop is involved.
+            .bg(rgb(0x232332))
             .text_lg()
             .text_color(rgb(0xcdd6f4))
             .child(drag_strip().h(px(LAUNCHER_MARGIN)))
@@ -1138,13 +1140,16 @@ fn open_launcher_window(
     i18n: Rc<i18n::Localization>,
     state: &Rc<RefCell<LauncherState>>,
 ) -> AnyWindowHandle {
-    // Frosted-glass window background. Windows 11 renders its native Mica
-    // material via DWM (the legacy acrylic blur-behind API is unreliable on
-    // 22H2+); macOS and Linux use the native vibrancy / KDE blur instead.
+    // Fully opaque window background. The launcher used to paint a translucent
+    // dark tint over the Windows Mica / macOS vibrancy backdrop, which follows
+    // the OS theme: in light mode the Mica turned light gray, the light
+    // backdrop bled through as white edges, and the white query text lost all
+    // contrast. The launcher must look identical in both system modes, so it
+    // owns its surface color outright instead of compositing over the OS.
     #[cfg(target_os = "windows")]
-    let window_background = WindowBackgroundAppearance::MicaBackdrop;
+    let window_background = WindowBackgroundAppearance::Opaque;
     #[cfg(not(target_os = "windows"))]
-    let window_background = WindowBackgroundAppearance::Blurred;
+    let window_background = WindowBackgroundAppearance::Opaque;
 
     let bounds = Bounds::centered(None, size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)), cx);
     cx.open_window(
