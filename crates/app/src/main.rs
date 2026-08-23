@@ -1,11 +1,12 @@
 //! Steward desktop entry point.
 //!
 //! Startup is silent: the app registers a system tray icon (Windows/macOS)
-//! and the global hotkey `Ctrl+Alt+Space`, but opens no window. The launcher
-//! bar — a wide, short, borderless popup centered on the primary display —
-//! is summoned on demand via the hotkey or the tray icon, and hidden again
-//! with `Esc` (or the hotkey), or automatically when another application
-//! takes activation (clicking away).
+//! and two global hotkeys — summon (`Ctrl+Alt+Space`) and settings
+//! (`Ctrl+,`), both changeable in Settings — but opens no window. The launcher
+//! bar — a wide, short, borderless popup centered on the primary display — is
+//! summoned on demand via the hotkey or the tray icon, and hidden again with
+//! `Esc` (or the hotkey), or automatically when another application takes
+//! activation (clicking away).
 //!
 //! GPUI does not provide a system-level hotkey API, so registration is
 //! delegated to the `global-hotkey` crate and events are bridged into the
@@ -33,9 +34,9 @@ use global_hotkey::{
 use gpui::{
     actions, div, point, prelude::*, px, rgb, size, Anchor, Animation, AnimationExt, AnyElement,
     AnyWindowHandle, App, AppContext, AsyncApp, Bounds, Div, Element, ElementId,
-    ElementInputHandler, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
-    InspectorElementId, InteractiveElement, KeyBinding, KeyDownEvent, LayoutId, Pixels, QuitMode,
-    SharedString, Subscription, TitlebarOptions, UTF16Selection, Window,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
+    InspectorElementId, InteractiveElement, KeyBinding, KeyDownEvent, Keystroke, LayoutId, Pixels,
+    QuitMode, SharedString, Subscription, TitlebarOptions, UTF16Selection, Window,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowOptions,
 };
 use gpui_component::{
@@ -112,6 +113,11 @@ const PANEL_BORDER: u32 = 0x3a3a4c;
 const THEME_COLOR_SETTING: &str = "theme_color";
 /// Storage key for the persisted language code (e.g. `zh`, `en`).
 const LANGUAGE_SETTING: &str = "language";
+/// Storage key for the persisted summon hotkey (a `HotKey::into_string()`
+/// string, e.g. `control+alt+Space`).
+const SUMMON_HOTKEY_SETTING: &str = "summon_hotkey";
+/// Storage key for the persisted settings-window hotkey (e.g. `control+comma`).
+const SETTINGS_HOTKEY_SETTING: &str = "settings_hotkey";
 /// Preset accent colors offered by the settings page.
 const ACCENT_PRESETS: [u32; 4] = [
     0x89b4fa, // sea blue (default)
@@ -329,6 +335,16 @@ struct LauncherState {
     /// skip redundant resize calls when the result-count-driven height has not
     /// changed (e.g. every IME composition update).
     last_applied_height: f32,
+    /// Global hotkey manager, created on the event-loop thread so its hidden
+    /// window receives `WM_HOTKEY`. Stored here (instead of leaked) so the
+    /// settings window can re-register the summon hotkey at runtime.
+    hotkey_manager: Option<GlobalHotKeyManager>,
+    /// The currently registered summon hotkey, kept so a change can unregister
+    /// the old binding and the settings field can display the active one.
+    summon_hotkey: Option<HotKey>,
+    /// The currently registered settings-window hotkey (`None` when no binding
+    /// could be registered at startup, e.g. it collided with another app).
+    settings_hotkey: Option<HotKey>,
 }
 
 impl LauncherState {
@@ -730,8 +746,10 @@ impl Render for StewardApp {
             .flex()
             .flex_col()
             .size_full()
-            // Semi-transparent so the window-level blur shows through.
-            .bg(rgb(0x232332).opacity(0.62))
+            // Fully opaque surface (the window itself is opaque too): the
+            // launcher keeps its fixed dark look regardless of the system
+            // theme, so no translucent tint or OS backdrop is involved.
+            .bg(rgb(0x232332))
             .text_lg()
             .text_color(rgb(0xcdd6f4))
             .child(drag_strip().h(px(LAUNCHER_MARGIN)))
@@ -1048,6 +1066,9 @@ fn main() {
         engine: Rc::new(RefCell::new(Engine::new())),
         icon_cache: RefCell::new(HashMap::new()),
         scan_rx: RefCell::new(None),
+        hotkey_manager: None,
+        summon_hotkey: None,
+        settings_hotkey: None,
     }));
 
     // GPUI starts at boot and the launcher window is created hidden, so every
@@ -1068,13 +1089,8 @@ fn main() {
         if let Err(error) = setup_tray(&i18n) {
             eprintln!("failed to create tray icon: {error:#}");
         }
-        match register_global_hotkey() {
-            Ok(manager) => {
-                // The hidden hotkey window must stay alive for the app
-                // lifetime.
-                Box::leak(Box::new(manager));
-            }
-            Err(error) => eprintln!("failed to register global hotkey: {error:#}"),
+        if let Err(error) = setup_global_hotkey(&state) {
+            eprintln!("failed to register global hotkey: {error:#}");
         }
         if let Err(error) = spawn_event_poll_task(state.clone(), i18n.clone(), cx) {
             eprintln!("failed to start event polling task: {error:#}");
@@ -1138,13 +1154,16 @@ fn open_launcher_window(
     i18n: Rc<i18n::Localization>,
     state: &Rc<RefCell<LauncherState>>,
 ) -> AnyWindowHandle {
-    // Frosted-glass window background. Windows 11 renders its native Mica
-    // material via DWM (the legacy acrylic blur-behind API is unreliable on
-    // 22H2+); macOS and Linux use the native vibrancy / KDE blur instead.
+    // Fully opaque window background. The launcher used to paint a translucent
+    // dark tint over the Windows Mica / macOS vibrancy backdrop, which follows
+    // the OS theme: in light mode the Mica turned light gray, the light
+    // backdrop bled through as white edges, and the white query text lost all
+    // contrast. The launcher must look identical in both system modes, so it
+    // owns its surface color outright instead of compositing over the OS.
     #[cfg(target_os = "windows")]
-    let window_background = WindowBackgroundAppearance::MicaBackdrop;
+    let window_background = WindowBackgroundAppearance::Opaque;
     #[cfg(not(target_os = "windows"))]
-    let window_background = WindowBackgroundAppearance::Blurred;
+    let window_background = WindowBackgroundAppearance::Opaque;
 
     let bounds = Bounds::centered(None, size(px(LAUNCHER_WIDTH), px(LAUNCHER_HEIGHT)), cx);
     cx.open_window(
@@ -1232,8 +1251,11 @@ fn open_launcher_window(
 /// Settings window built on `gpui_component`'s `Settings` widget.
 ///
 /// Pages:
-/// - General: launch-at-startup switch (the single home for autostart; the
-///   tray menu no longer carries a duplicate toggle).
+/// - General: language, theme color and the launch-at-startup switch (the
+///   single home for autostart; the tray menu no longer carries a duplicate
+///   toggle).
+/// - Hotkeys: global summon hotkey and the settings-window hotkey, each
+///   recorded by pressing a combination inside the window.
 /// - About: app name, version, and a short description.
 struct SettingsApp {
     i18n: Rc<i18n::Localization>,
@@ -1243,6 +1265,14 @@ struct SettingsApp {
     accent: u32,
     /// Currently selected language code (e.g. `zh`), drives the dropdown.
     language: String,
+    /// Which global-hotkey field is waiting for the next key combination.
+    /// While set, the window's keystroke interceptor turns the next valid
+    /// combination into the new hotkey for that field.
+    recording: Option<HotkeyField>,
+    /// Keeps the keystroke interceptor alive for the window's lifetime; the
+    /// subscription is dropped (and the interceptor unregistered) when the
+    /// settings window closes.
+    _hotkey_subscription: Option<Subscription>,
 }
 
 impl Render for SettingsApp {
@@ -1253,14 +1283,25 @@ impl Render for SettingsApp {
         let view_theme_set = view.clone();
         let view_language_value = view.clone();
         let view_language_set = view.clone();
+        let view_hotkey = view.clone();
+        let view_hotkey_toggle = view.clone();
+        let view_settings_hotkey = view.clone();
+        let view_settings_toggle = view.clone();
         let i18n = self.i18n.clone();
+        let i18n_hotkey = i18n.clone();
+        let i18n_settings = i18n.clone();
         let state = self.state.clone();
+        let state_hotkey = self.state.clone();
+        let state_settings = self.state.clone();
         let storage = self.storage.clone();
         let storage_language = storage.clone();
         let general_title = self.i18n.translate("settings-general");
         let autostart_label = self.i18n.translate("app-autostart");
         let theme_title = self.i18n.translate("settings-theme");
         let language_title = self.i18n.translate("settings-language");
+        let hotkeys_title = self.i18n.translate("settings-hotkeys");
+        let global_hotkey_title = self.i18n.translate("settings-global-hotkey");
+        let settings_hotkey_title = self.i18n.translate("settings-settings-hotkey");
         let about_title = self.i18n.translate("settings-about");
         let version_label = self.i18n.translate("settings-version");
         let language_options: Vec<(SharedString, SharedString)> = SUPPORTED_LANGUAGES
@@ -1287,7 +1328,7 @@ impl Render for SettingsApp {
                 SettingPage::new(general_title)
                     .default_open(true)
                     .icon(Icon::new(IconName::Settings2))
-                    .groups(vec![SettingGroup::new()
+                    .group(SettingGroup::new()
                         .item(SettingItem::new(
                             language_title,
                             SettingField::render(move |_options, _window, cx| {
@@ -1310,7 +1351,9 @@ impl Render for SettingsApp {
                                         // Keep gpui-component's own widgets (the
                                         // settings search box) in sync, and
                                         // refresh the launcher's row type label.
-                                        gpui_component::set_locale(gpui_component_locale(&code));
+                                        gpui_component::set_locale(gpui_component_locale(
+                                            &code,
+                                        ));
                                         update_launcher_label(&state, cx);
                                         view.update(cx, |app, cx| {
                                             app.language = code.to_string();
@@ -1375,7 +1418,33 @@ impl Render for SettingsApp {
                                 },
                             )
                             .default_value(false),
-                        ))]),
+                        ))),
+                // Global shortcut keys live on their own page, not as a sub-group
+                // of the General page: both hotkeys share one recording flow and
+                // deserve a dedicated, self-contained settings surface.
+                SettingPage::new(hotkeys_title)
+                    .icon(Icon::new(IconName::Settings))
+                    .group(SettingGroup::new()
+                        .item(SettingItem::new(
+                            global_hotkey_title,
+                            hotkey_setting_field(
+                                HotkeyField::Summon,
+                                view_hotkey,
+                                view_hotkey_toggle,
+                                state_hotkey,
+                                i18n_hotkey,
+                            ),
+                        ))
+                        .item(SettingItem::new(
+                            settings_hotkey_title,
+                            hotkey_setting_field(
+                                HotkeyField::Settings,
+                                view_settings_hotkey,
+                                view_settings_toggle,
+                                state_settings,
+                                i18n_settings,
+                            ),
+                        ))),
                 SettingPage::new(about_title)
                     .resettable(false)
                     .icon(Icon::new(IconName::Info))
@@ -1476,6 +1545,49 @@ fn dropdown_field(
         .into_any_element()
 }
 
+/// A settings field for a global hotkey: a fixed-width outline button showing
+/// the active binding, or the recording prompt while the window's keystroke
+/// interceptor waits for the next combination. Clicking toggles recording for
+/// `field` (the interceptor in `open_settings_window` applies the result).
+fn hotkey_setting_field(
+    field: HotkeyField,
+    view: Entity<SettingsApp>,
+    view_toggle: Entity<SettingsApp>,
+    state: Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+) -> SettingField<SharedString> {
+    SettingField::render(move |_options, _window, cx| {
+        let recording = view.read(cx).recording == Some(field);
+        let label = if recording {
+            SharedString::from(i18n.translate("settings-hotkey-recording"))
+        } else {
+            let hotkey = field
+                .active_hotkey(&state.borrow())
+                .unwrap_or_else(|| field.default_hotkey());
+            SharedString::from(format_hotkey(&hotkey))
+        };
+        let view_toggle = view_toggle.clone();
+        Button::new(match field {
+            HotkeyField::Summon => "summon-hotkey-button",
+            HotkeyField::Settings => "settings-hotkey-button",
+        })
+        .label(label)
+        .outline()
+        .w(px(150.0))
+        .on_click(move |_, _window, cx| {
+            view_toggle.update(cx, |app, cx| {
+                app.recording = if app.recording == Some(field) {
+                    None
+                } else {
+                    Some(field)
+                };
+                cx.notify();
+            });
+        })
+        .into_any_element()
+    })
+}
+
 /// Open (or focus) the settings window. Keeps `LauncherState.settings_window`
 /// in sync: the handle is cleared when the window is closed so a later menu
 /// click reopens it instead of touching a stale handle.
@@ -1510,6 +1622,18 @@ fn open_settings_window(
             },
             |window, cx| {
                 window.set_window_title(&i18n.translate("app-settings"));
+                // The native titlebar follows the OS theme by default; pin it
+                // to the app's dark look (Windows light mode would otherwise
+                // render it white).
+                platform::force_dark_titlebar(window);
+                // GPUI re-derives the titlebar color from the OS theme when
+                // the appearance changes; re-pin it dark so toggling Windows
+                // dark/light while the window is open keeps it black.
+                window
+                    .observe_window_appearance(|window, _cx| {
+                        platform::force_dark_titlebar(window);
+                    })
+                    .detach();
                 // The settings panel uses gpui-component widgets (input,
                 // tooltip, menu popovers), so the window's root must be a
                 // `Root`: it owns the overlay layers those widgets render into.
@@ -1529,7 +1653,48 @@ fn open_settings_window(
                     state: state.clone(),
                     accent,
                     language,
+                    recording: None,
+                    _hotkey_subscription: None,
                 });
+
+                // While a hotkey field is recording, capture the next key
+                // combination pressed in *this* window. The interceptor fires
+                // before all other key handling, so the captured combo never
+                // reaches the settings widget itself.
+                let settings_window_handle = window.window_handle();
+                let hotkey_view = view.clone();
+                let hotkey_state = state.clone();
+                let subscription = cx.intercept_keystrokes(move |event, window, cx| {
+                    if window.window_handle() != settings_window_handle {
+                        return;
+                    }
+                    let Some(field) = hotkey_view.read(cx).recording else {
+                        return;
+                    };
+                    let mods = &event.keystroke.modifiers;
+                    let has_modifier = mods.control || mods.alt || mods.shift || mods.platform;
+                    // A bare Escape cancels recording; modifier-only presses
+                    // are ignored by `keystroke_to_hotkey`.
+                    if event.keystroke.key == "escape" && !has_modifier {
+                        cx.stop_propagation();
+                        hotkey_view.update(cx, |app, cx| {
+                            app.recording = None;
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    let Some(hotkey) = keystroke_to_hotkey(&event.keystroke) else {
+                        return;
+                    };
+                    cx.stop_propagation();
+                    apply_hotkey(&hotkey_state, field, hotkey);
+                    hotkey_view.update(cx, |app, cx| {
+                        app.recording = None;
+                        cx.notify();
+                    });
+                });
+                view.update(cx, |app, _| app._hotkey_subscription = Some(subscription));
+
                 cx.new(|cx| Root::new(view, window, cx))
             },
         )
@@ -1635,14 +1800,282 @@ fn set_autostart(_enabled: bool) -> bool {
     false
 }
 
-/// Create and register the global hotkey. The manager must be kept alive for
-/// the process lifetime (callers `Box::leak` it); its hidden window delivers
-/// `WM_HOTKEY` to whichever message pump owns the thread.
-fn register_global_hotkey() -> Result<GlobalHotKeyManager> {
+/// Which global hotkey a settings field edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotkeyField {
+    /// Summons the launcher bar.
+    Summon,
+    /// Opens the settings window.
+    Settings,
+}
+
+impl HotkeyField {
+    /// Storage key persisting this hotkey as a `HotKey::into_string()` value.
+    fn setting_key(self) -> &'static str {
+        match self {
+            HotkeyField::Summon => SUMMON_HOTKEY_SETTING,
+            HotkeyField::Settings => SETTINGS_HOTKEY_SETTING,
+        }
+    }
+
+    /// The currently registered hotkey for this field (`None` only when no
+    /// binding could be registered at startup, e.g. it collided with another
+    /// application).
+    fn active_hotkey(self, state: &LauncherState) -> Option<HotKey> {
+        match self {
+            HotkeyField::Summon => state.summon_hotkey,
+            HotkeyField::Settings => state.settings_hotkey,
+        }
+    }
+
+    /// The built-in binding, used when nothing is persisted yet or the
+    /// persisted value cannot be parsed.
+    fn default_hotkey(self) -> HotKey {
+        match self {
+            HotkeyField::Summon => {
+                HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
+            }
+            HotkeyField::Settings => HotKey::new(Some(Modifiers::CONTROL), Code::Comma),
+        }
+    }
+}
+
+/// Read the persisted summon hotkey, falling back to the default on a missing
+/// or unparseable value.
+fn read_summon_hotkey(state: &Rc<RefCell<LauncherState>>) -> HotKey {
+    read_hotkey(state, HotkeyField::Summon)
+}
+
+/// Read the persisted settings-window hotkey, falling back to the default on a
+/// missing or unparseable value.
+fn read_settings_hotkey(state: &Rc<RefCell<LauncherState>>) -> HotKey {
+    read_hotkey(state, HotkeyField::Settings)
+}
+
+fn read_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField) -> HotKey {
+    state
+        .borrow()
+        .storage
+        .borrow()
+        .get_setting(field.setting_key())
+        .and_then(|value| value.parse::<HotKey>().ok())
+        .unwrap_or_else(|| field.default_hotkey())
+}
+
+/// Create the global hotkey manager, register the persisted summon and settings
+/// hotkeys (falling back to the defaults when a persisted one fails), and store
+/// everything in `state`. The manager is kept in `LauncherState` instead of
+/// leaked so the settings window can re-register hotkeys later; its hidden
+/// window delivers `WM_HOTKEY` to whichever message pump owns the event-loop
+/// thread.
+fn setup_global_hotkey(state: &Rc<RefCell<LauncherState>>) -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("create global hotkey manager")?;
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space);
-    manager.register(hotkey).context("register global hotkey")?;
-    Ok(manager)
+    let mut summon = read_summon_hotkey(state);
+    if let Err(error) = manager.register(summon) {
+        eprintln!(
+            "failed to register configured summon hotkey {summon}: {error:#}; \
+             falling back to the default"
+        );
+        summon = HotkeyField::Summon.default_hotkey();
+        manager
+            .register(summon)
+            .context("register default global hotkey")?;
+    }
+    let settings = register_settings_hotkey(&manager, state);
+    let mut state_ref = state.borrow_mut();
+    state_ref.hotkey_manager = Some(manager);
+    state_ref.summon_hotkey = Some(summon);
+    state_ref.settings_hotkey = settings;
+    Ok(())
+}
+
+/// Register the persisted settings hotkey, falling back to the default on a
+/// failure (including a collision with the summon hotkey). Returns `None` only
+/// when no candidate could be registered.
+fn register_settings_hotkey(
+    manager: &GlobalHotKeyManager,
+    state: &Rc<RefCell<LauncherState>>,
+) -> Option<HotKey> {
+    let configured = read_settings_hotkey(state);
+    let default = HotkeyField::Settings.default_hotkey();
+    let candidates = if configured == default {
+        vec![configured]
+    } else {
+        vec![configured, default]
+    };
+    for candidate in candidates {
+        match manager.register(candidate) {
+            Ok(()) => return Some(candidate),
+            Err(error) => {
+                eprintln!("failed to register settings hotkey {candidate}: {error:#}");
+            }
+        }
+    }
+    None
+}
+
+/// Replace the active hotkey for `field`: unregister the old binding, register
+/// the new one, and persist it. When the new binding cannot be registered (e.g.
+/// it is already taken by another application, or collides with the other
+/// global hotkey) the old binding is restored and nothing is persisted. Returns
+/// whether the change took effect.
+fn apply_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField, hotkey: HotKey) -> bool {
+    let mut state_ref = state.borrow_mut();
+    let Some(manager) = state_ref.hotkey_manager.as_ref() else {
+        return false;
+    };
+    let previous = field.active_hotkey(&state_ref);
+    if previous == Some(hotkey) {
+        return true;
+    }
+    if let Some(previous) = previous {
+        let _ = manager.unregister(previous);
+    }
+    match manager.register(hotkey) {
+        Ok(()) => {
+            let _ = state_ref
+                .storage
+                .borrow()
+                .set_setting(field.setting_key(), &hotkey.to_string());
+            match field {
+                HotkeyField::Summon => state_ref.summon_hotkey = Some(hotkey),
+                HotkeyField::Settings => state_ref.settings_hotkey = Some(hotkey),
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!("failed to register {field:?} hotkey {hotkey}: {error:#}");
+            if let Some(previous) = previous {
+                let _ = manager.register(previous);
+            }
+            match field {
+                HotkeyField::Summon => state_ref.summon_hotkey = previous,
+                HotkeyField::Settings => state_ref.settings_hotkey = previous,
+            }
+            false
+        }
+    }
+}
+
+/// Convert a GPUI keystroke into a global `HotKey`. Requires at least one
+/// modifier (control/alt/shift/super) so a global hotkey never hijacks a plain
+/// key, and a main key that maps to a physical `Code` (modifier-only presses
+/// and unmappable keys return `None`).
+fn keystroke_to_hotkey(keystroke: &Keystroke) -> Option<HotKey> {
+    let mut parts: Vec<&str> = Vec::with_capacity(4);
+    let mods = &keystroke.modifiers;
+    if mods.control {
+        parts.push("ctrl");
+    }
+    if mods.alt {
+        parts.push("alt");
+    }
+    if mods.shift {
+        parts.push("shift");
+    }
+    if mods.platform {
+        parts.push("super");
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let key = gpui_key_to_hotkey_token(&keystroke.key)?;
+    format!("{}+{}", parts.join("+"), key).parse().ok()
+}
+
+/// Map a GPUI keystroke key string to the token `HotKey`'s parser accepts
+/// (e.g. `"space"` -> `"Space"`, `"a"` -> `"A"`, `"f9"` -> `"F9"`). Returns
+/// `None` for modifier-only and otherwise unmappable keys.
+fn gpui_key_to_hotkey_token(key: &str) -> Option<String> {
+    if let Some(token) = match key {
+        "space" => Some("Space"),
+        "enter" => Some("Enter"),
+        "tab" => Some("Tab"),
+        "backspace" => Some("Backspace"),
+        "delete" => Some("Delete"),
+        "home" => Some("Home"),
+        "end" => Some("End"),
+        "pageup" => Some("PageUp"),
+        "pagedown" => Some("PageDown"),
+        "insert" => Some("Insert"),
+        "up" => Some("ArrowUp"),
+        "down" => Some("ArrowDown"),
+        "left" => Some("ArrowLeft"),
+        "right" => Some("ArrowRight"),
+        "capslock" => Some("CapsLock"),
+        "numlock" => Some("NumLock"),
+        "scrolllock" => Some("ScrollLock"),
+        "printscreen" => Some("PrintScreen"),
+        "pause" => Some("Pause"),
+        _ => None,
+    } {
+        return Some(token.to_string());
+    }
+    if key.len() == 1 {
+        let byte = key.as_bytes()[0];
+        if byte.is_ascii_alphabetic() {
+            return Some((byte as char).to_ascii_uppercase().to_string());
+        }
+        if byte.is_ascii_digit() {
+            return Some((byte as char).to_string());
+        }
+        return match byte {
+            b'-' => Some("Minus"),
+            b'=' => Some("Equal"),
+            b'[' => Some("BracketLeft"),
+            b']' => Some("BracketRight"),
+            b'\\' => Some("Backslash"),
+            b';' => Some("Semicolon"),
+            b'\'' => Some("Quote"),
+            b',' => Some("Comma"),
+            b'.' => Some("Period"),
+            b'/' => Some("Slash"),
+            b'`' => Some("Backquote"),
+            _ => None,
+        }
+        .map(String::from);
+    }
+    if let Some(digits) = key.strip_prefix('f') {
+        if let Ok(number) = digits.parse::<u8>() {
+            if (1..=24).contains(&number) {
+                return Some(format!("F{number}"));
+            }
+        }
+    }
+    None
+}
+
+/// Human-readable global hotkey label for a settings field, e.g.
+/// `Ctrl + Alt + Space`.
+fn format_hotkey(hotkey: &HotKey) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(5);
+    if hotkey.mods.contains(Modifiers::SUPER) {
+        parts.push("Win".into());
+    }
+    if hotkey.mods.contains(Modifiers::CONTROL) {
+        parts.push("Ctrl".into());
+    }
+    if hotkey.mods.contains(Modifiers::ALT) {
+        parts.push("Alt".into());
+    }
+    if hotkey.mods.contains(Modifiers::SHIFT) {
+        parts.push("Shift".into());
+    }
+    parts.push(code_label(hotkey.key));
+    parts.join(" + ")
+}
+
+/// Short display name for a `Code`, stripping the `Key`/`Digit` prefixes and
+/// reusing `keyboard-types`' Display for the rest.
+fn code_label(code: Code) -> String {
+    let text = code.to_string();
+    if let Some(rest) = text.strip_prefix("Key") {
+        return rest.to_string();
+    }
+    if let Some(rest) = text.strip_prefix("Digit") {
+        return rest.to_string();
+    }
+    text
 }
 
 /// Bridge native tray/hotkey events into the GPUI event loop. Runs only after
@@ -1665,7 +2098,25 @@ fn spawn_event_poll_task(
         state.borrow().apply_scan_results();
 
         while let Ok(event) = hotkey_events.try_recv() {
-            if event.state == HotKeyState::Pressed {
+            if event.state != HotKeyState::Pressed {
+                continue;
+            }
+            // `HotKey::id` is derived from the modifier/key combination, so a
+            // registered hotkey can be matched to its event by id alone.
+            let (is_settings, is_summon) = {
+                let state_ref = state.borrow();
+                (
+                    state_ref
+                        .settings_hotkey
+                        .is_some_and(|hotkey| hotkey.id() == event.id),
+                    state_ref
+                        .summon_hotkey
+                        .is_some_and(|hotkey| hotkey.id() == event.id),
+                )
+            };
+            if is_settings {
+                toggle_settings_window(&state, i18n.clone(), cx);
+            } else if is_summon {
                 toggle_launcher(&state, i18n.clone(), cx);
             }
         }
@@ -1687,19 +2138,7 @@ fn spawn_event_poll_task(
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         while let Ok(event) = menu_events.try_recv() {
             match event.id().as_ref() {
-                MENU_SETTINGS => {
-                    let state_ref = state.borrow();
-                    if let Some(handle) = state_ref.settings_window.as_ref() {
-                        let _ = handle.update(cx, |_, window, cx| {
-                            cx.activate(true);
-                            window.refresh();
-                        });
-                    } else {
-                        drop(state_ref);
-                        let handle = cx.update(|cx| open_settings_window(cx, i18n.clone(), &state));
-                        state.borrow_mut().settings_window = Some(handle);
-                    }
-                }
+                MENU_SETTINGS => toggle_settings_window(&state, i18n.clone(), cx),
                 MENU_QUIT => cx.update(|cx| cx.quit()),
                 _ => {}
             }
@@ -1712,6 +2151,26 @@ fn spawn_event_poll_task(
     .detach();
 
     Ok(())
+}
+
+/// Show the settings window, focusing it if it is already open (reopening it
+/// if it was closed). Shared by the tray menu and the settings global hotkey.
+fn toggle_settings_window(
+    state: &Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+    cx: &mut AsyncApp,
+) {
+    let state_ref = state.borrow();
+    if let Some(handle) = state_ref.settings_window.as_ref() {
+        let _ = handle.update(cx, |_, window, cx| {
+            cx.activate(true);
+            window.refresh();
+        });
+    } else {
+        drop(state_ref);
+        let handle = cx.update(|cx| open_settings_window(cx, i18n, state));
+        state.borrow_mut().settings_window = Some(handle);
+    }
 }
 
 /// Summon or dismiss the launcher bar. Reopens the window if it was closed.
@@ -1964,6 +2423,29 @@ mod platform {
         }
     }
 
+    /// Force the native titlebar to render dark regardless of the OS theme.
+    /// GPUI derives `DWMWA_USE_IMMERSIVE_DARK_MODE` from the system appearance
+    /// at window creation (light mode => light titlebar); re-applying the
+    /// attribute pins the window to the app's dark look, so the settings
+    /// window keeps a black titlebar even when Windows is in light mode.
+    pub fn force_dark_titlebar(window: &Window) {
+        let Some(hwnd) = hwnd(window) else {
+            return;
+        };
+        unsafe {
+            use windows_sys::Win32::Graphics::Dwm::{
+                DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+            };
+            let enabled: i32 = 1;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &enabled as *const _ as *const _,
+                std::mem::size_of_val(&enabled) as u32,
+            );
+        }
+    }
+
     /// Convert a desired logical client size into the physical window size
     /// including the native non-client frame. The launcher is borderless, but
     /// Windows still frames WS_POPUP windows with a few device pixels; if they
@@ -2101,6 +2583,10 @@ mod platform {
     /// Resizing is a Windows-specific launcher behavior for now.
     pub fn resize(_window: &Window, _height: f32) {}
 
+    /// Native titlebar dark-mode forcing is Windows-only; other platforms
+    /// already follow the app theme.
+    pub fn force_dark_titlebar(_window: &Window) {}
+
     pub fn caret_blink_period() -> Duration {
         Duration::from_millis(1060)
     }
@@ -2108,7 +2594,7 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
-    use super::SearchInput;
+    use super::*;
 
     fn input(query: &str) -> SearchInput {
         SearchInput {
@@ -2170,5 +2656,86 @@ mod tests {
         input.replace_utf16(None, "d");
         assert_eq!(input.query, "abcd");
         assert_eq!(input.cursor, 4);
+    }
+
+    #[test]
+    fn gpui_key_token_mapping() {
+        assert_eq!(gpui_key_to_hotkey_token("space").as_deref(), Some("Space"));
+        assert_eq!(gpui_key_to_hotkey_token("enter").as_deref(), Some("Enter"));
+        assert_eq!(gpui_key_to_hotkey_token("up").as_deref(), Some("ArrowUp"));
+        assert_eq!(gpui_key_to_hotkey_token("f9").as_deref(), Some("F9"));
+        assert_eq!(gpui_key_to_hotkey_token("a").as_deref(), Some("A"));
+        assert_eq!(gpui_key_to_hotkey_token("9").as_deref(), Some("9"));
+        assert_eq!(gpui_key_to_hotkey_token("-").as_deref(), Some("Minus"));
+        assert_eq!(gpui_key_to_hotkey_token(";").as_deref(), Some("Semicolon"));
+        // Modifier-only and otherwise unmappable keys never become a hotkey.
+        assert_eq!(gpui_key_to_hotkey_token("control"), None);
+        assert_eq!(gpui_key_to_hotkey_token("shift"), None);
+        assert_eq!(gpui_key_to_hotkey_token("alt"), None);
+        assert_eq!(gpui_key_to_hotkey_token("unidentified"), None);
+    }
+
+    #[test]
+    fn keystroke_to_hotkey_requires_a_modifier() {
+        let combo = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                alt: true,
+                ..Default::default()
+            },
+            key: "space".into(),
+            key_char: None,
+        };
+        let hotkey = keystroke_to_hotkey(&combo).expect("ctrl+alt+space maps to a hotkey");
+        assert_eq!(hotkey.mods, Modifiers::CONTROL | Modifiers::ALT);
+        assert_eq!(hotkey.key, Code::Space);
+
+        // A plain key must not become a global summon hotkey.
+        let plain = gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: "space".into(),
+            key_char: None,
+        };
+        assert!(keystroke_to_hotkey(&plain).is_none());
+
+        // A modifier-only press has no main key to map.
+        let modifier_only = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: "control".into(),
+            key_char: None,
+        };
+        assert!(keystroke_to_hotkey(&modifier_only).is_none());
+    }
+
+    #[test]
+    fn persisted_hotkey_string_roundtrips() {
+        let recorded = keystroke_to_hotkey(&gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                alt: true,
+                ..Default::default()
+            },
+            key: "space".into(),
+            key_char: None,
+        })
+        .expect("valid combo");
+        let persisted = recorded.to_string();
+        assert_eq!(persisted, "control+alt+Space");
+        assert_eq!(persisted.parse::<HotKey>().unwrap(), recorded);
+    }
+
+    #[test]
+    fn format_hotkey_is_human_readable() {
+        let default = HotkeyField::Summon.default_hotkey();
+        assert_eq!(format_hotkey(&default), "Ctrl + Alt + Space");
+        let settings = HotkeyField::Settings.default_hotkey();
+        assert_eq!(format_hotkey(&settings), "Ctrl + Comma");
+        assert_eq!(settings.to_string(), "control+Comma");
+        assert_eq!(settings.to_string().parse::<HotKey>().unwrap(), settings);
+        let combo = HotKey::new(Some(Modifiers::SHIFT | Modifiers::SUPER), Code::KeyA);
+        assert_eq!(format_hotkey(&combo), "Win + Shift + A");
     }
 }
