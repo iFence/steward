@@ -148,6 +148,7 @@ steward/
 - 选取规则：`adaptive_scrim_alpha` 求"合成面亮度 = α×BACKGROUND 亮度 + (1-α)×背景亮度 ≤ `SCRIM_TARGET_LUMINANCE 0.10`"的最小 α，夹在 `SCRIM_ALPHA 0.55`（地板，暗背景下保持原有毛玻璃观感）与 `SCRIM_ALPHA_MAX 0.90`（上限，再高背景几乎不可见、读作实体面板）之间。纯白背景 → 0.90（合成面 ~0.113，白字对比 ~6.4:1，WCAG AA）；黑/深色桌面 → 0.55（外观与之前完全一致）；中间亮度连续过渡。
 - 权衡与限制：上限 0.90 时背景只透出 10%，亮背景下的毛玻璃效果较弱，但保住可读性优先；暗背景（最常见）观感不变。采样仅在每次呼出（显示）时执行一次，不做拖动/可见期间的持续采样——拖动到亮背景上方不会中途变暗（可后续加拖拽结束重采样）。
 - 追加（同一议题的选中行对比度）：蒙层抬升后整条栏变亮，固定白 0.10 的选中 wash 在亮背景下看不清。两处修正——(1) 选中行补上设计记录里本就该有、但一直没渲染的 accent 左描边（`list_active_border` accent 0.6，2px；每行都预留透明左边框以免选中行内容位移），这是与背景亮度无关的强选中标记；(2) wash 跟随蒙层自适应：`adaptive_selection_wash` 从 `SELECTION_WASH 0.10`（蒙层地板）线性升到 `SELECTION_WASH_MAX 0.20`（蒙层上限），纯白背景下选中行与邻行差约 +40 灰阶（原 +20）。wash 通过 `ResultList::render` 的 `selected_wash` 参数每帧推入列表（与 `max_height` 同法），不污染全局主题（设置窗口等其他 gpui-component 列表仍用固定 0.10）。
+- 修订：accent 左描边在实际使用中被视为多余装饰，已移除（仅保留自适应 wash 作为选中标记）。设置窗口快捷键 `Ctrl+,` 不再是全局快捷键：设置页面里仍可改绑定，但只持久化、不再注册进全局热键管理器；启动器可见且聚焦时由 `handle_key` 匹配（`keystroke_to_hotkey` 转 `HotKey` 后与 `settings_hotkey` 比对）调用 `open_settings_window_from_launcher` 打开设置。`HotkeyField::Settings` 在 `apply_hotkey` 中走"仅持久化"分支。
 
 ### 2026-08-23（内置计算器）
 
@@ -265,6 +266,7 @@ steward/
 - 深色托盘图标：新增 `scripts/generate-icons.py`，把 `assets/steward.png` 的字形重绘为启动器强调蓝 `#89b4fa`，放在 `#232332` 圆角底上，输出 `assets/steward-dark.png`（macOS 用）与多尺寸 `assets/icon-dark.ico`；`app.rc` 增加资源 `2 ICON`，Windows 托盘改从资源 2 加载（资源 1/32512 仍是 exe/任务栏图标）。
 - 托盘菜单精简：去掉顶部品牌项、显示/隐藏、刷新，菜单仅保留"设置"、"开机自动启动"（勾选）与"退出"（i18n `app-quit` 去掉了 Steward 字样）；左键单击托盘与全局热键的显隐功能不变。删除 `MENU_TOGGLE`/`MENU_REFRESH` 及 `refresh_apps`，i18n 移除 `app-toggle`/`app-refresh`，新增 `app-settings`（7 语言）。
 - 设置窗口：托盘"设置"打开一个小 GPUI 窗口（340×180，普通窗口带标题栏，深色 `#232332` 背景），当前仅含"开机自动启动"开关；与托盘勾选项共享 `AutostartItem` 句柄，任一侧切换都同步另一侧。窗口句柄存 `LauncherState.settings_window`，关闭时按 `window_id` 精确清理，再次点击菜单可重新打开/聚焦。
+- 修订（2026-08-23）：Windows 托盘图标改用资源 1（`assets/icon.ico`），与 exe/任务栏图标一致；`app.rc` 移除资源 `2 ICON`，`icon-dark.ico` 不再嵌入（`scripts/generate-icons.py` 仍生成该资产备用，macOS 托盘沿用 `steward-dark.png`）。
 
 ### 2026-08-20（键盘选中/滚动修复）
 

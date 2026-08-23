@@ -47,6 +47,10 @@
         <Icon Id='ProductICO' SourceFile='../../assets/icon.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO'/>
 
+        <!-- "Run Steward" checkbox on the Finish dialog (checked by default). -->
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOX' Value='1'/>
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='Run Steward'/>
+
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='Steward'>
@@ -102,9 +106,28 @@
 
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
+        <!-- Show a "Run Steward" checkbox on the Finish dialog (checked by default) and
+             launch Steward after install when it is checked. The WixUI library defines
+             these as hidden properties, so override them with SetProperty instead of
+             redefining the Property symbols. -->
+        <SetProperty Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='Run Steward' Before='CostInitialize'/>
+        <SetProperty Id='WIXUI_EXITDIALOGOPTIONALCHECKBOX' Value='1' Before='CostInitialize'/>
+
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>
+
+            <!-- The stock ExitDialog only publishes EndDialog (Order 999) on Finish; add the
+                 launch before it, gated on the checkbox. -->
+            <Publish Dialog='ExitDialog' Control='Finish' Event='DoAction' Value='LaunchApplication' Order='1'>WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1</Publish>
         </UI>
+
+        <CustomAction
+            Id='LaunchApplication'
+            Directory='APPLICATIONFOLDER'
+            ExeCommand='[#exe0]'
+            Execute='immediate'
+            Return='asyncNoWait'
+            Impersonate='yes'/>
 
         <WixVariable Id='WixUILicenseRtf' Value='../../crates/app/wix/License.rtf'/>
 

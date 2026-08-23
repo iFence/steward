@@ -17,11 +17,10 @@
 use std::{rc::Rc, sync::Arc};
 
 use gpui::{
-    div, img, prelude::FluentBuilder, px, rgb, transparent_black, App, AppContext, Context,
+    div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context,
     ElementId, Entity, Image, ImageSource, InteractiveElement, IntoElement, ParentElement as _,
     Render, StatefulInteractiveElement, Styled as _,
 };
-use gpui_component::ActiveTheme;
 
 use steward_core_engine::AppEntry;
 
@@ -41,7 +40,7 @@ pub enum ResultItem {
 
 /// Design (96-DPI) geometry of a result row, in logical pixels. GPUI scales
 /// these with the display DPI like any other app UI.
-const DESIGN_ROW_HEIGHT: f32 = 48.0;
+const DESIGN_ROW_HEIGHT: f32 = 42.0;
 const DESIGN_ICON_SIZE: f32 = 24.0;
 /// Rows visible at once in the drop-down. Must match the app's
 /// `MAX_RESULT_ROWS`; the list renders exactly this many rows so the pinned
@@ -119,8 +118,8 @@ impl ResultListState {
 /// icon (when available), name and the localized application label on the
 /// right; action rows (calculator results) show the computed value on the left
 /// and the original expression on the right. Selected rows get Tinycast's
-/// neutral white wash (opacity adapted by the app) plus an accent left
-/// border; hovered rows get the fainter white 0.05 surface tint.
+/// neutral white wash (opacity adapted by the app); hovered rows get the
+/// fainter white 0.05 surface tint.
 fn render_row(
     item: &ResultItem,
     icon: Option<Arc<Image>>,
@@ -147,17 +146,11 @@ fn render_row(
         // scrim (palette::BACKGROUND at palette::SCRIM_ALPHA) across the whole
         // launcher, so rows stay transparent and the frosted-glass backdrop
         // shows uniformly under the drop-down too.
-        // A left border is reserved on every row (transparent when
-        // unselected) so the accent marker appears without shifting the
-        // selected row's content in or out.
-        .border_l_2()
         .when(selected, |this| {
             this.bg(rgb(crate::palette::SELECTION).opacity(selected_wash))
-                .border_color(cx.theme().list_active_border)
         })
         .when(!selected, |this| {
-            this.border_color(transparent_black())
-                .hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
+            this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
         })
         .on_click(cx.listener(move |this, _, _, cx| {
             if let Some(cb) = this.on_confirm.clone() {
@@ -180,6 +173,7 @@ fn render_row(
                     .flex_1()
                     .truncate()
                     .text_color(rgb(crate::palette::FOREGROUND))
+                    .text_sm()
                     .child(app.name.to_owned()),
             )
             .child(
@@ -187,7 +181,7 @@ fn render_row(
                     .truncate()
                     .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
                     .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_xs()
+                    .text_size(px(11.0))
                     .child(type_label.to_string()),
             ),
         ResultItem::Action { title, subtitle } => row
@@ -196,6 +190,7 @@ fn render_row(
                     .flex_1()
                     .truncate()
                     .text_color(rgb(crate::palette::FOREGROUND))
+                    .text_sm()
                     .child(title.to_owned()),
             )
             .child(
@@ -203,7 +198,7 @@ fn render_row(
                     .truncate()
                     .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
                     .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_xs()
+                    .text_size(px(11.0))
                     .child(subtitle.to_owned()),
             ),
     }

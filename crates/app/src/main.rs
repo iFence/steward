@@ -1,12 +1,13 @@
 //! Steward desktop entry point.
 //!
 //! Startup is silent: the app registers a system tray icon (Windows/macOS)
-//! and two global hotkeys — summon (`Ctrl+Alt+Space`) and settings
-//! (`Ctrl+,`), both changeable in Settings — but opens no window. The launcher
-//! bar — a wide, short, borderless popup centered on the primary display — is
-//! summoned on demand via the hotkey or the tray icon, and hidden again with
-//! `Esc` (or the hotkey), or automatically when another application takes
-//! activation (clicking away).
+//! and one global hotkey — summon (`Ctrl+Alt+Space`), changeable in Settings —
+//! but opens no window. The launcher bar — a wide, short, borderless popup
+//! centered on the primary display — is summoned on demand via the hotkey or
+//! the tray icon, and hidden again with `Esc` (or the hotkey), or
+//! automatically when another application takes activation (clicking away).
+//! The settings hotkey (`Ctrl+,`) is launcher-scoped: it is not a global
+//! binding, so it only opens the settings window while the launcher is visible.
 //!
 //! GPUI does not provide a system-level hotkey API, so registration is
 //! delegated to the `global-hotkey` crate and events are bridged into the
@@ -91,7 +92,7 @@ const LAUNCHER_MARGIN: f32 = 4.0;
 
 /// Fixed row height of a launcher result. Must match `results_list.rs` so the
 /// window resize stays in sync with the rendered list.
-const RESULT_ROW_HEIGHT: f32 = 48.0;
+const RESULT_ROW_HEIGHT: f32 = 42.0;
 /// Maximum number of results shown before the drop-down scrolls.
 const MAX_RESULT_ROWS: usize = 8;
 
@@ -426,8 +427,9 @@ struct LauncherState {
     /// The currently registered summon hotkey, kept so a change can unregister
     /// the old binding and the settings field can display the active one.
     summon_hotkey: Option<HotKey>,
-    /// The currently registered settings-window hotkey (`None` when no binding
-    /// could be registered at startup, e.g. it collided with another app).
+    /// The launcher-scoped settings-window hotkey (persisted, default
+    /// `Ctrl+,`). Unlike the summon hotkey it is never registered globally:
+    /// the launcher's key handling matches it only while the bar is visible.
     settings_hotkey: Option<HotKey>,
 }
 
@@ -998,6 +1000,17 @@ impl StewardApp {
             }
             cx.stop_propagation();
             return;
+        }
+
+        // The settings hotkey (Ctrl+, by default) is launcher-scoped: unlike
+        // the summon hotkey it is never registered globally, so it only opens
+        // the settings window while the launcher is visible and focused.
+        if let Some(hotkey) = keystroke_to_hotkey(keystroke) {
+            if self.state.borrow().settings_hotkey == Some(hotkey) {
+                open_settings_window_from_launcher(&self.state, self.i18n.clone(), &mut *cx);
+                cx.stop_propagation();
+                return;
+            }
         }
 
         match keystroke.key.as_str() {
@@ -1773,10 +1786,12 @@ fn dropdown_field(
         .into_any_element()
 }
 
-/// A settings field for a global hotkey: a fixed-width outline button showing
-/// the active binding, or the recording prompt while the window's keystroke
+/// A settings field for a hotkey: a fixed-width outline button showing the
+/// active binding, or the recording prompt while the window's keystroke
 /// interceptor waits for the next combination. Clicking toggles recording for
 /// `field` (the interceptor in `open_settings_window` applies the result).
+/// The summon field edits a global hotkey; the settings field edits the
+/// launcher-scoped settings hotkey.
 fn hotkey_setting_field(
     field: HotkeyField,
     view: Entity<SettingsApp>,
@@ -2028,7 +2043,9 @@ fn set_autostart(_enabled: bool) -> bool {
     false
 }
 
-/// Which global hotkey a settings field edits.
+/// Which hotkey a settings field edits: `Summon` is registered globally and
+/// works from anywhere; `Settings` is launcher-scoped (the launcher matches it
+/// in its key handling while the bar is visible) and never registered globally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HotkeyField {
     /// Summons the launcher bar.
@@ -2090,12 +2107,13 @@ fn read_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField) -> HotKey
         .unwrap_or_else(|| field.default_hotkey())
 }
 
-/// Create the global hotkey manager, register the persisted summon and settings
-/// hotkeys (falling back to the defaults when a persisted one fails), and store
-/// everything in `state`. The manager is kept in `LauncherState` instead of
-/// leaked so the settings window can re-register hotkeys later; its hidden
-/// window delivers `WM_HOTKEY` to whichever message pump owns the event-loop
-/// thread.
+/// Create the global hotkey manager, register the persisted summon hotkey
+/// (falling back to the default when registration fails), and store everything
+/// in `state`. The manager is kept in `LauncherState` instead of leaked so the
+/// settings window can re-register the summon hotkey later; its hidden window
+/// delivers `WM_HOTKEY` to whichever message pump owns the event-loop thread.
+/// The settings hotkey is launcher-scoped (never registered globally) and is
+/// only stored so the launcher's key handling can match it.
 fn setup_global_hotkey(state: &Rc<RefCell<LauncherState>>) -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("create global hotkey manager")?;
     let mut summon = read_summon_hotkey(state);
@@ -2109,53 +2127,40 @@ fn setup_global_hotkey(state: &Rc<RefCell<LauncherState>>) -> Result<()> {
             .register(summon)
             .context("register default global hotkey")?;
     }
-    let settings = register_settings_hotkey(&manager, state);
+    // Read the persisted settings hotkey before the mutable borrow below, so
+    // `read_hotkey` does not re-borrow the shared state.
+    let settings = read_settings_hotkey(state);
     let mut state_ref = state.borrow_mut();
     state_ref.hotkey_manager = Some(manager);
     state_ref.summon_hotkey = Some(summon);
-    state_ref.settings_hotkey = settings;
+    state_ref.settings_hotkey = Some(settings);
     Ok(())
 }
 
-/// Register the persisted settings hotkey, falling back to the default on a
-/// failure (including a collision with the summon hotkey). Returns `None` only
-/// when no candidate could be registered.
-fn register_settings_hotkey(
-    manager: &GlobalHotKeyManager,
-    state: &Rc<RefCell<LauncherState>>,
-) -> Option<HotKey> {
-    let configured = read_settings_hotkey(state);
-    let default = HotkeyField::Settings.default_hotkey();
-    let candidates = if configured == default {
-        vec![configured]
-    } else {
-        vec![configured, default]
-    };
-    for candidate in candidates {
-        match manager.register(candidate) {
-            Ok(()) => return Some(candidate),
-            Err(error) => {
-                eprintln!("failed to register settings hotkey {candidate}: {error:#}");
-            }
-        }
-    }
-    None
-}
-
-/// Replace the active hotkey for `field`: unregister the old binding, register
-/// the new one, and persist it. When the new binding cannot be registered (e.g.
-/// it is already taken by another application, or collides with the other
-/// global hotkey) the old binding is restored and nothing is persisted. Returns
-/// whether the change took effect.
+/// Replace the active hotkey for `field`. For the global summon hotkey:
+/// unregister the old binding, register the new one, and persist it; when the
+/// new binding cannot be registered (e.g. it is already taken by another
+/// application) the old binding is restored and nothing is persisted. The
+/// settings hotkey is launcher-scoped, so a change only persists the new
+/// binding (the launcher matches it while the bar is visible). Returns whether
+/// the change took effect.
 fn apply_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField, hotkey: HotKey) -> bool {
     let mut state_ref = state.borrow_mut();
-    let Some(manager) = state_ref.hotkey_manager.as_ref() else {
-        return false;
-    };
     let previous = field.active_hotkey(&state_ref);
     if previous == Some(hotkey) {
         return true;
     }
+    if matches!(field, HotkeyField::Settings) {
+        let _ = state_ref
+            .storage
+            .borrow()
+            .set_setting(field.setting_key(), &hotkey.to_string());
+        state_ref.settings_hotkey = Some(hotkey);
+        return true;
+    }
+    let Some(manager) = state_ref.hotkey_manager.as_ref() else {
+        return false;
+    };
     if let Some(previous) = previous {
         let _ = manager.unregister(previous);
     }
@@ -2165,10 +2170,7 @@ fn apply_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField, hotkey: 
                 .storage
                 .borrow()
                 .set_setting(field.setting_key(), &hotkey.to_string());
-            match field {
-                HotkeyField::Summon => state_ref.summon_hotkey = Some(hotkey),
-                HotkeyField::Settings => state_ref.settings_hotkey = Some(hotkey),
-            }
+            state_ref.summon_hotkey = Some(hotkey);
             true
         }
         Err(error) => {
@@ -2176,10 +2178,7 @@ fn apply_hotkey(state: &Rc<RefCell<LauncherState>>, field: HotkeyField, hotkey: 
             if let Some(previous) = previous {
                 let _ = manager.register(previous);
             }
-            match field {
-                HotkeyField::Summon => state_ref.summon_hotkey = previous,
-                HotkeyField::Settings => state_ref.settings_hotkey = previous,
-            }
+            state_ref.summon_hotkey = previous;
             false
         }
     }
@@ -2389,21 +2388,14 @@ fn spawn_event_poll_task(
                 continue;
             }
             // `HotKey::id` is derived from the modifier/key combination, so a
-            // registered hotkey can be matched to its event by id alone.
-            let (is_settings, is_summon) = {
-                let state_ref = state.borrow();
-                (
-                    state_ref
-                        .settings_hotkey
-                        .is_some_and(|hotkey| hotkey.id() == event.id),
-                    state_ref
-                        .summon_hotkey
-                        .is_some_and(|hotkey| hotkey.id() == event.id),
-                )
-            };
-            if is_settings {
-                toggle_settings_window(&state, i18n.clone(), cx);
-            } else if is_summon {
+            // registered hotkey can be matched to its event by id alone. Only
+            // the summon hotkey is registered globally; the settings hotkey is
+            // launcher-scoped and never produces a `WM_HOTKEY`.
+            if state
+                .borrow()
+                .summon_hotkey
+                .is_some_and(|hotkey| hotkey.id() == event.id)
+            {
                 toggle_launcher(&state, i18n.clone(), cx);
             }
         }
@@ -2495,6 +2487,18 @@ fn toggle_settings_window(
     i18n: Rc<i18n::Localization>,
     cx: &mut AsyncApp,
 ) {
+    cx.update(|cx| open_settings_window_from_launcher(state, i18n, cx));
+}
+
+/// Open (or focus) the settings window. Creates it on first use and keeps
+/// `LauncherState.settings_window` in sync: the handle is cleared when the
+/// window is closed, so a later call reopens it instead of touching a stale
+/// handle. Used by the tray menu and the launcher-scoped settings hotkey.
+fn open_settings_window_from_launcher(
+    state: &Rc<RefCell<LauncherState>>,
+    i18n: Rc<i18n::Localization>,
+    cx: &mut App,
+) {
     let state_ref = state.borrow();
     if let Some(handle) = state_ref.settings_window.as_ref() {
         let _ = handle.update(cx, |_, window, cx| {
@@ -2503,7 +2507,7 @@ fn toggle_settings_window(
         });
     } else {
         drop(state_ref);
-        let handle = cx.update(|cx| open_settings_window(cx, i18n, state));
+        let handle = open_settings_window(cx, i18n, state);
         state.borrow_mut().settings_window = Some(handle);
     }
 }
@@ -2635,10 +2639,10 @@ fn setup_tray(i18n: &i18n::Localization) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn load_tray_icon() -> Result<TrayIcon> {
-    // Resource 2 is the dark tray variant (generated by
-    // `scripts/generate-icons.py`); resource 1 stays the app/taskbar icon.
-    TrayIcon::from_resource(2, Some((32, 32)))
-        .context("load dark tray icon from embedded resources")
+    // Resource 1 is the app icon (assets/icon.ico), shared by the tray,
+    // the exe shell icon and the taskbar icon.
+    TrayIcon::from_resource(1, Some((32, 32)))
+        .context("load tray icon from embedded resources")
 }
 
 #[cfg(target_os = "macos")]
