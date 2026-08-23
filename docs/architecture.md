@@ -140,6 +140,15 @@ steward/
 
 ## 决策记录
 
+### 2026-08-23（毛玻璃在高亮背景下的自适应蒙层）
+
+- 症状：启动器用 `WindowBackgroundAppearance::Blurred`（Windows Acrylic / macOS vibrancy）后，亮色背景（白色 Word/浏览器窗口）上方的毛玻璃合成面偏浅——`BACKGROUND 0x202024` 以 `SCRIM_ALPHA 0.55` 叠在纯白模糊背景上合成亮度约 0.46，白字对比度仅 ~1.9:1，查询文字看不清。深色背景下合成面≈`BACKGROUND`（暗），无此问题；因此只在背景本身很亮时失效。
+- 方案：蒙层不再固定 0.55，改为**按每次呼出时窗口背后背景的平均亮度自适应**（`LauncherState.scrim_alpha`，`render` 用 `self.state.borrow().scrim_alpha` 绘制）。Windows 平台 `platform::show` 改为：`position_centered` 定位 → `sample_backdrop_brightness` 采样 → `ShowWindow(SW_SHOW)` → `force_foreground`，返回 `Option<f32>`（非 Windows 返回 `None`）；采样在窗口仍隐藏时进行，读到的是真实背景而非启动器自身。`show_window` 用 `adaptive_scrim_alpha(brightness)` 算出本次透明度写入共享状态，下一帧生效。
+- 采样：`GetDC(NULL)` 取虚拟屏 DC，按窗口矩形在 12×6 网格上 `GetPixel`，跳过 `CLR_INVALID`（0xFFFFFFFF）样本，各点转 Rec.709 相对亮度（sRGB 线性化）取平均。`GetWindowRect` 与屏幕 DC 同为物理像素坐标系，多显示器一致。实测对屏幕 DC 逐个 `GetPixel` 一次呼出约 2.2s，会卡住呼出，故改为**单次 `BitBlt`（SRCCOPY）把窗口矩形整块拷贝进 `CreateCompatibleBitmap`/`CreateCompatibleDC` 的内存位图**，再对内存位图做同样的 12×6 `GetPixel` 采样——GDI 硬件加速的块拷贝 + 内存读取，呼出恢复亚 100ms（`steward-app` 基准首呼 55ms）。
+- 选取规则：`adaptive_scrim_alpha` 求"合成面亮度 = α×BACKGROUND 亮度 + (1-α)×背景亮度 ≤ `SCRIM_TARGET_LUMINANCE 0.10`"的最小 α，夹在 `SCRIM_ALPHA 0.55`（地板，暗背景下保持原有毛玻璃观感）与 `SCRIM_ALPHA_MAX 0.90`（上限，再高背景几乎不可见、读作实体面板）之间。纯白背景 → 0.90（合成面 ~0.113，白字对比 ~6.4:1，WCAG AA）；黑/深色桌面 → 0.55（外观与之前完全一致）；中间亮度连续过渡。
+- 权衡与限制：上限 0.90 时背景只透出 10%，亮背景下的毛玻璃效果较弱，但保住可读性优先；暗背景（最常见）观感不变。采样仅在每次呼出（显示）时执行一次，不做拖动/可见期间的持续采样——拖动到亮背景上方不会中途变暗（可后续加拖拽结束重采样）。
+- 追加（同一议题的选中行对比度）：蒙层抬升后整条栏变亮，固定白 0.10 的选中 wash 在亮背景下看不清。两处修正——(1) 选中行补上设计记录里本就该有、但一直没渲染的 accent 左描边（`list_active_border` accent 0.6，2px；每行都预留透明左边框以免选中行内容位移），这是与背景亮度无关的强选中标记；(2) wash 跟随蒙层自适应：`adaptive_selection_wash` 从 `SELECTION_WASH 0.10`（蒙层地板）线性升到 `SELECTION_WASH_MAX 0.20`（蒙层上限），纯白背景下选中行与邻行差约 +40 灰阶（原 +20）。wash 通过 `ResultList::render` 的 `selected_wash` 参数每帧推入列表（与 `max_height` 同法），不污染全局主题（设置窗口等其他 gpui-component 列表仍用固定 0.10）。
+
 ### 2026-08-23（内置计算器）
 
 - 启动器输入框支持直接求值：当输入归一化（`×÷−（）` 等 IME 字符映射到 ASCII）后含至少一个二元运算符（`+ - * / % ^`）、整串可解析且结果为有限值时，在结果列表顶部插入一条计算行，无需插件。裸数字（如 `42`）与纯符号（如 `-5`）不触发，避免劫持普通搜索。
