@@ -25,6 +25,20 @@ use gpui_component::ActiveTheme;
 
 use steward_core_engine::AppEntry;
 
+/// Delegate callback fired on Enter / click with the confirmed row index.
+pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App)>;
+
+/// A row in the launcher drop-down. Either a launchable application or a
+/// one-off action such as a calculator result — an action row shows its own
+/// title and subtitle instead of an icon plus the application label, and its
+/// confirmation runs the app-side `on_confirm` (which copies the computed
+/// value to the clipboard rather than launching anything).
+#[derive(Debug, Clone)]
+pub enum ResultItem {
+    App(AppEntry),
+    Action { title: String, subtitle: String },
+}
+
 /// Design (96-DPI) geometry of a result row, in logical pixels. GPUI scales
 /// these with the display DPI like any other app UI.
 const DESIGN_ROW_HEIGHT: f32 = 48.0;
@@ -38,12 +52,12 @@ pub const VISIBLE_ROWS: usize = 8;
 /// The state backing the results list. Kept as its own entity so updates
 /// (`set_results`, selection moves) can happen without a window.
 pub struct ResultListState {
-    items: Vec<AppEntry>,
+    items: Vec<ResultItem>,
     icons: Vec<Option<Arc<Image>>>,
     type_label: String,
     max_height: f32,
     selected: Option<usize>,
-    on_confirm: Option<Rc<dyn Fn(usize)>>,
+    on_confirm: Option<ConfirmCallback>,
 }
 
 impl Render for ResultListState {
@@ -54,10 +68,10 @@ impl Render for ResultListState {
         let rows = self.items[range.clone()]
             .iter()
             .enumerate()
-            .map(|(offset, app)| {
+            .map(|(offset, item)| {
                 let index = range.start + offset;
                 render_row(
-                    app,
+                    item,
                     self.icons.get(index).cloned().flatten(),
                     &type_label,
                     selected == Some(index),
@@ -95,20 +109,26 @@ impl ResultListState {
     }
 }
 
-/// A result row: fixed height (matches the app's row metric), app icon on the
-/// left (when available), name and path on the right (truncated). Selected
-/// rows get the launcher's blue tint plus border; hovered rows get a dark
-/// surface tint.
+/// A result row: fixed height (matches the app's row metric). App rows show an
+/// icon (when available), name and the localized application label on the
+/// right; action rows (calculator results) show the computed value on the left
+/// and the original expression on the right. Selected rows get Tinycast's
+/// neutral white 0.10 wash plus an accent border; hovered rows get the fainter
+/// white 0.05 surface tint.
 fn render_row(
-    app: &AppEntry,
+    item: &ResultItem,
     icon: Option<Arc<Image>>,
     type_label: &str,
     selected: bool,
     index: usize,
     cx: &mut Context<ResultListState>,
 ) -> impl IntoElement {
-    div()
-        .id(ElementId::from(app.path.to_string_lossy().into_owned()))
+    let id = match item {
+        ResultItem::App(app) => ElementId::from(app.path.to_string_lossy().into_owned()),
+        ResultItem::Action { .. } => ElementId::from(format!("result-action-{index}")),
+    };
+    let row = div()
+        .id(id)
         .h(px(DESIGN_ROW_HEIGHT))
         .flex()
         .flex_row()
@@ -116,47 +136,64 @@ fn render_row(
         .gap_2()
         .px_3()
         .cursor_pointer()
-        .bg(rgb(0x232332))
-        .when(selected, |this| {
-            let primary = cx.theme().primary;
-            this.bg(primary.opacity(0.2))
-        })
+        .bg(rgb(crate::palette::BACKGROUND))
+        .when(selected, |this| this.bg(cx.theme().list_active))
         .when(!selected, |this| {
-            this.hover(|style| style.bg(rgb(0x313244).opacity(0.8)))
-        })
-        .when_some(icon, |this, icon| {
-            this.child(
-                img(ImageSource::Image(icon))
-                    .w(px(DESIGN_ICON_SIZE))
-                    .h(px(DESIGN_ICON_SIZE)),
-            )
+            this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
         })
         .on_click(cx.listener(move |this, _, _, cx| {
             if let Some(cb) = this.on_confirm.clone() {
-                cb(index);
+                cb(index, cx);
             }
             cx.notify();
-        }))
-        .child(
-            div()
-                .flex_1()
-                .truncate()
-                .text_color(rgb(0xcdd6f4))
-                .child(app.name.to_owned()),
-        )
-        .child(
-            div()
-                .truncate()
-                .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                .text_color(rgb(0x6c7086))
-                .text_xs()
-                .child(type_label.to_string()),
-        )
+        }));
+
+    match item {
+        ResultItem::App(app) => row
+            .when_some(icon, |this, icon| {
+                this.child(
+                    img(ImageSource::Image(icon))
+                        .w(px(DESIGN_ICON_SIZE))
+                        .h(px(DESIGN_ICON_SIZE)),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::FOREGROUND))
+                    .child(app.name.to_owned()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_xs()
+                    .child(type_label.to_string()),
+            ),
+        ResultItem::Action { title, subtitle } => row
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::FOREGROUND))
+                    .child(title.to_owned()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_xs()
+                    .child(subtitle.to_owned()),
+            ),
+    }
 }
 
 /// Builds the `ResultList` with an optional confirm callback.
 pub struct ResultListDelegate {
-    on_confirm: Option<Rc<dyn Fn(usize)>>,
+    on_confirm: Option<ConfirmCallback>,
     type_label: String,
 }
 
@@ -168,15 +205,16 @@ impl ResultListDelegate {
         }
     }
 
-    /// Label shown on the right of every row (the localized word for
-    /// "Application"), replacing the raw executable path.
+    /// Label shown on the right of every application row (the localized word
+    /// for "Application"), replacing the raw executable path.
     pub fn type_label(mut self, label: impl Into<String>) -> Self {
         self.type_label = label.into();
         self
     }
 
     /// Register a callback fired with the confirmed row index (Enter / click).
-    pub fn on_confirm(mut self, cb: impl Fn(usize) + 'static) -> Self {
+    /// The `&mut App` lets the app write to the clipboard for action rows.
+    pub fn on_confirm(mut self, cb: impl Fn(usize, &mut App) + 'static) -> Self {
         self.on_confirm = Some(Rc::new(cb));
         self
     }
@@ -219,7 +257,7 @@ impl ResultList {
     /// required (works from a plain entity context).
     pub fn set_results<C>(
         &self,
-        items: Vec<AppEntry>,
+        items: Vec<ResultItem>,
         icons: Vec<Option<Arc<Image>>>,
         cx: &mut Context<C>,
     ) {
@@ -288,7 +326,7 @@ impl ResultList {
             if let Some(index) = this.selected {
                 if index < this.items.len() {
                     if let Some(cb) = this.on_confirm.clone() {
-                        cb(index);
+                        cb(index, cx);
                         confirmed = true;
                     }
                 }

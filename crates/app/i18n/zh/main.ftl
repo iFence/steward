@@ -13,6 +13,7 @@ settings-global-hotkey = 全局快捷键
 settings-hotkeys = 快捷键
 settings-settings-hotkey = 设置快捷键
 settings-hotkey-recording = 请按下新的快捷键组合...
+settings-theme-violet = 紫罗兰
 settings-theme-blue = 海蓝
 settings-theme-jade = 青玉
 settings-theme-rose = 玫瑰

@@ -85,7 +85,7 @@ steward/
 - [x] 接入 `nucleo` 做模糊匹配 + 结果排序
 - [x] `ui-components`：搜索框 + 虚拟滚动结果列表
 - [x] `storage`：SQLite 存索引缓存和使用频率
-- [~] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比（Windows 开发机 debug 数据已记录；uTools/Raycast 对比待 release 数据积累后补齐）
+- [x] 内存占用/响应延迟基准测试，写进 `docs/benchmarks.md`，和 uTools/Raycast 对比（Windows 开发机 release 数据已记录于 M1 基线；uTools/Raycast 对比待多机 release 数据积累后补齐）
 
 **验收标准**：内存/速度数据要好看且可复现，这是对外最大的说服力来源
 
@@ -139,6 +139,20 @@ steward/
 5. QuickJS 堆内存上限设置的合理默认值（过小影响正常插件，过大失去熔断意义）
 
 ## 决策记录
+
+### 2026-08-23（内置计算器）
+
+- 启动器输入框支持直接求值：当输入归一化（`×÷−（）` 等 IME 字符映射到 ASCII）后含至少一个二元运算符（`+ - * / % ^`）、整串可解析且结果为有限值时，在结果列表顶部插入一条计算行，无需插件。裸数字（如 `42`）与纯符号（如 `-5`）不触发，避免劫持普通搜索。
+- 求值器放在 `steward-core-engine`（无 UI 依赖、可单测）新增的 `calc` 模块，自实现递归下降 parser（expr/term/factor/power/atom，`^` 右结合），不引入第三方求值 crate——符合"不重复造轮子但也不重复现有依赖职责"的依赖政策，且保持依赖面最小。`format_value` 将整数无小数输出、浮点截 10 位去尾零（`0.1+0.2` → `0.3`）。
+- 结果列表抽象为 `ResultItem` 枚举（`App(AppEntry)` | `Action { title, subtitle }`）：计算行标题为结果值、副标题为原始算式，无图标；`set_results`/`on_confirm` 同步改为携带 `ResultItem`，确认回调签名从 `Fn(usize)` 改为 `Fn(usize, &mut App)`（利用 `Context<T>: DerefMut<Target=App>` 直接传 `cx`），使 App 侧能在回调内访问剪贴板。
+- 确认行为：Enter → 现有 `after_confirm` 清空输入并隐藏窗口；点击计算行 → 复制结果到剪贴板（`App::write_to_clipboard(ClipboardItem::new_string(...))`），保持启动器打开（与 App 行点击行为一致，等失焦再隐藏）。回调内不直接 `handle.update` 隐藏窗口，避免与窗口更新栈的重入问题。计算行需要 `max_w` 副标题截断以复用现有右列布局。
+
+### 2026-08-23（Tinycast 配色）
+
+- 主题从 Catppuccin Mocha（蓝灰底 + 蓝色 accent）改为 tinycast 风格（https://github.com/abue-ammar/tinycast）：启动器与设置面板改为中性深色表面 + 白色 alpha 墨阶 + 紫罗兰品牌色（violet `0x863bff`）。
+- 新建 `steward-ui-components::palette` 作为唯一配色来源：`BACKGROUND 0x202024` / `BACKGROUND_ALT 0x2c2c31` / `BORDER 0x4d4d50` / `FOREGROUND 0xffffff` / `MUTED_FOREGROUND 0x79797c` / `SELECTION 0xffffff`（使用时施加 0.10）/ `HOVER 0xffffff`（0.05）/ `ACCENT 0x863bff`。因启动器窗口必须不透明（明暗系统模式下外观必须一致，自己拥有表面色），tinycast 的黑 40% 蒙层折成实体表面色，白色 alpha 档按 tinycast 定义预混在表面之上。
+- 选中行/悬停行改为白色 alpha 底色（`list_active` 白 0.10、`list_hover` 白 0.05），与 tinycast 一致；`list_active_border` 保留 accent 0.6，选中行左侧保留 accent 描边以区分悬停；输入框文本选区保持 accent 0.35（否则设置页文本选区不可见）；primary 前景改为纯白（原近黑 `0x11111b`）。
+- `ACCENT_PRESETS` 由 4 色扩为 5 色，新增紫罗兰 `0x863bff` 为默认色；i18n 新增 `settings-theme-violet`（7 语言）。托盘图标用色（`#89b4fa on #232332`，`scripts/generate-icons.py`）本次不改。
 
 ### 2026-08-23（全局快捷键组 + 设置快捷键）
 

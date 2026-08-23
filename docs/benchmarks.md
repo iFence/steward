@@ -25,17 +25,17 @@
 
 ## M1 基线（应用启动器 MVP）
 
-环境：Windows（开发机）、debug 构建、2026-08-19；时间口径同 M0，另加应用索引扫描与首次查询延迟（进程峰值 RSS）。
+环境：Windows（开发机）、release 构建、2026-08-23；由 `scripts/bench-resident.ps1` 测量（PostMessage 注入 `WM_HOTKEY` + FindWindow 轮询可见性，按 PID 校验窗口归属）。冷启动为启动 → 托盘窗口就绪；应用扫描/建索引用删库冷启动测得（后台线程，不阻塞启动）。
 
 | 指标 | 数值 | 备注 |
 |---|---|---|
-| 冷启动 | ≈ 1.8 s（debug） | release 目标 50ms；逻辑不变，耗时集中在 wgpu/GPU 初始化 |
-| 应用扫描 + 建索引 | 手动记录 | 遍历开始菜单 `.lnk` + ShellLink COM 解析；扫描结果已 `mark_seen` 缓存，冷启动回退读缓存 |
-| RSS | ≈ 152 MB（debug，含 wgpu） | 常驻峰值 |
-| 呼出延迟 | 手动记录 | 与 M0 同路：热键 → 前台 10ms 轮询 → show |
-| 首次查询响应 | 手动记录 | 空查询读固定 8 行 / 模糊匹配全量索引；`nucleo` 预处理 haystack 每次查询复用 |
+| 冷启动 | ≈ 307 ms（release） | 启动 → 托盘就绪；含一次性 GPUI/DirectX/DirectWrite 初始化，启动静默 |
+| 应用扫描 + 建索引 | ≈ 1.1 s（首扫，后台） | 删除 `steward.db` 后冷启动实测；遍历开始菜单 `.lnk` + ShellLink COM 解析 + `shell:AppsFolder` UWP 枚举。扫描结果 `mark_seen` 缓存（`SCAN_CACHE_TTL` 24h），冷启动回退读缓存、不阻塞 |
+| RSS | 65.2 MB 工作集 / 79.9 MB 私有 | release 常驻；相比 M0 debug 152 MB 明显下降 |
+| 呼出延迟 | 8–29 ms（首呼）/ 26–28 ms（二呼） | 窗口启动时已隐藏创建，呼出即 ShowWindow；nucleo 匹配在按键回调内同步完成 |
+| 首次查询响应 | ≈ 87 µs | `cargo test -p steward-core-engine bench_query_latency --release` 临时测得：200 条目索引、空查询 + 模糊查询混合，500 次平均 |
 
-> 说明：M1 新增的扫描/索引/查询链路均为同步、无额外进程，逻辑耗时相对 GPU 初始化可忽略；等 Windows release 数据补齐后再做 uTools/Raycast 对比，目标数据放 `docs/benchmarks.md` 同表。
+> 说明：M1 新增的扫描/索引/查询链路均为同步、无额外进程，逻辑耗时相对 GPU 初始化可忽略；uTools/Raycast 对比待 release 数据在更多机器积累后补齐（目标数据放 `docs/benchmarks.md` 同表）。
 
 ## M2 基线（启动即加载 GPUI，呼出瞬时）
 

@@ -2,8 +2,10 @@
 
 use gpui::App;
 
+pub mod palette;
 pub mod results_list;
 
+pub use palette::*;
 pub use results_list::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

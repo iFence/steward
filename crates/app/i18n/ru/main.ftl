@@ -13,6 +13,7 @@ settings-global-hotkey = Глобальная горячая клавиша
 settings-hotkeys = Горячие клавиши
 settings-settings-hotkey = Горячая клавиша настроек
 settings-hotkey-recording = Нажмите комбинацию клавиш...
+settings-theme-violet = Фиолетовый
 settings-theme-blue = Морская синь
 settings-theme-jade = Нефрит
 settings-theme-rose = Роза
