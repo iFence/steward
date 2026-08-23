@@ -1515,6 +1515,18 @@ fn open_settings_window(
             },
             |window, cx| {
                 window.set_window_title(&i18n.translate("app-settings"));
+                // The native titlebar follows the OS theme by default; pin it
+                // to the app's dark look (Windows light mode would otherwise
+                // render it white).
+                platform::force_dark_titlebar(window);
+                // GPUI re-derives the titlebar color from the OS theme when
+                // the appearance changes; re-pin it dark so toggling Windows
+                // dark/light while the window is open keeps it black.
+                window
+                    .observe_window_appearance(|window, _cx| {
+                        platform::force_dark_titlebar(window);
+                    })
+                    .detach();
                 // The settings panel uses gpui-component widgets (input,
                 // tooltip, menu popovers), so the window's root must be a
                 // `Root`: it owns the overlay layers those widgets render into.
@@ -1969,6 +1981,29 @@ mod platform {
         }
     }
 
+    /// Force the native titlebar to render dark regardless of the OS theme.
+    /// GPUI derives `DWMWA_USE_IMMERSIVE_DARK_MODE` from the system appearance
+    /// at window creation (light mode => light titlebar); re-applying the
+    /// attribute pins the window to the app's dark look, so the settings
+    /// window keeps a black titlebar even when Windows is in light mode.
+    pub fn force_dark_titlebar(window: &Window) {
+        let Some(hwnd) = hwnd(window) else {
+            return;
+        };
+        unsafe {
+            use windows_sys::Win32::Graphics::Dwm::{
+                DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+            };
+            let enabled: i32 = 1;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+                &enabled as *const _ as *const _,
+                std::mem::size_of_val(&enabled) as u32,
+            );
+        }
+    }
+
     /// Convert a desired logical client size into the physical window size
     /// including the native non-client frame. The launcher is borderless, but
     /// Windows still frames WS_POPUP windows with a few device pixels; if they
@@ -2105,6 +2140,10 @@ mod platform {
 
     /// Resizing is a Windows-specific launcher behavior for now.
     pub fn resize(_window: &Window, _height: f32) {}
+
+    /// Native titlebar dark-mode forcing is Windows-only; other platforms
+    /// already follow the app theme.
+    pub fn force_dark_titlebar(_window: &Window) {}
 
     pub fn caret_blink_period() -> Duration {
         Duration::from_millis(1060)
