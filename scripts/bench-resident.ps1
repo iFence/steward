@@ -8,6 +8,14 @@
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts/bench-resident.ps1
+#
+# The synthetic WM_HOTKEY must carry the app's *registered* summon hotkey id.
+# The app reads it from the settings table (`summon_hotkey` key in
+# %APPDATA%\Steward\steward.db) at startup, falling back to the default
+# "control+alt+Space" when nothing is persisted. The bench auto-detects it via
+# the app's `--print-summon-hotkey` CLI, otherwise falls back to -SummonHotkey
+# (or the default). A mismatch makes the app ignore the injected message and
+# the summon measurement times out - pass -SummonHotkey to override.
 
 param(
     [string]$Exe = "$PSScriptRoot\..\target\release\steward-app.exe",
@@ -60,7 +68,40 @@ function Get-HotkeyId([string]$HotkeyString) {
     }
     [uint32](($mods -shl 16) -bor $CodeDiscriminants[$key])
 }
-$SummonHotkeyId = Get-HotkeyId $SummonHotkey
+
+# Best-effort: ask the app for the effective summon hotkey via its headless
+# `--print-summon-hotkey` CLI. The GUI-subsystem binary has no console stdout,
+# so output is captured through Start-Process redirection. Returns $null when
+# the exe is missing or the query fails, in which case the caller keeps its
+# -SummonHotkey/default.
+function Read-SummonHotkeyFromApp {
+    param([string]$ExePath)
+    if (-not (Test-Path $ExePath)) { return $null }
+    $out = Join-Path $env:TEMP ("steward-hotkey-" + [guid]::NewGuid().ToString("N") + ".txt")
+    $err = "$out.err"
+    try {
+        $p = Start-Process -FilePath $ExePath -ArgumentList "--print-summon-hotkey" `
+            -RedirectStandardOutput $out -RedirectStandardError $err -Wait -PassThru
+        if ($p.ExitCode -eq 0 -and (Test-Path $out)) {
+            $val = (Get-Content $out -Raw).Trim()
+            if ($val) { return $val }
+        }
+    } catch {
+        # ignore; fall back to the caller's binding
+    } finally {
+        Remove-Item $out, $err -ErrorAction SilentlyContinue
+    }
+    return $null
+}
+
+# Auto-detect the registered hotkey when the caller did not override it.
+$ResolvedHotkey = $SummonHotkey
+if (-not $PSBoundParameters.ContainsKey('SummonHotkey')) {
+    $detected = Read-SummonHotkeyFromApp $Exe
+    if ($detected) { $ResolvedHotkey = $detected }
+}
+$SummonHotkeyId = Get-HotkeyId $ResolvedHotkey
+Write-Host "using summon hotkey '$ResolvedHotkey' -> WM_HOTKEY id 0x$('{0:X}' -f $SummonHotkeyId)"
 
 function Get-WindowPid([IntPtr]$hWnd) {
     $pidOut = 0
@@ -118,6 +159,9 @@ $firstMs = Wait-Until {
     $launcher = Find-LauncherWindow $appPid
     $launcher -ne [IntPtr]::Zero -and [Win32Bench]::IsWindowVisible($launcher)
 } 15000
+if ($firstMs -lt 0) {
+    throw "launcher never became visible after WM_HOTKEY id 0x$('{0:X}' -f $SummonHotkeyId) for '$ResolvedHotkey'. The app may register a different summon hotkey (settings table 'summon_hotkey' in %APPDATA%\Steward\steward.db); pass it via -SummonHotkey."
+}
 $open = Get-MemoryMB $proc
 
 # Esc dismisses the launcher (hide or close per CLOSE_ON_HIDE).
@@ -135,7 +179,9 @@ $secondMs = Wait-Until {
     $launcher = Find-LauncherWindow $appPid
     $launcher -ne [IntPtr]::Zero -and [Win32Bench]::IsWindowVisible($launcher)
 } 15000
-
+if ($secondMs -lt 0) {
+    throw "second summon never became visible (hotkey '$ResolvedHotkey', id 0x$('{0:X}' -f $SummonHotkeyId))"
+}
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 
 "== Steward resident benchmark ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) =="

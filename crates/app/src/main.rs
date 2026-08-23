@@ -21,7 +21,14 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ops::Range,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -169,6 +176,59 @@ fn parse_hex_color(text: &str) -> Option<u32> {
         .flatten()
 }
 
+/// Relative luminance (Rec. 709 linear-light, 0..1) of a `0xRRGGBB` color —
+/// the WCAG definition. Used by the adaptive scrim to decide how much of the
+/// launcher surface must show over the window's blurred backdrop.
+fn relative_luminance(color: u32) -> f32 {
+    let channel = |value: u32| {
+        let c = (value & 0xFF) as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let r = channel(color >> 16);
+    let g = channel(color >> 8);
+    let b = channel(color);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Pick the scrim opacity for a given backdrop luminance: the lowest alpha
+/// that keeps the composited launcher surface ([`palette::BACKGROUND`] over
+/// the blurred backdrop) at or below [`palette::SCRIM_TARGET_LUMINANCE`],
+/// floored at [`palette::SCRIM_ALPHA`] and capped at
+/// [`palette::SCRIM_ALPHA_MAX`]. Over a dark desktop this returns the floor,
+/// so the current frosted-glass look is unchanged; over a bright backdrop (a
+/// white document behind the bar) it rises toward the cap so white ink keeps
+/// its contrast.
+fn adaptive_scrim_alpha(backdrop_luminance: f32) -> f32 {
+    let floor = steward_ui_components::palette::SCRIM_ALPHA;
+    let background_luminance = relative_luminance(steward_ui_components::palette::BACKGROUND);
+    let floor_surface = floor * background_luminance + (1.0 - floor) * backdrop_luminance;
+    if floor_surface <= steward_ui_components::palette::SCRIM_TARGET_LUMINANCE {
+        return floor;
+    }
+    let alpha = (steward_ui_components::palette::SCRIM_TARGET_LUMINANCE - backdrop_luminance)
+        / (background_luminance - backdrop_luminance);
+    alpha.clamp(floor, steward_ui_components::palette::SCRIM_ALPHA_MAX)
+}
+
+/// Selection wash opacity for the current scrim: Tinycast's white 0.10 over
+/// the standard frosted surface, raised toward [`palette::SELECTION_WASH_MAX`]
+/// as the scrim rises. A bright backdrop lightens the whole bar, and a fixed
+/// 0.10 wash would read as too faint there, so the wash follows the scrim so
+/// the selected row stays clearly brighter than its neighbors.
+fn adaptive_selection_wash(scrim_alpha: f32) -> f32 {
+    let floor = steward_ui_components::palette::SCRIM_ALPHA;
+    let span = steward_ui_components::palette::SCRIM_ALPHA_MAX - floor;
+    let t = ((scrim_alpha - floor) / span).clamp(0.0, 1.0);
+    steward_ui_components::palette::SELECTION_WASH
+        + (steward_ui_components::palette::SELECTION_WASH_MAX
+            - steward_ui_components::palette::SELECTION_WASH)
+            * t
+}
+
 /// Apply the Steward palette (surface colors matching the launcher bar, drawn
 /// from Tinycast's design system) and the given accent color to the global
 /// gpui-component theme, then rebuild the derived semantic tokens and the
@@ -314,6 +374,10 @@ struct SearchInput {
     marked: Option<Range<usize>>,
 }
 
+/// A finished background icon extraction: the search generation it belongs to
+/// plus the extracted `(path, icon)` pairs, one per pending path.
+type IconBatch = (u64, Vec<(std::path::PathBuf, Option<Arc<gpui::Image>>)>);
+
 /// Shared launcher state used by the foreground event loop: the (possibly
 /// closed) window handle plus the focus handle that must be re-focused every
 /// time the bar is summoned, and the current result count so the drop-down
@@ -325,6 +389,11 @@ struct LauncherState {
     /// an application context); `None` before the first summon.
     focus: Option<FocusHandle>,
     result_count: usize,
+    /// Scrim opacity painted over the blurred backdrop, adapted at show time
+    /// to the luminance of what sits behind the bar (see
+    /// [`adaptive_scrim_alpha`]) so white ink stays readable over bright
+    /// backdrops. Defaults to [`palette::SCRIM_ALPHA`].
+    scrim_alpha: f32,
     /// Shared SQLite storage (app index cache, usage, persisted settings).
     storage: Rc<RefCell<steward_storage::Storage>>,
     /// Shared search index (entries + pre-built pinyin haystacks), rebuilt
@@ -335,6 +404,14 @@ struct LauncherState {
     /// `None` entries mark paths whose icon could not be extracted. Shared so
     /// a recreated window keeps its icons.
     icon_cache: RefCell<HashMap<std::path::PathBuf, Option<Arc<gpui::Image>>>>,
+    /// Generation counter for background icon batches: bumped on every search
+    /// so a finished extraction that predates a newer query only fills the
+    /// cache instead of re-running the (stale) search.
+    icon_gen: Cell<u64>,
+    /// Receiver for background icon extractions of results below the fold.
+    /// Each search replaces the receiver, so a stale worker's send fails and
+    /// its work is dropped with the old channel.
+    icon_rx: RefCell<Option<crossbeam_channel::Receiver<IconBatch>>>,
     /// Pending background scan results, drained by the GPUI foreground poll
     /// task.
     scan_rx: RefCell<Option<crossbeam_channel::Receiver<Vec<steward_core_engine::AppEntry>>>>,
@@ -769,10 +846,13 @@ impl Render for StewardApp {
             // Translucent scrim over the window's blurred backdrop (Windows
             // Acrylic / macOS vibrancy): the launcher keeps its fixed dark
             // look regardless of the system theme, but the frosted glass
-            // behind it shows through at SCRIM_ALPHA.
+            // behind it shows through. The opacity is adapted at show time
+            // to the backdrop's luminance (see `adaptive_scrim_alpha`): over
+            // a dark desktop it stays at SCRIM_ALPHA, over a bright one it
+            // rises toward SCRIM_ALPHA_MAX so the white ink keeps contrast.
             .bg(
                 rgb(steward_ui_components::palette::BACKGROUND)
-                    .opacity(steward_ui_components::palette::SCRIM_ALPHA),
+                    .opacity(self.state.borrow().scrim_alpha),
             )
             .text_lg()
             .text_color(rgb(steward_ui_components::palette::FOREGROUND))
@@ -825,7 +905,11 @@ impl Render for StewardApp {
                         div()
                             .h(px(drop_height))
                             .mx(px(LAUNCHER_MARGIN))
-                            .child(self.results.render(drop_height, cx)),
+                            .child(self.results.render(
+                                drop_height,
+                                adaptive_selection_wash(self.state.borrow().scrim_alpha),
+                                cx,
+                            )),
                     )
             })
             .child(drag_strip().h(px(LAUNCHER_MARGIN)));
@@ -1001,35 +1085,77 @@ impl StewardApp {
             .borrow()
             .query(&query, &|path| self.storage.borrow().frequency_str(path));
 
-        // Resolve an icon per visible result, reusing the cache so only new
-        // paths pay the (cheap) Win32 extraction cost. Extraction happens on
-        // the UI thread but is bounded to the visible rows and cached; rows
-        // below the fold render without an icon for now. The cache lives in
-        // the shared launcher state so a recreated window keeps its icons.
+        // Resolve an icon per result, reusing the cache so only new paths pay
+        // the (cheap) Win32 extraction cost. The first `MAX_RESULT_ROWS` are
+        // extracted synchronously so the visible rows paint immediately; any
+        // remaining uncached paths are extracted on a worker thread and
+        // applied back to the list once ready (`drain_icon_batches`). The
+        // cache lives in the shared launcher state so a recreated window
+        // keeps its icons.
+        let icon_gen = {
+            let state = self.state.borrow_mut();
+            let gen = state.icon_gen.get() + 1;
+            state.icon_gen.set(gen);
+            gen
+        };
         let icons = {
             let state = self.state.borrow();
             apps.iter()
-                .take(MAX_RESULT_ROWS)
-                .map(|app| {
-                    // `let` ends the temporary borrow before `unwrap_or_else`,
-                    // so the miss path can `borrow_mut` again.
-                    let cached = state.icon_cache.borrow_mut().get(&app.path).cloned();
-                    cached.unwrap_or_else(|| {
+                .enumerate()
+                .map(|(index, app)| {
+                    // `let` ends the temporary borrow before the miss path,
+                    // so it can `borrow_mut` again.
+                    let cached = state
+                        .icon_cache
+                        .borrow_mut()
+                        .get(&app.path)
+                        .cloned()
+                        .flatten();
+                    if cached.is_some() {
+                        return cached;
+                    }
+                    if index < MAX_RESULT_ROWS {
                         let icon = app_icons::app_icon_image(&app.path);
                         state
                             .icon_cache
                             .borrow_mut()
                             .insert(app.path.clone(), icon.clone());
                         icon
-                    })
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<_>>()
         };
-        let missing = apps.len().saturating_sub(icons.len());
-        let icons = icons
-            .into_iter()
-            .chain(std::iter::repeat_n(None, missing))
-            .collect::<Vec<_>>();
+
+        // Extract the below-the-fold icons off the UI thread so scrolling
+        // never stalls on extraction; the foreground poll task applies them
+        // (`drain_icon_batches`). Each search replaces the receiver, so a
+        // stale worker's send simply fails and its work is dropped.
+        {
+            let state = self.state.borrow();
+            if apps.len() > MAX_RESULT_ROWS {
+                let pending = apps[MAX_RESULT_ROWS..]
+                    .iter()
+                    .filter(|app| !state.icon_cache.borrow().contains_key(&app.path))
+                    .map(|app| app.path.clone())
+                    .collect::<Vec<_>>();
+                if !pending.is_empty() {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    std::thread::spawn(move || {
+                        let icons = pending
+                            .into_iter()
+                            .map(|path| {
+                                let icon = app_icons::app_icon_image(&path);
+                                (path, icon)
+                            })
+                            .collect::<Vec<_>>();
+                        let _ = tx.send((icon_gen, icons));
+                    });
+                    state.icon_rx.borrow_mut().replace(rx);
+                }
+            }
+        }
 
         // Prepend the calculator row (with no icon) ahead of the apps; action
         // rows always sit above any fuzzy matches so Enter hits the answer.
@@ -1097,6 +1223,22 @@ fn drag_strip() -> Div {
 }
 
 fn main() {
+    // Headless query for the effective summon hotkey, used by
+    // `scripts/bench-resident.ps1` to inject a matching synthetic WM_HOTKEY
+    // (the id is derived from the modifier/key combo, so a mismatched binding
+    // is silently ignored by the app). Prints the persisted value, or the
+    // built-in default when nothing is stored, then exits before GPUI starts.
+    if std::env::args().any(|arg| arg == "--print-summon-hotkey") {
+        let storage = steward_storage::Storage::open()
+            .expect("failed to open the Steward storage database");
+        let hotkey = storage
+            .get_setting(SUMMON_HOTKEY_SETTING)
+            .and_then(|value| value.parse::<HotKey>().ok())
+            .unwrap_or_else(|| HotkeyField::Summon.default_hotkey());
+        println!("{hotkey}");
+        return;
+    }
+
     // Opt into per-monitor DPI awareness before any window exists so GPUI and
     // the launcher size calculations see the real display scale (e.g. 2.0 at
     // 200%) instead of the 96-DPI virtualization the OS applies otherwise.
@@ -1120,10 +1262,13 @@ fn main() {
         settings_window: None,
         focus: None,
         result_count: 0,
+        scrim_alpha: steward_ui_components::palette::SCRIM_ALPHA,
         last_applied_height: 0.0,
         storage,
         engine: Rc::new(RefCell::new(Engine::new())),
         icon_cache: RefCell::new(HashMap::new()),
+        icon_gen: Cell::new(0),
+        icon_rx: RefCell::new(None),
         scan_rx: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
@@ -1213,8 +1358,9 @@ fn open_launcher_window(
     i18n: Rc<i18n::Localization>,
     state: &Rc<RefCell<LauncherState>>,
 ) -> AnyWindowHandle {
-    // Frosted-glass backdrop: the launcher composits a fixed dark scrim (see
-    // `render` and `palette::SCRIM_ALPHA`) over a blurred window background —
+    // Frosted-glass backdrop: the launcher composits a dark scrim (see
+    // `render`; base `palette::SCRIM_ALPHA`, raised adaptively over bright
+    // backdrops) over a blurred window background —
     // Windows Acrylic, macOS vibrancy. The launcher used to paint a
     // translucent tint over the Windows Mica / macOS vibrancy backdrop without
     // any blur, which followed the OS theme: in light mode the Mica turned
@@ -2160,6 +2306,43 @@ fn code_label(code: Code) -> String {
     text
 }
 
+/// Drain finished background icon extractions into the shared cache. When the
+/// batch belongs to the current search, re-run the search so every row picks
+/// its icon up from the cache; a batch superseded by a newer query only fills
+/// the cache for future searches.
+fn drain_icon_batches(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
+    let Some(rx) = state.borrow().icon_rx.borrow().clone() else {
+        return;
+    };
+    let batch = match rx.try_recv() {
+        Ok(batch) => batch,
+        Err(crossbeam_channel::TryRecvError::Empty) => return,
+        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            *state.borrow().icon_rx.borrow_mut() = None;
+            return;
+        }
+    };
+    let (gen, icons) = batch;
+    let current_gen = state.borrow().icon_gen.get();
+    {
+        let state = state.borrow();
+        let mut cache = state.icon_cache.borrow_mut();
+        for (path, icon) in &icons {
+            cache.insert(path.clone(), icon.clone());
+        }
+    }
+    if gen != current_gen {
+        return;
+    }
+    let Some(window) = state.borrow().window else {
+        return;
+    };
+    let Some(app) = window.downcast::<StewardApp>() else {
+        return;
+    };
+    let _ = app.update(cx, |app, window, cx| app.search(window, cx));
+}
+
 /// Bridge native tray/hotkey events into the GPUI event loop. Runs only after
 /// GPUI started; the hotkey manager itself is registered by the caller
 /// (boot closure).
@@ -2197,6 +2380,9 @@ fn spawn_event_poll_task(
     cx.spawn(async move |cx| loop {
         // A background scan may finish at any time; both event loops drain it.
         state.borrow().apply_scan_results();
+        // Background icon extractions for below-the-fold results finish
+        // asynchronously; apply them as they arrive.
+        drain_icon_batches(&state, cx);
 
         while let Ok(event) = hotkey_events.try_recv() {
             if event.state != HotKeyState::Pressed {
@@ -2337,6 +2523,9 @@ fn toggle_launcher(
                 .expect("focus is initialized together with GPUI");
             let height = state_ref.height();
             state_ref.last_applied_height = height;
+            // Drop the borrow before `handle.update`: the closure re-enters the
+            // shared state through `show_window`, which adapts the scrim.
+            drop(state_ref);
             let _ = handle.update(cx, |_, window, cx| {
                 if platform::is_visible(window) {
                     hide_window(window, cx);
@@ -2345,7 +2534,7 @@ fn toggle_launcher(
                     // the current result count (mirrors live sizing on search).
                     platform::resize(window, height);
                     focus.focus(window, cx);
-                    show_window(window, cx);
+                    show_window(window, cx, state);
                 }
             });
         }
@@ -2379,10 +2568,11 @@ fn show_launcher(
             .expect("focus is initialized together with GPUI");
         let height = state_ref.height();
         state_ref.last_applied_height = height;
+        drop(state_ref);
         let _ = handle.update(cx, |_, window, cx| {
             platform::resize(window, height);
             focus.focus(window, cx);
-            show_window(window, cx);
+            show_window(window, cx, state);
         });
     }
 }
@@ -2402,10 +2592,17 @@ fn hide_window(window: &mut Window, _cx: &mut App) {
     _cx.hide();
 }
 
-fn show_window(window: &mut Window, _cx: &mut App) {
+fn show_window(window: &mut Window, _cx: &mut App, state: &Rc<RefCell<LauncherState>>) {
     #[cfg(not(target_os = "windows"))]
     _cx.activate(true);
-    platform::show(window);
+    // Adapt the scrim to the backdrop while the window is still hidden (the
+    // sample runs inside `platform::show`, before `ShowWindow`): over a bright
+    // backdrop the bar darkens toward SCRIM_ALPHA_MAX so the white ink keeps
+    // its contrast, while over a dark desktop it stays at the frosted-glass
+    // SCRIM_ALPHA. The next paint picks up the new value.
+    if let Some(brightness) = platform::show(window) {
+        state.borrow_mut().scrim_alpha = adaptive_scrim_alpha(brightness);
+    }
     window.refresh();
 }
 
@@ -2461,7 +2658,9 @@ mod platform {
     use windows_sys::Win32::{
         Foundation::{HWND, POINT},
         Graphics::Gdi::{
-            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+            GetMonitorInfoW, GetPixel, MonitorFromWindow, ReleaseDC, SelectObject, MONITORINFO,
+            MONITOR_DEFAULTTONEAREST, SRCCOPY,
         },
         System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
@@ -2582,15 +2781,105 @@ mod platform {
         }
     }
 
-    pub fn show(window: &Window) {
-        let Some(hwnd) = hwnd(window) else {
-            return;
-        };
+    /// Show the launcher and return the sampled luminance of the backdrop
+    /// behind it (`None` when it could not be sampled, e.g. the screen DC
+    /// failed). The caller adapts the scrim to that value. Sampling runs
+    /// *after* `position_centered` (so the rect matches where the bar will
+    /// sit) and *before* `ShowWindow` (so the pixels read are the backdrop,
+    /// never the launcher itself).
+    pub fn show(window: &Window) -> Option<f32> {
+        let hwnd = hwnd(window)?;
         unsafe {
             position_centered(hwnd);
+            let backdrop = sample_backdrop_brightness(hwnd);
             ShowWindow(hwnd, SW_SHOW);
             force_foreground(hwnd);
+            backdrop
         }
+    }
+
+    /// Average relative luminance (Rec. 709, 0..1) of the desktop region
+    /// behind the launcher's current window rect, sampled as a coarse grid of
+    /// pixels on the screen DC. The adaptive scrim uses this to raise its
+    /// opacity over a bright backdrop (a white document behind the bar), where
+    /// the frosted composite would otherwise go light and wash out the white
+    /// query text. Returns `None` when the window rect or screen DC is
+    /// unavailable.
+    fn sample_backdrop_brightness(hwnd: HWND) -> Option<f32> {
+        let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+            return None;
+        }
+        let (left, top, width, height) = (
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        );
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        // GetPixel on the screen DC performs one synchronous display readback
+        // per call (measured ~30 ms each on some drivers), which turns a
+        // 72-sample grid into a multi-second summon. Instead, copy the launcher
+        // region into a memory bitmap with a single BitBlt and sample that
+        // in-memory copy: one readback total, and GetPixel on a memory DC reads
+        // plain pixels with no round-trip to the display.
+        let screen_dc = unsafe { GetDC(std::ptr::null_mut()) };
+        if screen_dc.is_null() {
+            return None;
+        }
+        let mem_dc = unsafe { CreateCompatibleDC(screen_dc) };
+        if mem_dc.is_null() {
+            unsafe { ReleaseDC(std::ptr::null_mut(), screen_dc) };
+            return None;
+        }
+        let bitmap = unsafe { CreateCompatibleBitmap(screen_dc, width, height) };
+        if bitmap.is_null() {
+            unsafe {
+                DeleteDC(mem_dc);
+                ReleaseDC(std::ptr::null_mut(), screen_dc);
+            }
+            return None;
+        }
+        let previous = unsafe { SelectObject(mem_dc, bitmap) };
+        let copied = unsafe {
+            BitBlt(
+                mem_dc, 0, 0, width, height, screen_dc, left, top, SRCCOPY,
+            )
+        };
+        // 12x6 grid (72 samples): cheap, and averages out text lines or a
+        // busy window behind the bar without missing a mostly-white page.
+        const COLS: i32 = 12;
+        const ROWS: i32 = 6;
+        let mut luminance = 0.0f64;
+        let mut samples = 0u32;
+        if copied != 0 {
+            for col in 0..COLS {
+                for row in 0..ROWS {
+                    let x = left + (width * (2 * col + 1)) / (2 * COLS);
+                    let y = top + (height * (2 * row + 1)) / (2 * ROWS);
+                    let color = unsafe { GetPixel(mem_dc, x - left, y - top) };
+                    // CLR_INVALID (0xFFFFFFFF): the sample fell outside the DC,
+                    // e.g. over a monitor not covered by the virtual-screen DC.
+                    if color == u32::MAX {
+                        continue;
+                    }
+                    let r = color & 0xFF;
+                    let g = (color >> 8) & 0xFF;
+                    let b = (color >> 16) & 0xFF;
+                    luminance += crate::relative_luminance(r | (g << 8) | (b << 16)) as f64;
+                    samples += 1;
+                }
+            }
+        }
+        unsafe {
+            SelectObject(mem_dc, previous);
+            DeleteObject(bitmap);
+            DeleteDC(mem_dc);
+            ReleaseDC(std::ptr::null_mut(), screen_dc);
+        }
+        (samples > 0).then(|| (luminance / samples as f64) as f32)
     }
 
     /// Associate the default IME context with the launcher so the input
@@ -2758,8 +3047,9 @@ mod platform {
         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
     }
 
-    pub fn show(_window: &Window) {
+    pub fn show(_window: &Window) -> Option<f32> {
         WINDOW_VISIBLE.store(true, Ordering::Relaxed);
+        None
     }
 
     /// Resizing is a Windows-specific launcher behavior for now.
@@ -2777,6 +3067,7 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use steward_ui_components::palette;
 
     fn input(query: &str) -> SearchInput {
         SearchInput {
@@ -2919,5 +3210,75 @@ mod tests {
         assert_eq!(settings.to_string().parse::<HotKey>().unwrap(), settings);
         let combo = HotKey::new(Some(Modifiers::SHIFT | Modifiers::SUPER), Code::KeyA);
         assert_eq!(format_hotkey(&combo), "Win + Shift + A");
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn relative_luminance_of_extremes_and_surface() {
+        assert_close(relative_luminance(0x000000), 0.0);
+        assert_close(relative_luminance(0xffffff), 1.0);
+        assert_close(
+            relative_luminance(steward_ui_components::palette::BACKGROUND),
+            0.0147,
+        );
+    }
+
+    #[test]
+    fn adaptive_scrim_keeps_the_frosted_look_over_dark_backdrops() {
+        // Over black or a typical dark wallpaper the floor alpha is enough to
+        // keep the surface at or below the target, so the scrim stays put.
+        assert_close(adaptive_scrim_alpha(0.0), palette::SCRIM_ALPHA);
+        assert_close(adaptive_scrim_alpha(0.02), palette::SCRIM_ALPHA);
+        assert_close(adaptive_scrim_alpha(0.1), palette::SCRIM_ALPHA);
+    }
+
+    #[test]
+    fn adaptive_scrim_rises_over_bright_backdrops() {
+        // A pure-white backdrop caps the scrim at SCRIM_ALPHA_MAX ...
+        assert_close(adaptive_scrim_alpha(1.0), palette::SCRIM_ALPHA_MAX);
+        // ... a mostly-white page lands inside the floor..ceiling band ...
+        let mid = adaptive_scrim_alpha(0.5);
+        assert!(mid > palette::SCRIM_ALPHA);
+        assert!(mid < palette::SCRIM_ALPHA_MAX);
+        // ... and the surface stays at or under the target luminance, so the
+        // white ink keeps ~7:1 contrast at the brightest backdrop.
+        let background_lum = relative_luminance(palette::BACKGROUND);
+        for backdrop in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let alpha = adaptive_scrim_alpha(backdrop);
+            let surface = alpha * background_lum + (1.0 - alpha) * backdrop;
+            if alpha < palette::SCRIM_ALPHA_MAX {
+                assert!(
+                    surface <= palette::SCRIM_TARGET_LUMINANCE + 1e-3,
+                    "surface {surface} over target for backdrop {backdrop}"
+                );
+            }
+        }
+        // At the cap the ceiling binds (a pure-white backdrop), leaving a
+        // surface of ~0.113 — still a ~6.4:1 contrast for the white ink.
+        let capped = adaptive_scrim_alpha(1.0);
+        let surface = capped * background_lum + (1.0 - capped) * 1.0;
+        assert!((1.0 + 0.05) / (surface + 0.05) > 4.5);
+    }
+
+    #[test]
+    fn selection_wash_follows_the_scrim() {
+        // At the floor scrim the wash is Tinycast's 0.10; at the cap it has
+        // doubled, and it stays monotonic in between.
+        assert_close(
+            adaptive_selection_wash(palette::SCRIM_ALPHA),
+            palette::SELECTION_WASH,
+        );
+        assert_close(
+            adaptive_selection_wash(palette::SCRIM_ALPHA_MAX),
+            palette::SELECTION_WASH_MAX,
+        );
+        let mid = adaptive_selection_wash(0.5 * (palette::SCRIM_ALPHA + palette::SCRIM_ALPHA_MAX));
+        assert!(mid > palette::SELECTION_WASH && mid < palette::SELECTION_WASH_MAX);
     }
 }

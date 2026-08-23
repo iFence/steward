@@ -17,9 +17,9 @@
 use std::{rc::Rc, sync::Arc};
 
 use gpui::{
-    div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context, ElementId, Entity, Image,
-    ImageSource, InteractiveElement, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement, Styled as _,
+    div, img, prelude::FluentBuilder, px, rgb, transparent_black, App, AppContext, Context,
+    ElementId, Entity, Image, ImageSource, InteractiveElement, IntoElement, ParentElement as _,
+    Render, StatefulInteractiveElement, Styled as _,
 };
 use gpui_component::ActiveTheme;
 
@@ -58,6 +58,10 @@ pub struct ResultListState {
     max_height: f32,
     selected: Option<usize>,
     on_confirm: Option<ConfirmCallback>,
+    /// Opacity of the white selection wash, adapted by the app to the current
+    /// scrim (raised over bright backdrops, where a fixed 0.10 wash reads too
+    /// faint against the lightened bar).
+    selected_wash: f32,
 }
 
 impl Render for ResultListState {
@@ -65,6 +69,7 @@ impl Render for ResultListState {
         let type_label = self.type_label.clone();
         let range = self.visible_range();
         let selected = self.selected;
+        let selected_wash = self.selected_wash;
         let rows = self.items[range.clone()]
             .iter()
             .enumerate()
@@ -75,6 +80,7 @@ impl Render for ResultListState {
                     self.icons.get(index).cloned().flatten(),
                     &type_label,
                     selected == Some(index),
+                    selected_wash,
                     index,
                     cx,
                 )
@@ -113,13 +119,14 @@ impl ResultListState {
 /// icon (when available), name and the localized application label on the
 /// right; action rows (calculator results) show the computed value on the left
 /// and the original expression on the right. Selected rows get Tinycast's
-/// neutral white 0.10 wash plus an accent border; hovered rows get the fainter
-/// white 0.05 surface tint.
+/// neutral white wash (opacity adapted by the app) plus an accent left
+/// border; hovered rows get the fainter white 0.05 surface tint.
 fn render_row(
     item: &ResultItem,
     icon: Option<Arc<Image>>,
     type_label: &str,
     selected: bool,
+    selected_wash: f32,
     index: usize,
     cx: &mut Context<ResultListState>,
 ) -> impl IntoElement {
@@ -140,9 +147,17 @@ fn render_row(
         // scrim (palette::BACKGROUND at palette::SCRIM_ALPHA) across the whole
         // launcher, so rows stay transparent and the frosted-glass backdrop
         // shows uniformly under the drop-down too.
-        .when(selected, |this| this.bg(cx.theme().list_active))
+        // A left border is reserved on every row (transparent when
+        // unselected) so the accent marker appears without shifting the
+        // selected row's content in or out.
+        .border_l_2()
+        .when(selected, |this| {
+            this.bg(rgb(crate::palette::SELECTION).opacity(selected_wash))
+                .border_color(cx.theme().list_active_border)
+        })
         .when(!selected, |this| {
-            this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
+            this.border_color(transparent_black())
+                .hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
         })
         .on_click(cx.listener(move |this, _, _, cx| {
             if let Some(cb) = this.on_confirm.clone() {
@@ -251,6 +266,7 @@ impl ResultList {
             max_height: 0.0,
             selected: None,
             on_confirm: delegate.on_confirm,
+            selected_wash: crate::palette::SELECTION_WASH,
         });
         Self { state }
     }
@@ -340,10 +356,19 @@ impl ResultList {
     }
 
     /// Render the scrollable list element, capped at `max_height` so rows
-    /// beyond the visible drop-down can be scrolled into view.
-    pub fn render<C>(&self, max_height: f32, cx: &mut Context<C>) -> impl IntoElement {
+    /// beyond the visible drop-down can be scrolled into view. `selected_wash`
+    /// is the white selection-wash opacity for the current frame (the app
+    /// adapts it to the backdrop's brightness, so it is pushed in like
+    /// `max_height` rather than read from the global theme).
+    pub fn render<C>(
+        &self,
+        max_height: f32,
+        selected_wash: f32,
+        cx: &mut Context<C>,
+    ) -> impl IntoElement {
         self.state.update(cx, |this, _| {
             this.max_height = max_height;
+            this.selected_wash = selected_wash;
         });
         div()
             .id(ElementId::from("results-list"))
