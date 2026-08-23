@@ -140,6 +140,15 @@ steward/
 
 ## 决策记录
 
+### 2026-08-23（全局激活快捷键设置项）
+
+- 唤醒热键从硬编码 `Ctrl+Alt+Space` 改为可配置：设置面板"通用"页新增"全局唤醒快捷键"项，点击按钮进入录制态，下一次在该窗口内按下的组合键即为新热键（`Esc` 取消，仅修饰键按下忽略）；要求至少含 Ctrl/Alt/Shift/Win 之一，避免全局热键劫持单键输入。
+- 持久化：`HotKey::into_string()` 的字符串（如 `control+alt+Space`，可经 `FromStr` 往返）存入 SQLite `settings` 表 `summon_hotkey` 键；启动时读回注册，解析失败/注册冲突（已被其他应用占用）回退默认 `Ctrl+Alt+Space`。
+- `GlobalHotKeyManager` 从 `Box::leak` 改为存入 `LauncherState`（`hotkey_manager` + 当前 `summon_hotkey`），由设置窗口在事件循环线程上"注销旧键 → 注册新键 → 持久化"（`apply_summon_hotkey`），新键注册失败时恢复旧键、不落盘。管理器仍须在事件循环线程创建（Windows 隐藏窗接收 `WM_HOTKEY`）。
+- 键捕获用 GPUI `App::intercept_keystrokes`（在所有动作/事件机制之前触发，`stop_propagation` 可阻止组合键落入设置控件），在 `open_settings_window` 建窗闭包内注册、按 `window_handle()` 限定为设置窗口，`Subscription` 存入 `SettingsApp._hotkey_subscription` 随窗口关闭自动注销。
+- 键映射：GPUI `Keystroke.key`（小写逻辑键，如 `space`/`a`/`f9`）→ `HotKey` 解析 token（`Space`/`A`/`F9`），修饰键字段 control/alt/shift/platform → `ctrl`/`alt`/`shift`/`super`；modifier-only 与不可映射键返回 `None`。`format_hotkey` 输出人类可读标签（`Ctrl + Alt + Space`，Win 键前置）。
+- i18n 新增 `settings-summon-hotkey` / `settings-summon-hotkey-recording`（7 语言）。
+
 ### 2026-08-20（设置面板组件化 + 托盘菜单收拢）
 
 - 设置窗口改用 `gpui_component::setting` 的 `Settings` 组件：左侧可搜索/缩放的侧栏 + 右侧页面，页面由 `SettingPage → SettingGroup → SettingItem → SettingField` 层级组成。当前两页——"通用"（开机自动启动 Switch，读注册表真值、写后以实际生效状态重渲染）与"关于"（版本号）；`Settings` 内置搜索、重置按钮（`default_value(false)` 使开启自启后可一键复位）。窗口改为 720×440、可缩放。
