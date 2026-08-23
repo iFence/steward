@@ -1251,8 +1251,11 @@ fn open_launcher_window(
 /// Settings window built on `gpui_component`'s `Settings` widget.
 ///
 /// Pages:
-/// - General: launch-at-startup switch (the single home for autostart; the
-///   tray menu no longer carries a duplicate toggle).
+/// - General: language, theme color and the launch-at-startup switch (the
+///   single home for autostart; the tray menu no longer carries a duplicate
+///   toggle).
+/// - Hotkeys: global summon hotkey and the settings-window hotkey, each
+///   recorded by pressing a combination inside the window.
 /// - About: app name, version, and a short description.
 struct SettingsApp {
     i18n: Rc<i18n::Localization>,
@@ -1325,121 +1328,123 @@ impl Render for SettingsApp {
                 SettingPage::new(general_title)
                     .default_open(true)
                     .icon(Icon::new(IconName::Settings2))
-                    .groups(vec![
-                        SettingGroup::new()
-                            .item(SettingItem::new(
-                                language_title,
-                                SettingField::render(move |_options, _window, cx| {
-                                    let code = view_language_value.read(cx).language.clone();
-                                    let current_label = SUPPORTED_LANGUAGES
-                                        .iter()
-                                        .find(|(c, _)| *c == code)
-                                        .map(|(_, name)| SharedString::from(*name))
-                                        .unwrap_or_else(|| SharedString::from(code.clone()));
-                                    let on_select = {
-                                        let storage_language = storage_language.clone();
-                                        let i18n = i18n.clone();
-                                        let state = state.clone();
-                                        let view = view_language_set.clone();
-                                        move |code: SharedString, cx: &mut App| {
-                                            let _ = storage_language
+                    .group(SettingGroup::new()
+                        .item(SettingItem::new(
+                            language_title,
+                            SettingField::render(move |_options, _window, cx| {
+                                let code = view_language_value.read(cx).language.clone();
+                                let current_label = SUPPORTED_LANGUAGES
+                                    .iter()
+                                    .find(|(c, _)| *c == code)
+                                    .map(|(_, name)| SharedString::from(*name))
+                                    .unwrap_or_else(|| SharedString::from(code.clone()));
+                                let on_select = {
+                                    let storage_language = storage_language.clone();
+                                    let i18n = i18n.clone();
+                                    let state = state.clone();
+                                    let view = view_language_set.clone();
+                                    move |code: SharedString, cx: &mut App| {
+                                        let _ = storage_language
+                                            .borrow()
+                                            .set_setting(LANGUAGE_SETTING, &code);
+                                        i18n.select_language(&code);
+                                        // Keep gpui-component's own widgets (the
+                                        // settings search box) in sync, and
+                                        // refresh the launcher's row type label.
+                                        gpui_component::set_locale(gpui_component_locale(
+                                            &code,
+                                        ));
+                                        update_launcher_label(&state, cx);
+                                        view.update(cx, |app, cx| {
+                                            app.language = code.to_string();
+                                            cx.notify();
+                                        });
+                                    }
+                                };
+                                dropdown_field(
+                                    "language-dropdown",
+                                    SharedString::from(code),
+                                    current_label,
+                                    language_options.clone(),
+                                    on_select,
+                                )
+                            }),
+                        ))
+                        .item(SettingItem::new(
+                            theme_title,
+                            SettingField::render(move |_options, _window, cx| {
+                                let accent = view_theme_value.read(cx).accent;
+                                let value = SharedString::from(format!("#{accent:06x}"));
+                                let current_label = theme_options
+                                    .iter()
+                                    .find(|(option_value, _)| *option_value == value)
+                                    .map(|(_, label)| label.clone())
+                                    .unwrap_or_else(|| value.clone());
+                                let on_select = {
+                                    let storage = storage.clone();
+                                    let view = view_theme_set.clone();
+                                    move |hex: SharedString, cx: &mut App| {
+                                        if let Some(color) = parse_hex_color(&hex) {
+                                            let _ = storage
                                                 .borrow()
-                                                .set_setting(LANGUAGE_SETTING, &code);
-                                            i18n.select_language(&code);
-                                            // Keep gpui-component's own widgets (the
-                                            // settings search box) in sync, and
-                                            // refresh the launcher's row type label.
-                                            gpui_component::set_locale(gpui_component_locale(
-                                                &code,
-                                            ));
-                                            update_launcher_label(&state, cx);
+                                                .set_setting(THEME_COLOR_SETTING, &hex);
+                                            apply_steward_theme(cx, color);
                                             view.update(cx, |app, cx| {
-                                                app.language = code.to_string();
+                                                app.accent = color;
                                                 cx.notify();
                                             });
                                         }
-                                    };
-                                    dropdown_field(
-                                        "language-dropdown",
-                                        SharedString::from(code),
-                                        current_label,
-                                        language_options.clone(),
-                                        on_select,
-                                    )
-                                }),
-                            ))
-                            .item(SettingItem::new(
-                                theme_title,
-                                SettingField::render(move |_options, _window, cx| {
-                                    let accent = view_theme_value.read(cx).accent;
-                                    let value = SharedString::from(format!("#{accent:06x}"));
-                                    let current_label = theme_options
-                                        .iter()
-                                        .find(|(option_value, _)| *option_value == value)
-                                        .map(|(_, label)| label.clone())
-                                        .unwrap_or_else(|| value.clone());
-                                    let on_select = {
-                                        let storage = storage.clone();
-                                        let view = view_theme_set.clone();
-                                        move |hex: SharedString, cx: &mut App| {
-                                            if let Some(color) = parse_hex_color(&hex) {
-                                                let _ = storage
-                                                    .borrow()
-                                                    .set_setting(THEME_COLOR_SETTING, &hex);
-                                                apply_steward_theme(cx, color);
-                                                view.update(cx, |app, cx| {
-                                                    app.accent = color;
-                                                    cx.notify();
-                                                });
-                                            }
-                                        }
-                                    };
-                                    dropdown_field(
-                                        "theme-dropdown",
-                                        value,
-                                        current_label,
-                                        theme_options.clone(),
-                                        on_select,
-                                    )
-                                }),
-                            ))
-                            .item(SettingItem::new(
-                                autostart_label,
-                                SettingField::switch(
-                                    |_cx: &App| autostart_enabled(),
-                                    move |enabled: bool, cx: &mut App| {
-                                        // Write the registry, then re-render so the
-                                        // switch reflects the state that actually
-                                        // took effect.
-                                        set_autostart(enabled);
-                                        view_autostart.update(cx, |_, cx| cx.notify());
-                                    },
+                                    }
+                                };
+                                dropdown_field(
+                                    "theme-dropdown",
+                                    value,
+                                    current_label,
+                                    theme_options.clone(),
+                                    on_select,
                                 )
-                                .default_value(false),
-                            )),
-                        SettingGroup::new()
-                            .title(hotkeys_title)
-                            .item(SettingItem::new(
-                                global_hotkey_title,
-                                hotkey_setting_field(
-                                    HotkeyField::Summon,
-                                    view_hotkey,
-                                    view_hotkey_toggle,
-                                    state_hotkey,
-                                    i18n_hotkey,
-                                ),
-                            ))
-                            .item(SettingItem::new(
-                                settings_hotkey_title,
-                                hotkey_setting_field(
-                                    HotkeyField::Settings,
-                                    view_settings_hotkey,
-                                    view_settings_toggle,
-                                    state_settings,
-                                    i18n_settings,
-                                ),
-                            )),
-                    ]),
+                            }),
+                        ))
+                        .item(SettingItem::new(
+                            autostart_label,
+                            SettingField::switch(
+                                |_cx: &App| autostart_enabled(),
+                                move |enabled: bool, cx: &mut App| {
+                                    // Write the registry, then re-render so the
+                                    // switch reflects the state that actually
+                                    // took effect.
+                                    set_autostart(enabled);
+                                    view_autostart.update(cx, |_, cx| cx.notify());
+                                },
+                            )
+                            .default_value(false),
+                        ))),
+                // Global shortcut keys live on their own page, not as a sub-group
+                // of the General page: both hotkeys share one recording flow and
+                // deserve a dedicated, self-contained settings surface.
+                SettingPage::new(hotkeys_title)
+                    .icon(Icon::new(IconName::Settings))
+                    .group(SettingGroup::new()
+                        .item(SettingItem::new(
+                            global_hotkey_title,
+                            hotkey_setting_field(
+                                HotkeyField::Summon,
+                                view_hotkey,
+                                view_hotkey_toggle,
+                                state_hotkey,
+                                i18n_hotkey,
+                            ),
+                        ))
+                        .item(SettingItem::new(
+                            settings_hotkey_title,
+                            hotkey_setting_field(
+                                HotkeyField::Settings,
+                                view_settings_hotkey,
+                                view_settings_toggle,
+                                state_settings,
+                                i18n_settings,
+                            ),
+                        ))),
                 SettingPage::new(about_title)
                     .resettable(false)
                     .icon(Icon::new(IconName::Info))
