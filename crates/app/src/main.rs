@@ -2165,6 +2165,25 @@ fn spawn_event_poll_task(
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let menu_events = MenuEvent::receiver();
 
+    // The activation observer hides the launcher on WM_ACTIVATE(WA_INACTIVE),
+    // but Windows only delivers that message to a window that actually owns
+    // activation. A summon can intermittently fail to take the foreground —
+    // the OS foreground lock denies `SetForegroundWindow` (e.g. while the
+    // previous foreground app runs elevated) — leaving the bar visible but
+    // never active, so clicking elsewhere deactivates the *other* window and
+    // the observer never fires. This foreground watch is the safety net: while
+    // the launcher is visible, every time the foreground window *moves* to
+    // something else (a click on or Alt+Tab to another window), hide it. The
+    // cursor check keeps the bar up when an IME candidate window briefly takes
+    // the foreground while the user is still typing into the launcher.
+    #[cfg(target_os = "windows")]
+    let mut cached_launcher_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
+    // The foreground HWND observed on the previous tick (None until the
+    // launcher has been seen visible once, so the baseline is recorded without
+    // hiding a freshly-shown bar while Windows transfers the foreground).
+    #[cfg(target_os = "windows")]
+    let mut last_foreground_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
+
     cx.spawn(async move |cx| loop {
         // A background scan may finish at any time; both event loops drain it.
         state.borrow().apply_scan_results();
@@ -2213,6 +2232,54 @@ fn spawn_event_poll_task(
                 MENU_SETTINGS => toggle_settings_window(&state, i18n.clone(), cx),
                 MENU_QUIT => cx.update(|cx| cx.quit()),
                 _ => {}
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // Only re-fetch the HWND when it is unknown (first run, or the
+            // window was closed and recreated); otherwise reuse the cache so
+            // the idle loop never round-trips through the main thread.
+            let handle = state.borrow().window;
+            match handle {
+                None => cached_launcher_hwnd = None,
+                Some(h) if cached_launcher_hwnd.is_none() => {
+                    cached_launcher_hwnd = h
+                        .update(cx, |_, window, _| platform::hwnd(window))
+                        .ok()
+                        .flatten();
+                }
+                Some(_) => {}
+            }
+            if let Some(hwnd) = cached_launcher_hwnd {
+                if platform::is_hwnd_visible(hwnd) {
+                    let foreground = platform::foreground_hwnd();
+                    match last_foreground_hwnd {
+                        // Baseline: the launcher was just shown (or re-shown);
+                        // record the current foreground without hiding so a
+                        // fresh bar is not mistaken for one the user clicked
+                        // away from.
+                        None => last_foreground_hwnd = Some(foreground),
+                        Some(previous) if previous != foreground => {
+                            last_foreground_hwnd = Some(foreground);
+                            // The foreground moved away from the launcher while
+                            // it is still visible — the user clicked or
+                            // switched to another window. The cursor guard
+                            // exempts IME candidate windows, which take the
+                            // foreground while the user is still typing into
+                            // the launcher.
+                            if foreground != hwnd && !platform::cursor_hits_window(hwnd) {
+                                if let Some(handle) = state.borrow().window {
+                                    let _ =
+                                        handle.update(cx, |_, window, cx| hide_window(window, cx));
+                                }
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                } else {
+                    last_foreground_hwnd = None;
+                }
             }
         }
 
@@ -2382,7 +2449,7 @@ mod platform {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::time::Duration;
     use windows_sys::Win32::{
-        Foundation::HWND,
+        Foundation::{HWND, POINT},
         Graphics::Gdi::{
             GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         },
@@ -2390,7 +2457,7 @@ mod platform {
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::HiDpi::GetDpiForWindow,
         UI::WindowsAndMessaging::{
-            GetCaretBlinkTime, GetClientRect, GetForegroundWindow, GetWindowRect,
+            GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowRect,
             GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SetWindowPos,
             ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
         },
@@ -2452,7 +2519,10 @@ mod platform {
         }
     }
 
-    fn hwnd(window: &Window) -> Option<HWND> {
+    /// The launcher's native window handle (`None` before the window exists or
+    /// after it is closed). Exposed to the event-poll thread so the foreground
+    /// watch can query Win32 state without round-tripping through GPUI.
+    pub fn hwnd(window: &Window) -> Option<HWND> {
         let handle = HasWindowHandle::window_handle(window).ok()?;
         match handle.as_raw() {
             RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
@@ -2462,6 +2532,36 @@ mod platform {
 
     pub fn is_visible(window: &Window) -> bool {
         hwnd(window).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd) != 0 })
+    }
+
+    /// HWND-based visibility check, safe to call from the event-poll thread
+    /// (only used by the foreground watch).
+    pub fn is_hwnd_visible(hwnd: HWND) -> bool {
+        unsafe { IsWindowVisible(hwnd) != 0 }
+    }
+
+    /// The current foreground (keyboard-focus) window.
+    pub fn foreground_hwnd() -> HWND {
+        unsafe { GetForegroundWindow() }
+    }
+
+    /// Whether the cursor currently sits inside `hwnd`'s window frame. The
+    /// foreground watch uses this to keep the launcher up while the user is
+    /// still interacting with it (clicking it, dragging it, or composing IME
+    /// text) even when it is momentarily not the foreground window.
+    pub fn cursor_hits_window(hwnd: HWND) -> bool {
+        unsafe {
+            let mut cursor: POINT = std::mem::zeroed();
+            let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+            let got_cursor = GetCursorPos(&mut cursor) != 0;
+            let got_rect = GetWindowRect(hwnd, &mut rect) != 0;
+            got_cursor
+                && got_rect
+                && cursor.x >= rect.left
+                && cursor.x < rect.right
+                && cursor.y >= rect.top
+                && cursor.y < rect.bottom
+        }
     }
 
     pub fn hide(window: &Window) {
