@@ -2626,7 +2626,8 @@ fn show_window(window: &mut Window, _cx: &mut App, state: &Rc<RefCell<LauncherSt
     // backdrop the bar darkens toward SCRIM_ALPHA_MAX so the white ink keeps
     // its contrast, while over a dark desktop it stays at the frosted-glass
     // SCRIM_ALPHA. The next paint picks up the new value.
-    if let Some(brightness) = platform::show(window) {
+    let height = state.borrow().height();
+    if let Some(brightness) = platform::show(window, height) {
         state.borrow_mut().scrim_alpha = adaptive_scrim_alpha(brightness);
     }
     window.refresh();
@@ -2685,12 +2686,12 @@ mod platform {
         Foundation::{HWND, POINT},
         Graphics::Gdi::{
             BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            GetMonitorInfoW, GetPixel, MonitorFromWindow, ReleaseDC, SelectObject, MONITORINFO,
-            MONITOR_DEFAULTTONEAREST, SRCCOPY,
+            GetMonitorInfoW, GetPixel, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject,
+            MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
         },
         System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
-        UI::HiDpi::GetDpiForWindow,
+        UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
         UI::WindowsAndMessaging::{
             GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowRect,
             GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SetWindowPos,
@@ -2707,9 +2708,33 @@ mod platform {
     pub fn set_dpi_awareness() {
         unsafe {
             use windows_sys::Win32::UI::HiDpi::{
-                SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                GetProcessDpiAwareness, SetProcessDpiAwarenessContext,
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             };
-            let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            use windows_sys::Win32::System::Threading::GetCurrentProcess;
+            let result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            // Diagnose mixed-DPI summons (see `dbg_dpi`): if the process failed
+            // to reach per-monitor awareness (e.g. a library set it earlier),
+            // Windows never delivers WM_DPICHANGED and the bar renders at the
+            // system scale on every monitor.
+            if std::env::var_os("STEWARD_DBG_DPI").is_some() {
+                let mut awareness: i32 = -1;
+                let hr = GetProcessDpiAwareness(GetCurrentProcess(), &mut awareness);
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(std::env::temp_dir().join("steward-dpi.log"))
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(
+                            f,
+                            "startup SetProcessDpiAwarenessContext ok={result} \
+                             GetProcessDpiAwareness hr={hr:#x} value={awareness} \
+                             (0=unaware 1=system 2=per-monitor)"
+                        )
+                    });
+            }
+            let _ = result;
         }
     }
 
@@ -2809,39 +2834,68 @@ mod platform {
 
     /// Show the launcher and return the sampled luminance of the backdrop
     /// behind it (`None` when it could not be sampled, e.g. the screen DC
-    /// failed). The caller adapts the scrim to that value. Sampling runs
-    /// *after* `position_centered` (so the rect matches where the bar will
-    /// sit) and *before* `ShowWindow` (so the pixels read are the backdrop,
-    /// never the launcher itself).
-    pub fn show(window: &Window) -> Option<f32> {
+    /// failed). The caller adapts the scrim to that value. `height` is the
+    /// intended logical client height in GPUI pixels, identical to what
+    /// `resize` was given. Sampling runs *before* `ShowWindow` (so the pixels
+    /// read are the backdrop, never the launcher itself), at the rect where
+    /// the bar will sit.
+    pub fn show(window: &Window, height: f32) -> Option<f32> {
         let hwnd = hwnd(window)?;
         unsafe {
-            position_centered(hwnd);
-            let backdrop = sample_backdrop_brightness(hwnd);
-            ShowWindow(hwnd, SW_SHOW);
+            // Where the bar will sit: monitor under the cursor, sized for that
+            // monitor's DPI, centered horizontally and in the upper third of
+            // its work area.
+            let (x, y, width, height_px, target_dpi) = launcher_rect_for_cursor(hwnd, height);
+
+            let current_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut cursor: POINT = std::mem::zeroed();
+            let target_monitor = if GetCursorPos(&mut cursor) != 0 {
+                MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+            } else {
+                current_monitor
+            };
+            let cross = target_monitor != current_monitor;
+
+            // Sample the backdrop *there* while the window is still hidden.
+            let backdrop = sample_backdrop_brightness(x, y, width, height_px);
+
+            dbg_dpi("before", hwnd, target_dpi, cross, x, y, width, height_px);
+            if cross {
+                // Cross-monitor summon. Windows does not re-evaluate a
+                // *hidden* window's DPI when it is moved, so a hidden move
+                // leaves GPUI's scale factor stale (the content renders at the
+                // previous monitor's size — the original multi-monitor bug).
+                // Show the window on its current monitor first so its DPI
+                // context commits, then move it (now visible) to the target: a
+                // visible cross-DPI move reliably delivers WM_DPICHANGED,
+                // which updates GPUI's scale factor and resizes the window to
+                // the system-suggested rect.
+                ShowWindow(hwnd, SW_SHOW);
+                SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
+                dbg_dpi("moved", hwnd, target_dpi, cross, x, y, width, height_px);
+            } else {
+                SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
+                ShowWindow(hwnd, SW_SHOW);
+            }
+            // Self-heal: now that the window is visible, `GetDpiForWindow`
+            // reflects its real DPI. Re-apply the exact geometry so any
+            // position drift from the system-suggested rect in
+            // `WM_DPICHANGED` is corrected and the client area is exactly
+            // on-design on this monitor.
+            apply_exact(hwnd, height);
+            dbg_dpi("after", hwnd, target_dpi, cross, 0, 0, 0, 0);
             force_foreground(hwnd);
             backdrop
         }
     }
 
-    /// Average relative luminance (Rec. 709, 0..1) of the desktop region
-    /// behind the launcher's current window rect, sampled as a coarse grid of
-    /// pixels on the screen DC. The adaptive scrim uses this to raise its
-    /// opacity over a bright backdrop (a white document behind the bar), where
-    /// the frosted composite would otherwise go light and wash out the white
-    /// query text. Returns `None` when the window rect or screen DC is
-    /// unavailable.
-    fn sample_backdrop_brightness(hwnd: HWND) -> Option<f32> {
-        let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
-        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
-            return None;
-        }
-        let (left, top, width, height) = (
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-        );
+    /// Average relative luminance (Rec. 709, 0..1) of the desktop region within
+    /// the given physical rect, sampled as a coarse grid of pixels on the
+    /// screen DC. The adaptive scrim uses this to raise its opacity over a
+    /// bright backdrop (a white document behind the bar), where the frosted
+    /// composite would otherwise go light and wash out the white query text.
+    /// Returns `None` when the rect or screen DC is unavailable.
+    fn sample_backdrop_brightness(left: i32, top: i32, width: i32, height: i32) -> Option<f32> {
         if width <= 0 || height <= 0 {
             return None;
         }
@@ -2948,8 +3002,13 @@ mod platform {
     /// Windows still frames WS_POPUP windows with a few device pixels; if they
     /// are not added, the client area ends up shorter than requested and the
     /// flex column clips the drop-down's last row.
-    unsafe fn client_to_window_px(hwnd: HWND, width: f32, height: f32) -> (i32, i32) {
-        let dpi = GetDpiForWindow(hwnd).max(96);
+    ///
+    /// `dpi` is the scale to size for explicitly: `resize` sizes in place
+    /// (the window's own DPI), while `launcher_rect_for_cursor` sizes for the
+    /// *target* monitor before the window moves there, so a cross-DPI move
+    /// lands at the right physical size.
+    unsafe fn client_to_window_px(hwnd: HWND, width: f32, height: f32, dpi: u32) -> (i32, i32) {
+        let dpi = dpi.max(96);
         let scale = dpi as f32 / 96.0;
         let mut window_rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
         let mut client_rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
@@ -2972,7 +3031,12 @@ mod platform {
             return;
         };
         unsafe {
-            let (width_px, height_px) = client_to_window_px(hwnd, crate::LAUNCHER_WIDTH, height);
+            let (width_px, height_px) = client_to_window_px(
+                hwnd,
+                crate::LAUNCHER_WIDTH,
+                height,
+                GetDpiForWindow(hwnd),
+            );
             let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut rect);
             SetWindowPos(
@@ -2999,35 +3063,128 @@ mod platform {
         }
     }
 
-    /// A window opened with `show: false` never receives the placement GPUI
-    /// computed for it, so the launcher keeps its creation-time (default)
-    /// bounds — which can end up as an OS default size when the requested
-    /// bounds are rejected. Apply the launcher's own physical size and
-    /// position on every show: fixed design width, current result height
-    /// (the caller resizes it before showing), centered horizontally and in
-    /// the upper third of the work area.
-    unsafe fn position_centered(hwnd: HWND) {
+    /// Compute where the launcher should sit for the monitor under the cursor:
+    /// sized for `height` logical px at that monitor's DPI (borders included),
+    /// centered horizontally and in the upper third of its work area. Returns
+    /// `(x, y, width_px, height_px, dpi)`.
+    ///
+    /// The window is created hidden on the primary display, so
+    /// `MonitorFromWindow` would always report that monitor; pick the one
+    /// under the cursor instead (falling back to the window's own monitor when
+    /// the cursor query fails). Likewise `GetDpiForWindow` is read only as a
+    /// fallback: at this point the window still sits on the monitor it was
+    /// last shown on, so on mixed-DPI setups it would size the bar for the
+    /// wrong scale — read the *target* monitor's DPI instead.
+    unsafe fn launcher_rect_for_cursor(
+        hwnd: HWND,
+        height: f32,
+    ) -> (i32, i32, i32, i32, u32) {
         use crate::LAUNCHER_WIDTH;
-        let dpi = GetDpiForWindow(hwnd).max(96);
-        let scale = dpi as f32 / 96.0;
-        let mut client_rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-        GetClientRect(hwnd, &mut client_rect);
-        // The client height is already the current drop-down height in
-        // physical px; recover it in logical px and re-derive the full window
-        // size including borders so the client area stays exactly on-design.
-        let height_logical = (client_rect.bottom as f32 / scale).max(1.0);
-        let (width, height) = client_to_window_px(hwnd, LAUNCHER_WIDTH, height_logical);
+        let mut cursor: POINT = std::mem::zeroed();
+        let monitor = if GetCursorPos(&mut cursor) != 0 {
+            MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+        } else {
+            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        };
+        let mut dpi_x: u32 = 0;
+        let mut dpi_y: u32 = 0;
+        let dpi = if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) >= 0
+            && dpi_x > 0
+            && dpi_y > 0
+        {
+            dpi_x.max(dpi_y)
+        } else {
+            GetDpiForWindow(hwnd)
+        }
+        .max(96);
+        let (width, height_px) = client_to_window_px(hwnd, LAUNCHER_WIDTH, height, dpi);
 
         let mut info: MONITORINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         GetMonitorInfoW(monitor, &mut info);
         let work = info.rcWork;
         let x = work.left + ((work.right - work.left) - width) / 2;
         // Horizontally centered; vertically in the upper third of the screen.
-        let y = work.top + ((work.bottom - work.top) - height) / 3;
+        let y = work.top + ((work.bottom - work.top) - height_px) / 3;
+        (x, y, width, height_px, dpi)
+    }
 
-        SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    /// Re-apply the launcher's exact geometry on the monitor it currently sits
+    /// on, using the window's own DPI. Called after `ShowWindow`, when
+    /// `GetDpiForWindow` is truthful: it self-heals any position drift or size
+    /// rounding introduced by the system-suggested rect in `WM_DPICHANGED`.
+    unsafe fn apply_exact(hwnd: HWND, height: f32) {
+        use crate::LAUNCHER_WIDTH;
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let (width, height_px) = client_to_window_px(hwnd, LAUNCHER_WIDTH, height, dpi);
+
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        GetMonitorInfoW(monitor, &mut info);
+        let work = info.rcWork;
+        let x = work.left + ((work.right - work.left) - width) / 2;
+        let y = work.top + ((work.bottom - work.top) - height_px) / 3;
+
+        SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
+    }
+
+    /// Append a one-line snapshot of the summon-time DPI state to
+    /// `%TEMP%\steward-dpi.log` while the `STEWARD_DBG_DPI` env var is set (a
+    /// no-op otherwise). Used to diagnose cross-monitor sizing on mixed-DPI
+    /// setups. `dpi`/`cross` are the caller's expected target dpi and
+    /// cross-monitor flag; `set_x`..`set_h` the rect about to be applied.
+    #[allow(clippy::too_many_arguments)]
+    fn dbg_dpi(
+        tag: &str,
+        hwnd: HWND,
+        dpi: u32,
+        cross: bool,
+        set_x: i32,
+        set_y: i32,
+        set_w: i32,
+        set_h: i32,
+    ) {
+        if std::env::var_os("STEWARD_DBG_DPI").is_none() {
+            return;
+        }
+        unsafe {
+            let mut cursor: POINT = std::mem::zeroed();
+            let cursor_ok = GetCursorPos(&mut cursor) != 0;
+            let mut window_rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+            let rect_ok = GetWindowRect(hwnd, &mut window_rect) != 0;
+            let mut client_rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+            let client_ok = GetClientRect(hwnd, &mut client_rect) != 0;
+            let line = format!(
+                "{tag} cursor=({},{},ok={}) target_dpi={} cross={} win_dpi={} window=({},{},{},{},ok={}) client=({},{},ok={}) set=({},{},{},{})\n",
+                cursor.x,
+                cursor.y,
+                cursor_ok,
+                dpi,
+                cross,
+                GetDpiForWindow(hwnd),
+                window_rect.left,
+                window_rect.top,
+                window_rect.right,
+                window_rect.bottom,
+                rect_ok,
+                client_rect.right,
+                client_rect.bottom,
+                client_ok,
+                set_x,
+                set_y,
+                set_w,
+                set_h,
+            );
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::env::temp_dir().join("steward-dpi.log"))
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    f.write_all(line.as_bytes())
+                });
+        }
     }
 
     /// Windows restricts `SetForegroundWindow`; attaching the input queues of
@@ -3073,7 +3230,7 @@ mod platform {
         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
     }
 
-    pub fn show(_window: &Window) -> Option<f32> {
+    pub fn show(_window: &Window, _height: f32) -> Option<f32> {
         WINDOW_VISIBLE.store(true, Ordering::Relaxed);
         None
     }
