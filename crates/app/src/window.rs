@@ -168,6 +168,7 @@ pub(crate) fn open_launcher_window(
                         query: String::new(),
                         cursor: 0,
                         marked: None,
+                        selection: None,
                     },
                     i18n,
                     engine,
@@ -176,6 +177,8 @@ pub(crate) fn open_launcher_window(
                     results,
                     state: state.clone(),
                     _activation_subscription: activation_subscription,
+                    mouse_selecting: false,
+                    mouse_anchor: 0,
                 };
                 // Seed the first summon with the most-used applications (an
                 // empty query sorts by usage frequency), so the launcher opens

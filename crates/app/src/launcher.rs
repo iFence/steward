@@ -13,8 +13,9 @@ use global_hotkey::hotkey::HotKey;
 use global_hotkey::GlobalHotKeyManager;
 use gpui::{
     div, point, prelude::*, px, rgb, size, AnyElement, Animation, AnimationExt, App, Bounds, Div,
-    Element, ElementId, ElementInputHandler, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
-    InspectorElementId, InteractiveElement, KeyDownEvent, LayoutId, Pixels, Subscription,
+    ClipboardItem, DispatchPhase, Element, ElementId, ElementInputHandler, EntityInputHandler,
+    FocusHandle, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, KeyDownEvent,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Subscription,
     UTF16Selection, Window,
 };
 use gpui_component::ActiveTheme;
@@ -29,6 +30,15 @@ use crate::search_input::SearchInput;
 use crate::settings::open_settings_window_from_launcher;
 use crate::theme::adaptive_selection_wash;
 use crate::window::hide_window;
+
+/// Approximate horizontal pitch of the query glyphs, in logical pixels. Used
+/// to map a mouse x coordinate to a character index (and to place the IME
+/// candidate window), since the launcher hand-renders its query text instead
+/// of using a GPUI text system with metrics.
+const GLYPH_WIDTH: f32 = 9.0;
+/// The query text's left edge, in window coordinates: the launcher's left
+/// drag-strip margin plus the input row's `px_3` padding.
+const INPUT_TEXT_X: f32 = LAUNCHER_MARGIN + 12.0;
 
 /// Height of the results drop-down for `count` visible rows, capped at
 /// `MAX_RESULT_ROWS` so the window stops growing once the list scrolls.
@@ -61,6 +71,12 @@ pub(crate) struct StewardApp {
     pub(crate) state: Rc<RefCell<LauncherState>>,
     /// Keeps the window-activation observer alive for the view's lifetime.
     pub(crate) _activation_subscription: Subscription,
+    /// Whether a left-button drag is actively extending a text selection in
+    /// the query. Set on mouse-down over the input, cleared on mouse-up.
+    pub(crate) mouse_selecting: bool,
+    /// The character index where the current selection drag started. Only
+    /// meaningful while [`Self::mouse_selecting`] is set.
+    pub(crate) mouse_anchor: usize,
 }
 
 /// A finished background icon extraction: the search generation it belongs to
@@ -194,11 +210,25 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<UTF16Selection> {
-        let caret = self.input.char_to_utf16(self.input.cursor);
-        Some(UTF16Selection {
-            range: caret..caret,
-            reversed: false,
-        })
+        // Report the active selection (the caret is its head); a plain caret
+        // is a zero-length selection.
+        let range = match &self.input.selection {
+            Some(range) => {
+                let start = self.input.char_to_utf16(range.start);
+                let end = self.input.char_to_utf16(range.end);
+                start..end
+            }
+            None => {
+                let caret = self.input.char_to_utf16(self.input.cursor);
+                caret..caret
+            }
+        };
+        let reversed = self
+            .input
+            .selection
+            .as_ref()
+            .is_some_and(|range| self.input.cursor == range.start);
+        Some(UTF16Selection { range, reversed })
     }
 
     fn marked_text_range(
@@ -277,11 +307,33 @@ impl EntityInputHandler for StewardApp {
 
     fn character_index_for_point(
         &mut self,
-        _point: gpui::Point<Pixels>,
+        point: gpui::Point<Pixels>,
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<usize> {
-        None
+        // Window-coordinate x, using the same glyph-width estimate as
+        // `bounds_for_range` and the mouse-selection handlers.
+        let relative = point.x - px(INPUT_TEXT_X);
+        let index = (relative / px(GLYPH_WIDTH)).round().max(0.0) as usize;
+        Some(index.min(self.input.char_count()))
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        _window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        // Platforms move the selection on the application's behalf (e.g. a
+        // system selection handle); mirror it into the query's own model.
+        if range_utf16.start == range_utf16.end {
+            if let Some(index) = self.input.utf16_to_char_index(range_utf16.start) {
+                self.input.set_cursor(index);
+            }
+        } else if let Some(range) = self.input.utf16_to_chars(range_utf16) {
+            self.input.set_selection(range);
+        }
+        cx.notify();
     }
 
     fn accepts_text_input(&self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> bool {
@@ -353,6 +405,7 @@ impl Element for LauncherInputElement {
             ElementInputHandler::new(self.input_bounds, self.view.clone()),
             cx,
         );
+        self.register_mouse_selection(window);
     }
 }
 
@@ -361,6 +414,63 @@ impl IntoElement for LauncherInputElement {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+/// Map a window x coordinate to a character index in the query, using the
+/// same glyph-width estimate as the IME caret placement and mouse selection.
+fn char_index_at_x(bounds: Bounds<Pixels>, query_len: usize, x: Pixels) -> usize {
+    let relative = x - bounds.origin.x - px(INPUT_TEXT_X);
+    let index = (relative / px(GLYPH_WIDTH)).round().max(0.0) as usize;
+    index.min(query_len)
+}
+
+impl LauncherInputElement {
+    /// Register window-scoped mouse listeners that drive text selection in the
+    /// query: press over the input places the caret and anchors the selection,
+    /// drag extends it (even when the pointer leaves the input area), release
+    /// ends it. The listeners run in the capture phase and never stop
+    /// propagation, so clicks on the results drop-down below the bar are
+    /// unaffected. Registered every frame because GPUI clears window mouse
+    /// listeners after each frame.
+    fn register_mouse_selection(&self, window: &mut Window) {
+        let input_bounds = self.input_bounds;
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Capture {
+                return;
+            }
+            if event.button != MouseButton::Left || !input_bounds.contains(&event.position) {
+                return;
+            }
+            view.update(cx, |app, cx| {
+                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
+                app.begin_mouse_selection(index, cx);
+            });
+        });
+
+        let input_bounds = self.input_bounds;
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Capture || !event.dragging() {
+                return;
+            }
+            view.update(cx, |app, cx| {
+                if !app.mouse_selecting {
+                    return;
+                }
+                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
+                app.update_mouse_selection(index, cx);
+            });
+        });
+
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            view.update(cx, |app, _| app.end_mouse_selection());
+        });
     }
 }
 
@@ -468,42 +578,85 @@ impl gpui::Render for StewardApp {
 
 impl StewardApp {
     /// Render the query text: leading text, the active IME composition
-    /// (underlined), the caret and the trailing text.
+    /// (underlined), the active text selection (washed), the caret and the
+    /// trailing text.
     fn render_query_text(&self, primary: Hsla) -> Div {
         let query = &self.input.query;
-        let (pre, marked, post) = match &self.input.marked {
-            Some(range) => {
-                let start = self.input.byte_at_char(range.start);
-                let end = self.input.byte_at_char(range.end);
-                (&query[..start], Some(&query[start..end]), &query[end..])
-            }
-            None => {
-                let start = self.input.byte_at_char(self.input.cursor);
-                (&query[..start], None, &query[start..])
-            }
-        };
-
         let mut children: Vec<AnyElement> = Vec::new();
-        if !pre.is_empty() {
-            children.push(div().child(pre.to_string()).into_any_element());
-        }
-        if let Some(marked) = marked {
+
+        // The active IME composition owns the rendering (underlined text plus
+        // caret); a separate selection cannot coexist with a composition.
+        if let Some(range) = &self.input.marked {
+            let start = self.input.byte_at_char(range.start);
+            let end = self.input.byte_at_char(range.end);
+            if start > 0 {
+                children.push(div().child(query[..start].to_string()).into_any_element());
+            }
             children.push(
                 div()
                     .underline()
-                    .child(marked.to_string())
+                    .child(query[start..end].to_string())
                     .into_any_element(),
             );
+            children.push(cursor(primary).into_any_element());
+            if end < query.len() {
+                children.push(div().child(query[end..].to_string()).into_any_element());
+            }
+            return div().flex().flex_row().items_center().children(children);
         }
-        children.push(cursor(primary).into_any_element());
-        if !post.is_empty() {
-            children.push(div().child(post.to_string()).into_any_element());
+
+        if let Some(range) = self.input.selection.clone() {
+            // The caret sits at the selection head; the selected span is
+            // painted with the same adaptive white wash as the result rows.
+            let sel_start = self.input.byte_at_char(range.start);
+            let sel_end = self.input.byte_at_char(range.end);
+            let caret = self.input.byte_at_char(self.input.cursor);
+            let wash = adaptive_selection_wash(self.state.borrow().scrim_alpha);
+            let selection_span = |text: &str| {
+                div()
+                    .bg(rgb(steward_ui_components::palette::SELECTION).opacity(wash))
+                    .child(text.to_string())
+            };
+            if sel_start > 0 {
+                children.push(
+                    div()
+                        .child(query[..sel_start].to_string())
+                        .into_any_element(),
+                );
+            }
+            if caret == sel_start {
+                // Head at the selection start: caret before the selected text.
+                children.push(cursor(primary).into_any_element());
+                children.push(selection_span(&query[sel_start..sel_end]).into_any_element());
+            } else {
+                children.push(selection_span(&query[sel_start..caret]).into_any_element());
+                children.push(cursor(primary).into_any_element());
+                children.push(selection_span(&query[caret..sel_end]).into_any_element());
+            }
+            if sel_end < query.len() {
+                children.push(div().child(query[sel_end..].to_string()).into_any_element());
+            }
+        } else {
+            // Plain caret between the leading and trailing text.
+            let caret = self.input.byte_at_char(self.input.cursor);
+            if caret > 0 {
+                children.push(div().child(query[..caret].to_string()).into_any_element());
+            }
+            children.push(cursor(primary).into_any_element());
+            if caret < query.len() {
+                children.push(div().child(query[caret..].to_string()).into_any_element());
+            }
         }
 
         div().flex().flex_row().items_center().children(children)
     }
 
-    fn handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut gpui::Context<Self>) {
+    fn handle_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
         let keystroke = &event.keystroke;
         let modifiers = keystroke.modifiers;
 
@@ -529,10 +682,40 @@ impl StewardApp {
             }
         }
 
+        // Select all (Ctrl+A). The launcher's hand-rolled input owns its
+        // selection model, so the standard shortcut has no built-in handler.
+        if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "a" {
+            self.input.select_all();
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+
+        // Copy / cut the selected query (Ctrl+C / Ctrl+X), like the paste
+        // handler below: read/write the platform clipboard directly.
+        if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "c" {
+            if let Some(text) = self.input.selected_text() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            cx.stop_propagation();
+            return;
+        }
+
+        if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "x" {
+            if let Some(text) = self.input.selected_text() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                self.input.delete_selection();
+                self.search(window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+
         // Paste from the clipboard. The launcher uses a hand-rolled input, so
         // Ctrl+V has no built-in handler; read the platform clipboard and
-        // insert it at the caret. Newlines are collapsed to spaces because the
-        // query is a single-line document (e.g. copying a path from Explorer).
+        // insert it at the caret (replacing the selection if one is active).
+        // Newlines are collapsed to spaces because the query is a single-line
+        // document (e.g. copying a path from Explorer).
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
@@ -750,12 +933,36 @@ impl StewardApp {
         self.input.query.clear();
         self.input.cursor = 0;
         self.input.marked = None;
+        self.input.selection = None;
+        self.mouse_selecting = false;
+        self.mouse_anchor = 0;
         // Re-run the empty query so the next summon opens with the most-used
         // applications instead of an empty bar (the recents seed in
         // `open_launcher_window` only runs once, at window creation).
         self.search(window, cx);
         hide_window(window, cx);
         cx.notify();
+    }
+
+    /// Start a mouse-driven selection: place the caret at `index` (collapsing
+    /// any prior selection) and anchor the drag there.
+    fn begin_mouse_selection(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
+        self.input.set_cursor(index);
+        self.mouse_selecting = true;
+        self.mouse_anchor = index;
+        cx.notify();
+    }
+
+    /// Extend the mouse selection from the anchor to `index`, the caret
+    /// following the pointer.
+    fn update_mouse_selection(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
+        self.input.select_anchor_to(self.mouse_anchor, index);
+        cx.notify();
+    }
+
+    /// End a mouse-driven selection drag.
+    fn end_mouse_selection(&mut self) {
+        self.mouse_selecting = false;
     }
 }
 
