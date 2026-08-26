@@ -17,8 +17,10 @@ pub use nucleo;
 mod scanner;
 
 pub mod calc;
+pub mod link;
 
 pub use calc::{format_value, try_evaluate};
+pub use link::try_openable;
 pub use scanner::{platform_scanner, AppScanner};
 
 /// A single installed application discoverable via the launcher.

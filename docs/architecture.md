@@ -140,6 +140,14 @@ steward/
 
 ## 决策记录
 
+### 2026-08-26（URL 链接用默认浏览器打开）
+
+- 启动器支持把形如 `https://github.com`、`172.20.2.14:1230`（IPv4:端口）的查询当作"用浏览器打开"命令：结果列表顶部插入一条链接行（左侧是本地化的 "Open in Browser" 标签、右侧是 "Command" 类型标签，无图标），确认后调用默认浏览器打开，而不是只当成应用名搜索。
+- 识别逻辑放在 `steward-core-engine` 新增的 `link` 模块（无 UI 依赖、可单测，与内置计算器同法）：带 `://` 且 scheme 为 http/https/ftp/ftps 的查询原样打开；无 scheme 的输入若为合法 host（IPv4、`localhost` 或带点的域名，均可选 `:端口`）——`host:端口`（如 `172.20.2.14:1230`）原样透传、不补前缀，这类地址多为纯 HTTP 的内网服务，补 `https://` 反而打不开；无端口的裸 host 才补 `https://`。带空格的查询、单点号外的词、非法端口、纯数字小数（如 `1.2.3`，非 IPv4）一律不触发，避免劫持普通搜索。
+- 打开走 `launch::open_url`：Windows 复用 `ShellExecuteW` 的 `open` verb，由 shell 按 URL 关联路由到默认浏览器，无需定位浏览器可执行文件；无 scheme 的地址在打开时补 `http://`（同浏览器地址栏对裸 `host:端口` 的处理），否则 shell 会把裸串当文件路径而不交给浏览器；非 Windows 暂与 `launch` 一样 stub。
+- `ResultItem` 增加 `Link { url, label, command_label }` 变体，渲染复用 Action 行布局（左主文右副文：`label` 即 "Open in Browser" 在左、`command_label` 即 "Command" 在右，`url` 不展示、仅供确认时打开）；确认回调增加 `Link` 分支，与 App 行一致地不追踪使用频率（URL 命中大多是一次性，暂不进 usage 表）。
+- i18n 新增 `open-in-browser`（7 语言）。
+
 ### 2026-08-23（毛玻璃在高亮背景下的自适应蒙层）
 
 - 症状：启动器用 `WindowBackgroundAppearance::Blurred`（Windows Acrylic / macOS vibrancy）后，亮色背景（白色 Word/浏览器窗口）上方的毛玻璃合成面偏浅——`BACKGROUND 0x202024` 以 `SCRIM_ALPHA 0.55` 叠在纯白模糊背景上合成亮度约 0.46，白字对比度仅 ~1.9:1，查询文字看不清。深色背景下合成面≈`BACKGROUND`（暗），无此问题；因此只在背景本身很亮时失效。

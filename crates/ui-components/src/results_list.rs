@@ -31,11 +31,21 @@ pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App)>;
 /// one-off action such as a calculator result — an action row shows its own
 /// title and subtitle instead of an icon plus the application label, and its
 /// confirmation runs the app-side `on_confirm` (which copies the computed
-/// value to the clipboard rather than launching anything).
+/// value to the clipboard rather than launching anything). A link row is the
+/// "open in browser" command: it shows the URL and, on confirm, opens it in
+/// the default browser.
 #[derive(Debug, Clone)]
 pub enum ResultItem {
     App(AppEntry),
-    Action { title: String, subtitle: String },
+    Action {
+        title: String,
+        subtitle: String,
+    },
+    Link {
+        url: String,
+        label: String,
+        command_label: String,
+    },
 }
 
 /// Design (96-DPI) geometry of a result row, in logical pixels. GPUI scales
@@ -132,6 +142,7 @@ fn render_row(
     let id = match item {
         ResultItem::App(app) => ElementId::from(app.path.to_string_lossy().into_owned()),
         ResultItem::Action { .. } => ElementId::from(format!("result-action-{index}")),
+        ResultItem::Link { .. } => ElementId::from(format!("result-link-{index}")),
     };
     let row = div()
         .id(id)
@@ -200,6 +211,30 @@ fn render_row(
                     .text_color(rgb(crate::palette::MUTED_FOREGROUND))
                     .text_size(px(11.0))
                     .child(subtitle.to_owned()),
+            ),
+        // A link row mirrors the action-row layout: the command label ("Open
+        // in Browser") on the left, and the "Command" type tag on the right —
+        // the URL itself is only carried for the confirm handler to open.
+        ResultItem::Link {
+            label,
+            command_label,
+            ..
+        } => row
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::FOREGROUND))
+                    .text_sm()
+                    .child(label.to_owned()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_size(px(11.0))
+                    .child(command_label.to_owned()),
             ),
     }
 }

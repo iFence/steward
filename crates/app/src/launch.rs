@@ -66,3 +66,26 @@ fn shell_open(path: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// Open `url` in the user's default browser. The `open` verb routes `http` /
+/// `https` URLs to the registered default handler, so the launcher never has
+/// to locate a browser.
+#[cfg(target_os = "windows")]
+pub(crate) fn open_url(url: &str) -> Result<()> {
+    // A scheme-less address (e.g. `172.20.2.14:1230`) would be read by the
+    // Windows shell as a file path, not a URL, so it would never reach the
+    // browser. Supply the `http://` scheme — the same normalization a browser
+    // address bar applies to a bare `host:port` — so it routes correctly.
+    let url = if url.contains("://") {
+        url.to_owned()
+    } else {
+        format!("http://{url}")
+    };
+    shell_open(std::path::Path::new(&url))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn open_url(url: &str) -> Result<()> {
+    let _ = url;
+    anyhow::bail!("opening URLs is not yet implemented on this platform")
+}

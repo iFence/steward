@@ -816,6 +816,15 @@ impl StewardApp {
                 subtitle: query.trim().to_owned(),
             });
         }
+        // A URL query (scheme URL, bare domain, IPv4[:port], localhost) is a
+        // command: offer an "open in browser" row above any app matches.
+        if let Some(url) = steward_core_engine::try_openable(&query) {
+            items.push(ResultItem::Link {
+                url,
+                label: self.i18n.translate("open-in-browser"),
+                command_label: self.i18n.translate("command"),
+            });
+        }
 
         let apps = self
             .engine

@@ -144,6 +144,12 @@ pub(crate) fn open_launcher_window(
                     Some(ResultItem::Action { title, .. }) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(title));
                     }
+                    // A link: open the URL in the default browser.
+                    Some(ResultItem::Link { url, .. }) => {
+                        if let Err(error) = crate::launch::open_url(&url) {
+                            eprintln!("failed to open {url}: {error:#}");
+                        }
+                    }
                     None => {}
                 }
             };
