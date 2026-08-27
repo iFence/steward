@@ -192,8 +192,6 @@ pub struct CalendarViewState {
     on_select: Option<CalendarSelectCallback>,
     /// Whether the launcher is pinned open (blur no longer hides it).
     pinned: bool,
-    /// Localized pin-button label ("Pin" / "Unpin").
-    pin_label: String,
     max_height: f32,
 }
 
@@ -204,7 +202,6 @@ impl Render for CalendarViewState {
         let selected = self.selected.clone();
         let today = data.today.clone();
         let pinned = self.pinned;
-        let pin_label = self.pin_label.clone();
 
         let header = div()
             .id(ElementId::from("cal-header"))
@@ -217,9 +214,7 @@ impl Render for CalendarViewState {
             .text_color(rgb(crate::palette::FOREGROUND))
             .text_sm()
             .child(div().flex_1().child(self.month_label.clone()))
-            .when(!pin_label.is_empty(), |this| {
-                this.child(pin_button(pinned, pin_label, cx))
-            });
+            .child(pin_button(pinned, cx));
 
         let weekday_row = div()
             .id(ElementId::from("cal-weekdays"))
@@ -365,12 +360,9 @@ fn week_rail_cell(week: Option<(String, usize)>) -> impl IntoElement {
 
 /// The pin/unpin toggle in the calendar header. Clicking it dispatches
 /// [`ToggleCalendarPin`]; the launcher flips the shared pinned state and
-/// pushes the new label back through [`CalendarView::set_pinned`].
-fn pin_button(
-    pinned: bool,
-    label: String,
-    cx: &mut Context<CalendarViewState>,
-) -> impl IntoElement {
+/// pushes it back through [`CalendarView::set_pinned`]. Both states share the
+/// same pushpin glyph; the accent border/fill marks the pinned state.
+fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoElement {
     div()
         .id(ElementId::from("cal-pin-toggle"))
         .flex()
@@ -382,7 +374,7 @@ fn pin_button(
         .cursor_pointer()
         .border_1()
         .border_color(rgb(0xffffff).opacity(if pinned { 0.20 } else { 0.08 }))
-        .text_size(px(11.0))
+        .text_size(px(14.0))
         .text_color(if pinned {
             rgb(crate::palette::ACCENT)
         } else {
@@ -397,7 +389,7 @@ fn pin_button(
         .on_click(cx.listener(|_, _, _, cx| {
             cx.dispatch_action(&ToggleCalendarPin);
         }))
-        .child(label)
+        .child("📌")
 }
 
 /// The launcher's calendar grid: a small entity wrapper so the app can update
@@ -426,7 +418,6 @@ impl CalendarView {
             selected: String::new(),
             on_select,
             pinned: false,
-            pin_label: String::new(),
             max_height: CALENDAR_GRID_HEIGHT,
         });
         Self { state }
@@ -459,11 +450,10 @@ impl CalendarView {
         });
     }
 
-    /// Reflect the launcher's pinned state and the localized pin-button label.
-    pub fn set_pinned<C: gpui::AppContext>(&self, pinned: bool, pin_label: String, cx: &mut C) {
+    /// Reflect the launcher's pinned state.
+    pub fn set_pinned<C: gpui::AppContext>(&self, pinned: bool, cx: &mut C) {
         self.state.update(cx, |this, cx| {
             this.pinned = pinned;
-            this.pin_label = pin_label;
             cx.notify();
         });
     }

@@ -94,16 +94,12 @@ mod tests {
         assert_eq!(localization.translate("app-autostart"), "Launch at Startup");
         assert_eq!(localization.translate("open-in-browser"), "Open in Browser");
         assert_eq!(localization.translate("command"), "Command");
-        assert_eq!(localization.translate("pin-calendar"), "Pin");
-        assert_eq!(localization.translate("unpin-calendar"), "Unpin");
 
         // Switching at runtime affects every shared handle immediately.
         localization.select_language("zh");
         assert_eq!(localization.translate("app-autostart"), "开机自启");
         assert_eq!(localization.translate("open-in-browser"), "用浏览器打开");
         assert_eq!(localization.translate("command"), "命令");
-        assert_eq!(localization.translate("pin-calendar"), "固定");
-        assert_eq!(localization.translate("unpin-calendar"), "取消固定");
         assert_eq!(localization.language(), "zh");
 
         localization.select_language("ko");

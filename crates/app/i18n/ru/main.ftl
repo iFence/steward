@@ -23,5 +23,3 @@ settings-theme-amber = Янтарь
 settings-about = О программе
 settings-about-description = Steward — быстрый, экономный по памяти лаунчер и платформа плагинов
 settings-version = Версия
-pin-calendar = Закрепить
-unpin-calendar = Открепить

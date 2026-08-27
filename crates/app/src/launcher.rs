@@ -786,22 +786,16 @@ impl gpui::Render for StewardApp {
             })
             .on_action({
                 // Pin toggle from the calendar header: flip the shared state
-                // and push the new label back into the calendar view.
+                // and push the pinned state back into the calendar view.
                 let state = self.state.clone();
                 let calendar = self.calendar.clone();
-                let i18n = self.i18n.clone();
                 move |_: &ToggleCalendarPin, _window, cx| {
                     let pinned = {
                         let mut state = state.borrow_mut();
                         state.calendar_pinned = !state.calendar_pinned;
                         state.calendar_pinned
                     };
-                    let label = i18n.translate(if pinned {
-                        "unpin-calendar"
-                    } else {
-                        "pin-calendar"
-                    });
-                    calendar.set_pinned(pinned, label, cx);
+                    calendar.set_pinned(pinned, cx);
                 }
             })
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1308,11 +1302,6 @@ impl StewardApp {
             // data, localized labels and selection into the calendar widget.
             let language = self.i18n.language();
             let pinned = self.state.borrow().calendar_pinned;
-            let pin_label = self.i18n.translate(if pinned {
-                "unpin-calendar"
-            } else {
-                "pin-calendar"
-            });
             self.calendar_selected = active.data.selected.clone();
             self.calendar.set_data(
                 active.data.clone(),
@@ -1321,7 +1310,7 @@ impl StewardApp {
                 active.data.selected.clone(),
                 cx,
             );
-            self.calendar.set_pinned(pinned, pin_label, cx);
+            self.calendar.set_pinned(pinned, cx);
         } else {
             // The calendar view went away (query changed): clear any pin so a
             // later calendar starts unpinned.

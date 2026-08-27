@@ -23,5 +23,3 @@ settings-theme-amber = Amber
 settings-about = About
 settings-about-description = Steward — a fast, low-memory launcher and plugin platform
 settings-version = Version
-pin-calendar = Pin
-unpin-calendar = Unpin

@@ -153,7 +153,9 @@ pub(crate) fn spawn_event_poll_task(
     // the launcher is visible, every time the foreground window *moves* to
     // something else (a click on or Alt+Tab to another window), hide it. The
     // cursor check keeps the bar up when an IME candidate window briefly takes
-    // the foreground while the user is still typing into the launcher.
+    // the foreground while the user is still typing into the launcher, and
+    // the pinned check keeps a pinned calendar up (mirrors the activation
+    // observer in `window.rs`).
     #[cfg(target_os = "windows")]
     let mut cached_launcher_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
     // The foreground HWND observed on the previous tick (None until the
@@ -245,8 +247,10 @@ pub(crate) fn spawn_event_poll_task(
                             // switched to another window. The cursor guard
                             // exempts IME candidate windows, which take the
                             // foreground while the user is still typing into
-                            // the launcher.
-                            if foreground != hwnd && !platform::cursor_hits_window(hwnd) {
+                            // the launcher; a pinned calendar is exempt too.
+                            let pinned = state.borrow().calendar_pinned;
+                            if foreground != hwnd && !platform::cursor_hits_window(hwnd) && !pinned
+                            {
                                 if let Some(handle) = state.borrow().window {
                                     let _ =
                                         handle.update(cx, |_, window, cx| hide_window(window, cx));
