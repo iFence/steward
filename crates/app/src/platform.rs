@@ -15,8 +15,8 @@ mod windows {
         Foundation::{HWND, POINT},
         Graphics::Gdi::{
             BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            GetMonitorInfoW, GetPixel, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject,
-            MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
+            GetMonitorInfoW, GetPixel, MonitorFromPoint, MonitorFromWindow, ReleaseDC,
+            SelectObject, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
         },
         System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
@@ -38,11 +38,11 @@ mod windows {
     /// way.
     pub fn set_dpi_awareness() {
         unsafe {
+            use windows_sys::Win32::System::Threading::GetCurrentProcess;
             use windows_sys::Win32::UI::HiDpi::{
                 GetProcessDpiAwareness, SetProcessDpiAwarenessContext,
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             };
-            use windows_sys::Win32::System::Threading::GetCurrentProcess;
             let result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             // Diagnose mixed-DPI summons (see `dbg_dpi`): if the process failed
             // to reach per-monitor awareness (e.g. a library set it earlier),
@@ -254,11 +254,7 @@ mod windows {
             return None;
         }
         let previous = unsafe { SelectObject(mem_dc, bitmap) };
-        let copied = unsafe {
-            BitBlt(
-                mem_dc, 0, 0, width, height, screen_dc, left, top, SRCCOPY,
-            )
-        };
+        let copied = unsafe { BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, SRCCOPY) };
         // 12x6 grid (72 samples): cheap, and averages out text lines or a
         // busy window behind the bar without missing a mostly-white page.
         const COLS: i32 = 12;
@@ -362,12 +358,8 @@ mod windows {
             return;
         };
         unsafe {
-            let (width_px, height_px) = client_to_window_px(
-                hwnd,
-                LAUNCHER_WIDTH,
-                height,
-                GetDpiForWindow(hwnd),
-            );
+            let (width_px, height_px) =
+                client_to_window_px(hwnd, LAUNCHER_WIDTH, height, GetDpiForWindow(hwnd));
             let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
             GetWindowRect(hwnd, &mut rect);
             SetWindowPos(
@@ -406,10 +398,7 @@ mod windows {
     /// fallback: at this point the window still sits on the monitor it was
     /// last shown on, so on mixed-DPI setups it would size the bar for the
     /// wrong scale — read the *target* monitor's DPI instead.
-    unsafe fn launcher_rect_for_cursor(
-        hwnd: HWND,
-        height: f32,
-    ) -> (i32, i32, i32, i32, u32) {
+    unsafe fn launcher_rect_for_cursor(hwnd: HWND, height: f32) -> (i32, i32, i32, i32, u32) {
         let mut cursor: POINT = std::mem::zeroed();
         let monitor = if GetCursorPos(&mut cursor) != 0 {
             MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)

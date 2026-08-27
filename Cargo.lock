@@ -7073,7 +7073,10 @@ dependencies = [
  "image",
  "raw-window-handle",
  "rust-embed",
+ "serde_json",
  "steward-core-engine",
+ "steward-plugin-host",
+ "steward-plugin-registry",
  "steward-storage",
  "steward-ui-components",
  "tray-icon",
@@ -7105,6 +7108,15 @@ dependencies = [
 [[package]]
 name = "steward-plugin-host"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "regex",
+ "serde",
+ "serde_json",
+ "steward-ipc-protocol",
+ "steward-plugin-registry",
+]
 
 [[package]]
 name = "steward-plugin-registry"

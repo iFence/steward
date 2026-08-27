@@ -11,7 +11,7 @@ use gpui::{
 use steward_ui_components::{init_components, ResultItem, ResultList, ResultListDelegate};
 
 use crate::config::{
-    CLOSE_ON_HIDE, DEFAULT_ACCENT, HideWindow, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, THEME_COLOR_SETTING,
+    HideWindow, CLOSE_ON_HIDE, DEFAULT_ACCENT, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, THEME_COLOR_SETTING,
 };
 use crate::i18n::Localization;
 use crate::launch::launch;
@@ -128,7 +128,8 @@ pub(crate) fn open_launcher_window(
             ));
             let results_for_cb = last_results.clone();
             let confirm_storage = storage.clone();
-            let on_confirm = move |index: usize, cx: &mut App| {
+            let plugin_host = state.borrow().plugin_host.clone();
+            let on_confirm = move |index: usize, cx: &mut App| -> bool {
                 let item = results_for_cb.borrow().get(index).cloned();
                 match item {
                     // An application: launch it and bump its usage frequency.
@@ -137,20 +138,37 @@ pub(crate) fn open_launcher_window(
                         if let Err(error) = launch(&app.path) {
                             eprintln!("failed to launch {}: {error:#}", app.path.display());
                         }
+                        true
                     }
                     // A calculator result: put the answer on the clipboard. The
                     // window is hidden afterwards by `after_confirm` (Enter) or
                     // by the activation observer once focus is lost (click).
                     Some(ResultItem::Action { title, .. }) => {
                         cx.write_to_clipboard(ClipboardItem::new_string(title));
+                        true
                     }
                     // A link: open the URL in the default browser.
                     Some(ResultItem::Link { url, .. }) => {
                         if let Err(error) = crate::launch::open_url(&url) {
                             eprintln!("failed to open {url}: {error:#}");
                         }
+                        true
                     }
-                    None => {}
+                    // A plugin row: dispatch `item.invoke` and keep the
+                    // launcher open so the plugin's toast/result is visible.
+                    Some(ResultItem::Plugin {
+                        plugin_id, item_id, ..
+                    }) => {
+                        if plugin_host
+                            .borrow_mut()
+                            .invoke_item(&plugin_id, &item_id)
+                            .is_none()
+                        {
+                            eprintln!("[steward] plugin {plugin_id} is not ready for item.invoke");
+                        }
+                        false
+                    }
+                    None => false,
                 }
             };
             let delegate = ResultListDelegate::new()
@@ -181,6 +199,9 @@ pub(crate) fn open_launcher_window(
                     storage: storage.clone(),
                     last_results,
                     results,
+                    base_items: Vec::new(),
+                    base_icons: Vec::new(),
+                    builtin_count: 0,
                     state: state.clone(),
                     _activation_subscription: activation_subscription,
                     mouse_selecting: false,

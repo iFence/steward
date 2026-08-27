@@ -19,6 +19,10 @@ pub const LAUNCHER_MARGIN: f32 = 4.0;
 pub const RESULT_ROW_HEIGHT: f32 = 42.0;
 /// Maximum number of results shown before the drop-down scrolls.
 pub const MAX_RESULT_ROWS: usize = 8;
+/// Maximum number of plugin rows merged into the drop-down on one query.
+/// Plugin views arrive asynchronously, so this cap keeps the list stable and
+/// bounded even when several plugins match.
+pub const MAX_PLUGIN_ROWS: usize = 4;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub const MENU_SETTINGS: &str = "settings";

@@ -42,8 +42,7 @@ pub(crate) fn setup_tray(i18n: &Localization) -> Result<()> {
 fn load_tray_icon() -> Result<TrayIcon> {
     // Resource 1 is the app icon (assets/icon.ico), shared by the tray,
     // the exe shell icon and the taskbar icon.
-    TrayIcon::from_resource(1, Some((32, 32)))
-        .context("load tray icon from embedded resources")
+    TrayIcon::from_resource(1, Some((32, 32))).context("load tray icon from embedded resources")
 }
 
 #[cfg(target_os = "macos")]

@@ -59,6 +59,7 @@ mod tray;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    path::PathBuf,
     rc::Rc,
 };
 
@@ -66,12 +67,14 @@ use global_hotkey::hotkey::HotKey;
 use gpui::App;
 use gpui_platform::application;
 use steward_core_engine::Engine;
+use steward_plugin_host::{HostConfig, PluginHost};
+use steward_plugin_registry::Registry;
 
 use crate::config::{LANGUAGE_SETTING, SUMMON_HOTKEY_SETTING};
+use crate::events::spawn_event_poll_task;
 use crate::hotkeys::{setup_global_hotkey, HotkeyField};
 use crate::launcher::LauncherState;
 use crate::window::{init_ui_common, open_launcher_window};
-use crate::events::spawn_event_poll_task;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::tray::setup_tray;
@@ -111,6 +114,31 @@ fn main() {
         i18n::Localization::new_with_language(language.as_deref())
             .expect("failed to initialize localization"),
     );
+    // Plugin metadata cache. `STEWARD_PLUGINS_DIR` overrides the plugin root
+    // (e.g. pointing at a repo's `packages/plugins` during development); the
+    // SQLite cache itself always lives in the app data directory.
+    let data_dir = dirs::data_dir()
+        .expect("no OS data directory available")
+        .join("Steward");
+    let registry = Rc::new(RefCell::new(
+        if let Some(root) = std::env::var("STEWARD_PLUGINS_DIR").ok().map(PathBuf::from) {
+            Registry::open_with_root(&data_dir, &root)
+        } else {
+            Registry::open_at(&data_dir)
+        }
+        .expect("failed to open the plugin registry database"),
+    ));
+    // Plugin host: resolves the `steward-plugin-runtime` binary (env override
+    // `STEWARD_PLUGIN_RUNTIME_BIN` or the sibling of this executable). A
+    // missing binary degrades to "no plugins" instead of failing startup.
+    let plugin_host_config = match HostConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("plugin runtime binary not found: {error:#}; plugins disabled");
+            HostConfig::default()
+        }
+    };
+    let plugin_host = Rc::new(RefCell::new(PluginHost::new(plugin_host_config)));
     let state = Rc::new(RefCell::new(LauncherState {
         window: None,
         settings_window: None,
@@ -124,6 +152,12 @@ fn main() {
         icon_gen: Cell::new(0),
         icon_rx: RefCell::new(None),
         scan_rx: RefCell::new(None),
+        plugin_host,
+        plugin_registry: registry,
+        plugin_scan_rx: RefCell::new(None),
+        plugin_gen: Cell::new(0),
+        plugin_hits: RefCell::new(Vec::new()),
+        plugin_views: RefCell::new(Vec::new()),
         hotkey_manager: None,
         summon_hotkey: None,
         settings_hotkey: None,
@@ -140,6 +174,9 @@ fn main() {
         // Seed the index from the cache, and refresh it in the background when
         // the cache is stale, before the window opens.
         state.borrow().ensure_app_index();
+        // Seed the plugin host from the metadata cache (cold path: SQLite
+        // only); a background scan reconciles new/changed plugins.
+        state.borrow().ensure_plugin_index();
         let window = open_launcher_window(cx, &focus, i18n.clone(), &state);
         state.borrow_mut().window = Some(window);
 

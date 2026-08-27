@@ -12,17 +12,19 @@ use std::{
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::GlobalHotKeyManager;
 use gpui::{
-    div, point, prelude::*, px, rgb, size, AnyElement, Animation, AnimationExt, App, Bounds, Div,
-    ClipboardItem, DispatchPhase, Element, ElementId, ElementInputHandler, EntityInputHandler,
+    div, point, prelude::*, px, rgb, size, Animation, AnimationExt, AnyElement, App, Bounds,
+    ClipboardItem, DispatchPhase, Div, Element, ElementId, ElementInputHandler, EntityInputHandler,
     FocusHandle, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, KeyDownEvent,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Subscription,
     UTF16Selection, Window,
 };
 use gpui_component::ActiveTheme;
+use steward_plugin_host::{PluginHost, RouteHit};
+use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
 use steward_ui_components::{ResultItem, ResultList};
 
 use crate::config::{
-    HideWindow, LAUNCHER_HEIGHT, LAUNCHER_MARGIN, LAUNCHER_WIDTH, MAX_RESULT_ROWS,
+    HideWindow, LAUNCHER_HEIGHT, LAUNCHER_MARGIN, LAUNCHER_WIDTH, MAX_PLUGIN_ROWS, MAX_RESULT_ROWS,
     RESULT_ROW_HEIGHT,
 };
 use crate::hotkeys::keystroke_to_hotkey;
@@ -66,6 +68,14 @@ pub(crate) struct StewardApp {
     /// the selected index into an app path (or a calculator result to copy).
     pub(crate) last_results: Rc<RefCell<Vec<ResultItem>>>,
     pub(crate) results: ResultList,
+    /// Base rows of the current query (builtin actions + app matches) and the
+    /// icons aligned with them, kept separate from the plugin rows so a late
+    /// plugin response can re-merge without re-running the search.
+    pub(crate) base_items: Vec<ResultItem>,
+    pub(crate) base_icons: Vec<Option<Arc<gpui::Image>>>,
+    /// Number of leading builtin rows (calculator/link) inside `base_items`;
+    /// plugin rows are spliced in after these and before the app matches.
+    pub(crate) builtin_count: usize,
     /// Result count is published here so the tray/hotkey path can size the
     /// window when it is summoned.
     pub(crate) state: Rc<RefCell<LauncherState>>,
@@ -82,6 +92,9 @@ pub(crate) struct StewardApp {
 /// A finished background icon extraction: the search generation it belongs to
 /// plus the extracted `(path, icon)` pairs, one per pending path.
 type IconBatch = (u64, Vec<(std::path::PathBuf, Option<Arc<gpui::Image>>)>);
+/// A finished background plugin scan: the reconcile report plus the plugin
+/// set to (re)load into the host.
+type PluginScan = (ScanReport, Vec<PluginMeta>);
 
 /// Shared launcher state used by the foreground event loop: the (possibly
 /// closed) window handle plus the focus handle that must be re-focused every
@@ -119,7 +132,22 @@ pub(crate) struct LauncherState {
     pub(crate) icon_rx: RefCell<Option<crossbeam_channel::Receiver<IconBatch>>>,
     /// Pending background scan results, drained by the GPUI foreground poll
     /// task.
-    pub(crate) scan_rx: RefCell<Option<crossbeam_channel::Receiver<Vec<steward_core_engine::AppEntry>>>>,
+    pub(crate) scan_rx:
+        RefCell<Option<crossbeam_channel::Receiver<Vec<steward_core_engine::AppEntry>>>>,
+    /// Plugin host: runtime processes, trigger routing, command invocation.
+    pub(crate) plugin_host: Rc<RefCell<PluginHost>>,
+    /// Plugin metadata cache (SQLite) plus the plugin root to scan.
+    pub(crate) plugin_registry: Rc<RefCell<Registry>>,
+    /// Pending background plugin-scan results, drained by the foreground poll.
+    pub(crate) plugin_scan_rx: RefCell<Option<crossbeam_channel::Receiver<PluginScan>>>,
+    /// Query generation for plugin invocations: bumped on every search so a
+    /// stale response is dropped instead of merged into newer results.
+    pub(crate) plugin_gen: Cell<u64>,
+    /// Plugin route hits for the current query (aligned with `plugin_views`).
+    pub(crate) plugin_hits: RefCell<Vec<RouteHit>>,
+    /// Views received for each hit; `None` until the response (or an error)
+    /// lands for this query.
+    pub(crate) plugin_views: RefCell<Vec<Option<serde_json::Value>>>,
     /// Logical launcher height last requested from a resize, so `search` can
     /// skip redundant resize calls when the result-count-driven height has not
     /// changed (e.g. every IME composition update).
@@ -189,6 +217,110 @@ impl LauncherState {
                 }
             }
         }
+    }
+
+    /// Seed the plugin host from the metadata cache and start a background
+    /// reconcile. Cold start reads SQLite only (never a full file walk); the
+    /// scan runs on a worker thread and its result is applied by
+    /// [`Self::apply_plugin_scan`].
+    pub(crate) fn ensure_plugin_index(&self) {
+        let cached = self
+            .plugin_registry
+            .borrow()
+            .cached_plugins()
+            .unwrap_or_default();
+        if !cached.is_empty() {
+            if let Err(error) = self.plugin_host.borrow_mut().set_plugins(&cached) {
+                eprintln!("failed to start the plugin runtime: {error:#}");
+            }
+        }
+        if self.plugin_scan_rx.borrow().is_some() {
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        // The worker opens its own connection to the same cache (rusqlite
+        // `Connection` is `Send`, `Rc<RefCell<...>>` is not); WAL lets both
+        // connections coexist.
+        let (data_dir, plugins_root) = {
+            let registry = self.plugin_registry.borrow();
+            (
+                registry.data_dir().to_path_buf(),
+                registry.plugins_root().to_path_buf(),
+            )
+        };
+        std::thread::spawn(move || {
+            let Ok(mut registry) = Registry::open_with_root(&data_dir, &plugins_root) else {
+                return;
+            };
+            let report = registry.scan().unwrap_or_default();
+            let metas = registry.cached_plugins().unwrap_or_default();
+            let _ = tx.send((report, metas));
+        });
+        *self.plugin_scan_rx.borrow_mut() = Some(rx);
+    }
+
+    /// Apply a finished plugin scan: (re)load changed plugins into the host.
+    /// Runs on the main thread from the GPUI foreground poll task.
+    pub(crate) fn apply_plugin_scan(&self) {
+        let Some(rx) = self.plugin_scan_rx.borrow().clone() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((report, metas)) => {
+                if let Err(error) = self.plugin_host.borrow_mut().set_plugins(&metas) {
+                    eprintln!("failed to load plugins after scan: {error:#}");
+                }
+                if report.plugins == 0 && report.failed.is_empty() {
+                    eprintln!("no plugins installed (STEWARD_PLUGINS_DIR may point elsewhere)");
+                }
+                *self.plugin_scan_rx.borrow_mut() = None;
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                *self.plugin_scan_rx.borrow_mut() = None;
+            }
+        }
+    }
+
+    /// Build the `ResultItem::Plugin` rows from the current query's plugin
+    /// hits and the views that have answered so far. Views arrive
+    /// asynchronously; this is called on every merge.
+    pub(crate) fn plugin_rows(&self) -> Vec<ResultItem> {
+        let hits = self.plugin_hits.borrow();
+        let views = self.plugin_views.borrow();
+        let mut rows = Vec::new();
+        for (hit, view) in hits.iter().zip(views.iter()) {
+            let Some(view) = view else {
+                continue;
+            };
+            if view["type"] != "list" {
+                continue;
+            }
+            let Some(items) = view["items"].as_array() else {
+                continue;
+            };
+            for item in items {
+                if rows.len() >= MAX_PLUGIN_ROWS {
+                    return rows;
+                }
+                let Some(item_id) = item["id"].as_str() else {
+                    continue;
+                };
+                let title = item["title"].as_str().unwrap_or("").to_string();
+                let subtitle = item
+                    .get("subtitle")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(&hit.title)
+                    .to_string();
+                rows.push(ResultItem::Plugin {
+                    plugin_id: hit.plugin_id.clone(),
+                    item_id: item_id.to_string(),
+                    title,
+                    subtitle,
+                });
+            }
+        }
+        rows
     }
 }
 
@@ -903,13 +1035,63 @@ impl StewardApp {
             }
         }
 
-        // Prepend the calculator row (with no icon) ahead of the apps; action
-        // rows always sit above any fuzzy matches so Enter hits the answer.
-        let action_count = items.len();
+        // Prepend the builtin rows (calculator/link, no icon) ahead of the
+        // apps; action rows always sit above any fuzzy matches so Enter hits
+        // the answer. These base rows are kept so a late plugin view can be
+        // spliced in without re-running the search.
+        let builtin_count = items.len();
         items.extend(apps.into_iter().map(ResultItem::App));
-        let icons = std::iter::repeat_n(None, action_count)
+        let base_icons = std::iter::repeat_n(None, builtin_count)
             .chain(icons)
             .collect::<Vec<_>>();
+        self.base_items = items;
+        self.base_icons = base_icons;
+        self.builtin_count = builtin_count;
+
+        // Route the query to the matching plugins and invoke only those
+        // (capped to MAX_PLUGIN_ROWS) under a fresh generation. Views arrive
+        // asynchronously; `render_merged` splices them in as they land and
+        // stale generations are dropped by the poll task.
+        let plugin_gen = {
+            let state = self.state.borrow_mut();
+            let gen = state.plugin_gen.get() + 1;
+            state.plugin_gen.set(gen);
+            gen
+        };
+        let hits = self
+            .state
+            .borrow()
+            .plugin_host
+            .borrow()
+            .query(&query)
+            .into_iter()
+            .take(MAX_PLUGIN_ROWS)
+            .collect::<Vec<_>>();
+        *self.state.borrow().plugin_hits.borrow_mut() = hits.clone();
+        *self.state.borrow().plugin_views.borrow_mut() = vec![None; hits.len()];
+        let host = self.state.borrow().plugin_host.clone();
+        for hit in &hits {
+            host.borrow_mut().invoke(plugin_gen, hit);
+        }
+
+        self.render_merged(window, cx);
+    }
+
+    /// Splice the current plugin rows between the builtin rows and the app
+    /// matches, push the merged list to the results view and resize the
+    /// window. Used by `search` and by the poll task when a plugin view lands.
+    fn render_merged(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let plugin_rows = self.state.borrow().plugin_rows();
+        let plugin_count = plugin_rows.len();
+        let builtin_count = self.builtin_count;
+        let mut items = Vec::with_capacity(self.base_items.len() + plugin_count);
+        items.extend_from_slice(&self.base_items[..builtin_count]);
+        items.extend(plugin_rows);
+        items.extend_from_slice(&self.base_items[builtin_count..]);
+        let mut icons = Vec::with_capacity(self.base_icons.len() + plugin_count);
+        icons.extend_from_slice(&self.base_icons[..builtin_count]);
+        icons.extend(std::iter::repeat_n(None, plugin_count));
+        icons.extend_from_slice(&self.base_icons[builtin_count..]);
 
         *self.last_results.borrow_mut() = items.clone();
         self.results.set_results(items, icons, cx);
@@ -934,6 +1116,13 @@ impl StewardApp {
             window.resize(size(px(LAUNCHER_WIDTH), px(height)));
         }
         cx.notify();
+    }
+
+    /// Merge a freshly arrived plugin view into the current results. Called by
+    /// the foreground poll task after the view was stored in the shared state;
+    /// never re-invokes plugins.
+    pub(crate) fn apply_plugin_views(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.render_merged(window, cx);
     }
 
     /// Reset the launcher to its idle (bar-only) state and hide it. Called

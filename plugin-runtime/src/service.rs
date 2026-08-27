@@ -127,7 +127,7 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
         method::PLUGIN_LOAD => {
             let params = match parse_params::<LoadParams>(request) {
                 Ok(params) => params,
-                Err(response) => return response,
+                Err(error) => return Response::error(request.id, error),
             };
             eprintln!("[runtime] loading plugin '{}'", params.id);
             match pool.load(&params.entry_path, &params.manifest) {
@@ -144,7 +144,7 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
         method::COMMAND_INVOKE => {
             let params = match parse_params::<CommandInvokeParams>(request) {
                 Ok(params) => params,
-                Err(response) => return response,
+                Err(error) => return Response::error(request.id, error),
             };
             match pool.invoke_command(
                 params.isolate_id,
@@ -159,7 +159,7 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
         method::ITEM_INVOKE => {
             let params = match parse_params::<ItemInvokeParams>(request) {
                 Ok(params) => params,
-                Err(response) => return response,
+                Err(error) => return Response::error(request.id, error),
             };
             match pool.invoke_item(params.isolate_id, &params.item_id, params.deadline_ms) {
                 Ok(()) => Response::ok(request.id, json!({})),
@@ -169,7 +169,7 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
         method::PLUGIN_UNLOAD => {
             let params = match parse_params::<UnloadParams>(request) {
                 Ok(params) => params,
-                Err(response) => return response,
+                Err(error) => return Response::error(request.id, error),
             };
             pool.unload(params.isolate_id);
             Response::ok(request.id, json!({}))
@@ -187,14 +187,11 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
 
 fn parse_params<T: for<'de> Deserialize<'de>>(
     request: &Request,
-) -> std::result::Result<T, Response> {
+) -> std::result::Result<T, RpcError> {
     serde_json::from_value(request.params.clone()).map_err(|error| {
-        Response::error(
-            request.id,
-            RpcError::new(
-                code::INVALID_PARAMS,
-                format!("invalid params for '{}': {error}", request.method),
-            ),
+        RpcError::new(
+            code::INVALID_PARAMS,
+            format!("invalid params for '{}': {error}", request.method),
         )
     })
 }

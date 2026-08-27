@@ -3,8 +3,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    prelude::*, px, size, Anchor, AnyWindowHandle, App, AsyncApp, Bounds, div, Entity, SharedString,
-    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    div, prelude::*, px, size, Anchor, AnyWindowHandle, App, AsyncApp, Bounds, Entity,
+    SharedString, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions,
 };
 use gpui_component::{
     button::Button,

@@ -8,9 +8,7 @@ use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
 use gpui::{App, AsyncApp};
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-use tray_icon::{
-    menu::MenuEvent, MouseButton, MouseButtonState, TrayIconEvent,
-};
+use tray_icon::{menu::MenuEvent, MouseButton, MouseButtonState, TrayIconEvent};
 
 use crate::config::{MENU_QUIT, MENU_SETTINGS};
 use crate::i18n::Localization;
@@ -18,6 +16,80 @@ use crate::launcher::{LauncherState, StewardApp};
 use crate::platform;
 use crate::settings::toggle_settings_window;
 use crate::window::{hide_window, toggle_launcher};
+
+/// Drain plugin-host events on the foreground thread:
+///
+/// - a `CommandResult` for the current query generation fills the matching
+///   slot and re-renders the merged list; stale generations are dropped;
+/// - toasts, crashes and restarts are logged (a real toast surface lands in
+///   M3 with the UI framework).
+fn drain_plugin_events(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
+    let events = state.borrow().plugin_host.borrow_mut().drain_events();
+    let mut rerender = false;
+    for event in events {
+        match event {
+            steward_plugin_host::HostEvent::CommandResult {
+                gen,
+                plugin_id,
+                command,
+                result,
+            } => {
+                let current_gen = state.borrow().plugin_gen.get();
+                if gen != current_gen {
+                    continue;
+                }
+                {
+                    let state_ref = state.borrow();
+                    let hits = state_ref.plugin_hits.borrow();
+                    let Some(index) = hits
+                        .iter()
+                        .position(|hit| hit.plugin_id == plugin_id && hit.command == command)
+                    else {
+                        continue;
+                    };
+                    match result {
+                        Ok(view) => {
+                            state_ref.plugin_views.borrow_mut()[index] = Some(view);
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[steward] plugin {plugin_id} command {command} failed: {} ({})",
+                                error.message, error.code
+                            );
+                        }
+                    }
+                }
+                rerender = true;
+            }
+            steward_plugin_host::HostEvent::Toast { params } => {
+                let message = params["message"].as_str().unwrap_or("");
+                eprintln!("[steward] plugin toast: {message}");
+                // TODO(M3): render a real toast in the launcher UI.
+            }
+            steward_plugin_host::HostEvent::RuntimeCrashed { plugin_id } => {
+                eprintln!(
+                    "[steward] plugin runtime {} crashed; restart scheduled",
+                    plugin_id.as_deref().unwrap_or("(shared pool)")
+                );
+            }
+            steward_plugin_host::HostEvent::RuntimeRestarted { plugin_id } => {
+                eprintln!(
+                    "[steward] plugin runtime {} restarted",
+                    plugin_id.as_deref().unwrap_or("(shared pool)")
+                );
+            }
+        }
+    }
+    if rerender {
+        let Some(window) = state.borrow().window else {
+            return;
+        };
+        let Some(app) = window.downcast::<StewardApp>() else {
+            return;
+        };
+        let _ = app.update(cx, |app, window, cx| app.apply_plugin_views(window, cx));
+    }
+}
 
 /// Drain finished background icon extractions into the shared cache. When the
 /// batch belongs to the current search, re-run the search so every row picks
@@ -93,6 +165,10 @@ pub(crate) fn spawn_event_poll_task(
     cx.spawn(async move |cx| loop {
         // A background scan may finish at any time; both event loops drain it.
         state.borrow().apply_scan_results();
+        // Plugin reconcile: apply newly scanned/version-changed plugins.
+        state.borrow().apply_plugin_scan();
+        // Plugin command responses, toasts and runtime crashes/restarts.
+        drain_plugin_events(&state, cx);
         // Background icon extractions for below-the-fold results finish
         // asynchronously; apply them as they arrive.
         drain_icon_batches(&state, cx);

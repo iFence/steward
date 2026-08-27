@@ -56,6 +56,7 @@ pub struct ScanReport {
 /// Thin wrapper over a SQLite connection holding the plugin metadata cache.
 pub struct Registry {
     conn: Connection,
+    data_dir: PathBuf,
     root: PathBuf,
 }
 
@@ -75,11 +76,23 @@ impl Registry {
     pub fn open_at(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir).context("create data directory")?;
         let root = data_dir.join(PLUGINS_DIR);
-        std::fs::create_dir_all(&root).context("create plugins directory")?;
+        Self::open_with_root(data_dir, &root)
+    }
+
+    /// Open the registry database under `data_dir` but scan plugins from an
+    /// explicit plugin root (e.g. `STEWARD_PLUGINS_DIR` pointing at a repo's
+    /// `packages/plugins` during development).
+    pub fn open_with_root(data_dir: &Path, root: &Path) -> Result<Self> {
+        std::fs::create_dir_all(data_dir).context("create data directory")?;
+        std::fs::create_dir_all(root).context("create plugins directory")?;
         let conn = Connection::open(data_dir.join(DB_FILE)).context("open plugin database")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enable WAL")?;
-        let registry = Self { conn, root };
+        let registry = Self {
+            conn,
+            data_dir: data_dir.to_path_buf(),
+            root: root.to_path_buf(),
+        };
         registry.migrate()?;
         Ok(registry)
     }
@@ -97,7 +110,11 @@ impl Registry {
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&root).context("create temp plugin root")?;
-        let registry = Self { conn, root };
+        let registry = Self {
+            conn,
+            data_dir: std::env::temp_dir(),
+            root,
+        };
         registry.migrate()?;
         Ok(registry)
     }
@@ -123,6 +140,11 @@ impl Registry {
     /// The plugin installation root this registry manages.
     pub fn plugins_root(&self) -> &Path {
         &self.root
+    }
+
+    /// The data directory holding the registry database.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// All cached plugins, read straight from SQLite. This is the cold-start

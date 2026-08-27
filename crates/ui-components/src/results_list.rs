@@ -17,15 +17,17 @@
 use std::{rc::Rc, sync::Arc};
 
 use gpui::{
-    div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context,
-    ElementId, Entity, Image, ImageSource, InteractiveElement, IntoElement, ParentElement as _,
-    Render, StatefulInteractiveElement, Styled as _,
+    div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context, ElementId, Entity, Image,
+    ImageSource, InteractiveElement, IntoElement, ParentElement as _, Render,
+    StatefulInteractiveElement, Styled as _,
 };
 
 use steward_core_engine::AppEntry;
 
 /// Delegate callback fired on Enter / click with the confirmed row index.
-pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App)>;
+/// Returns whether the launcher should hide after confirming (`true`). Plugin
+/// rows return `false` so the bar stays open after an `item.invoke`.
+pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App) -> bool>;
 
 /// A row in the launcher drop-down. Either a launchable application or a
 /// one-off action such as a calculator result — an action row shows its own
@@ -33,7 +35,8 @@ pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App)>;
 /// confirmation runs the app-side `on_confirm` (which copies the computed
 /// value to the clipboard rather than launching anything). A link row is the
 /// "open in browser" command: it shows the URL and, on confirm, opens it in
-/// the default browser.
+/// the default browser. A plugin row is one list item rendered by a plugin
+/// command; confirming sends `item.invoke` and keeps the launcher open.
 #[derive(Debug, Clone)]
 pub enum ResultItem {
     App(AppEntry),
@@ -45,6 +48,12 @@ pub enum ResultItem {
         url: String,
         label: String,
         command_label: String,
+    },
+    Plugin {
+        plugin_id: String,
+        item_id: String,
+        title: String,
+        subtitle: String,
     },
 }
 
@@ -143,6 +152,7 @@ fn render_row(
         ResultItem::App(app) => ElementId::from(app.path.to_string_lossy().into_owned()),
         ResultItem::Action { .. } => ElementId::from(format!("result-action-{index}")),
         ResultItem::Link { .. } => ElementId::from(format!("result-link-{index}")),
+        ResultItem::Plugin { .. } => ElementId::from(format!("result-plugin-{index}")),
     };
     let row = div()
         .id(id)
@@ -165,7 +175,7 @@ fn render_row(
         })
         .on_click(cx.listener(move |this, _, _, cx| {
             if let Some(cb) = this.on_confirm.clone() {
-                cb(index, cx);
+                let _ = cb(index, cx);
             }
             cx.notify();
         }));
@@ -236,6 +246,28 @@ fn render_row(
                     .text_size(px(11.0))
                     .child(command_label.to_owned()),
             ),
+        // A plugin row mirrors the action-row layout: item title on the left,
+        // its subtitle on the right. M2 renders no icon; selection dispatches
+        // `item.invoke` to the plugin and keeps the launcher open.
+        ResultItem::Plugin {
+            title, subtitle, ..
+        } => row
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::FOREGROUND))
+                    .text_sm()
+                    .child(title.to_owned()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_size(px(11.0))
+                    .child(subtitle.to_owned()),
+            ),
     }
 }
 
@@ -261,8 +293,9 @@ impl ResultListDelegate {
     }
 
     /// Register a callback fired with the confirmed row index (Enter / click).
-    /// The `&mut App` lets the app write to the clipboard for action rows.
-    pub fn on_confirm(mut self, cb: impl Fn(usize, &mut App) + 'static) -> Self {
+    /// The `&mut App` lets the app write to the clipboard for action rows; the
+    /// returned bool says whether the launcher should hide afterwards.
+    pub fn on_confirm(mut self, cb: impl Fn(usize, &mut App) -> bool + 'static) -> Self {
         self.on_confirm = Some(Rc::new(cb));
         self
     }
@@ -367,22 +400,21 @@ impl ResultList {
     }
 
     /// Confirm the currently selected row, invoking the delegate's `on_confirm`
-    /// callback. Returns whether a confirmation actually fired (no-op when
-    /// nothing is selected).
+    /// callback. Returns whether the launcher should hide afterwards (no-op
+    /// when nothing is selected: `false`).
     pub fn confirm_selected<C>(&self, _window: &mut gpui::Window, cx: &mut Context<C>) -> bool {
-        let mut confirmed = false;
+        let mut should_hide = false;
         self.state.update(cx, |this, cx| {
             if let Some(index) = this.selected {
                 if index < this.items.len() {
                     if let Some(cb) = this.on_confirm.clone() {
-                        cb(index, cx);
-                        confirmed = true;
+                        should_hide = cb(index, cx);
                     }
                 }
             }
             cx.notify();
         });
-        confirmed
+        should_hide
     }
 
     /// Render the scrollable list element, capped at `max_height` so rows
