@@ -75,6 +75,7 @@ Hotkeys / interactions:
 - [Plugin API draft](docs/extension-api.md)
 - [Plugin manifest spec draft](docs/plugin-manifest-spec.md)
 - [Performance benchmarks](docs/benchmarks.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Milestones
 

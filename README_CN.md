@@ -75,6 +75,7 @@ pnpm build
 - [插件 API 草案](docs/extension-api.md)
 - [插件 manifest 规范草案](docs/plugin-manifest-spec.md)
 - [性能基准](docs/benchmarks.md)
+- [Roadmap](docs/roadmap.md)
 
 ## 里程碑
 
