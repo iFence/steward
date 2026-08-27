@@ -3,10 +3,12 @@
 use gpui::App;
 
 pub mod calendar;
+pub mod lunar;
 pub mod palette;
 pub mod results_list;
 
 pub use calendar::*;
+pub use lunar::*;
 pub use palette::*;
 pub use results_list::*;
 

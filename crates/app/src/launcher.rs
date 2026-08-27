@@ -22,7 +22,7 @@ use gpui_component::ActiveTheme;
 use steward_plugin_host::{PluginHost, RouteHit};
 use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
 use steward_ui_components::{
-    days_in_month, iso_date, CalendarData, CalendarView, ResultItem, ResultList,
+    days_in_month, iso_date, CalendarData, CalendarView, ResultItem, ResultList, ToggleCalendarPin,
     CALENDAR_GRID_HEIGHT,
 };
 
@@ -173,6 +173,11 @@ pub(crate) struct LauncherState {
     /// The active calendar view (from the first calendar-typed plugin view of
     /// the current query), if any.
     pub(crate) plugin_calendar: RefCell<Option<ActiveCalendar>>,
+    /// Whether the calendar view is pinned open: when set, losing window
+    /// activation no longer hides the launcher (see the activation observer
+    /// in `window.rs`). Reset when the calendar view goes away or the window
+    /// is dismissed.
+    pub(crate) calendar_pinned: bool,
     /// Logical launcher height last requested from a resize, so `search` can
     /// skip redundant resize calls when the result-count-driven height has not
     /// changed (e.g. every IME composition update).
@@ -771,7 +776,34 @@ impl gpui::Render for StewardApp {
         let primary = cx.theme().primary;
         let root = div()
             .track_focus(&self.focus_handle)
-            .on_action(|_: &HideWindow, window, cx| hide_window(window, cx))
+            .on_action({
+                // Esc dismisses the launcher and clears any pinned calendar.
+                let state = self.state.clone();
+                move |_: &HideWindow, window, cx| {
+                    state.borrow_mut().calendar_pinned = false;
+                    hide_window(window, cx);
+                }
+            })
+            .on_action({
+                // Pin toggle from the calendar header: flip the shared state
+                // and push the new label back into the calendar view.
+                let state = self.state.clone();
+                let calendar = self.calendar.clone();
+                let i18n = self.i18n.clone();
+                move |_: &ToggleCalendarPin, _window, cx| {
+                    let pinned = {
+                        let mut state = state.borrow_mut();
+                        state.calendar_pinned = !state.calendar_pinned;
+                        state.calendar_pinned
+                    };
+                    let label = i18n.translate(if pinned {
+                        "unpin-calendar"
+                    } else {
+                        "pin-calendar"
+                    });
+                    calendar.set_pinned(pinned, label, cx);
+                }
+            })
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
             }))
@@ -1275,6 +1307,12 @@ impl StewardApp {
             // A calendar view replaces the results list: push the month grid's
             // data, localized labels and selection into the calendar widget.
             let language = self.i18n.language();
+            let pinned = self.state.borrow().calendar_pinned;
+            let pin_label = self.i18n.translate(if pinned {
+                "unpin-calendar"
+            } else {
+                "pin-calendar"
+            });
             self.calendar_selected = active.data.selected.clone();
             self.calendar.set_data(
                 active.data.clone(),
@@ -1283,6 +1321,11 @@ impl StewardApp {
                 active.data.selected.clone(),
                 cx,
             );
+            self.calendar.set_pinned(pinned, pin_label, cx);
+        } else {
+            // The calendar view went away (query changed): clear any pin so a
+            // later calendar starts unpinned.
+            self.state.borrow_mut().calendar_pinned = false;
         }
         let plugin_count = plugin_rows.len();
         let builtin_count = self.builtin_count;

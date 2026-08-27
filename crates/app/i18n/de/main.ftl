@@ -23,3 +23,5 @@ settings-theme-amber = Bernstein
 settings-about = Über
 settings-about-description = Steward – ein schneller, speicherschonender Launcher und eine Plugin-Plattform
 settings-version = Version
+pin-calendar = Anheften
+unpin-calendar = Lösen

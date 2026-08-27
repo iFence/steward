@@ -202,10 +202,13 @@ pub(crate) fn open_launcher_window(
             cx.new(|cx| {
                 focus.focus(window, cx);
                 // Dismiss the launcher whenever another application takes
-                // activation (e.g. the user clicks another window).
+                // activation (e.g. the user clicks another window) - unless
+                // the calendar view is pinned open.
+                let activation_state = state.clone();
                 let activation_subscription =
-                    cx.observe_window_activation(window, |_, window, cx| {
-                        if !window.is_window_active() {
+                    cx.observe_window_activation(window, move |_, window, cx| {
+                        if !window.is_window_active() && !activation_state.borrow().calendar_pinned
+                        {
                             hide_window(window, cx);
                         }
                     });
@@ -266,6 +269,7 @@ pub(crate) fn toggle_launcher(
             drop(state_ref);
             let _ = handle.update(cx, |_, window, cx| {
                 if platform::is_visible(window) {
+                    state.borrow_mut().calendar_pinned = false;
                     hide_window(window, cx);
                 } else {
                     // Re-apply the height so a freshly-created window matches

@@ -329,4 +329,6 @@ steward/
 - 修订（2026-08-27）：日历视图美化——左侧新增 ISO 周数列（`W` 前缀，按该行周四归属周，跨年月/跨年周正确），行高 44→52，网格包入圆角卡片（`BACKGROUND_ALT` 淡背景 + 1px 白 0.08 细边框），今天/选中日改为圆角药丸高亮；`CALENDAR_GRID_HEIGHT` 重定义为含卡片边框与内边距的外高（324→382），启动器窗口高度随常量自动更新，插件与视图契约不变。
 - 修订（2026-08-27）：`command` 触发改为与应用搜索一致的模糊匹配——精确命令名（或命令名 + 参数）优先，其余按 nucleo 子序列得分排序；`cal` / `cldr` / `CAL` 都能命中 `calendar`，`calendarx` 这类仅是前缀更长的词仍不命中。needle 在匹配前统一小写（nucleo 要求调用方预归一化，否则大写查询失效），`prefix` / `regex` / `dynamic` 触发行为不变。
 - 修订（2026-08-27）：多语言适配——manifest 命令新增可选 `keywords`（本地化别名，如日历插件声明 `"日历"`）；宿主路由把命令名、标题与每个关键词一起经 `core-engine::search_haystacks` 展开成拼音变体（全拼 / 空格全拼 / 首字母）做模糊匹配，因此 `日历`、`rili`、`rl` 都能命中 calendar，与 App 搜索同一套匹配词表。`keywords` 向后兼容（缺省为空数组），每命令 haystack 上限 32 条防膨胀。
+- 修订（2026-08-27）：日历视图可固定——日历头部新增固定/取消固定按钮（`ToggleCalendarPin` 动作，i18n 文案随语言切换）。固定后启动器窗口失焦不再自动隐藏（窗口为 `PopUp` 置顶类型，保持可见），方便边看日历边做别的事；Esc / 热键隐藏或查询变化导致日历视图关闭时自动复位为未固定。
+- 修订（2026-08-27）：日历视图每格新增农历信息——公历日下方第二行显示农历标签，优先级为农历传统节日 > 公历节日 > 二十四节气 > 农历月初月份名 > 农历日名；宿主在 `ui-components` 引入 `tyme4rs`（workspace 依赖）负责公历→农历转换，插件与视图契约不变；节日/节气标签用强调色（`ACCENT`），其余用弱化色（`MUTED_FOREGROUND`）。
 - 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（121 项）全绿；`pnpm lint` / `pnpm typecheck` / `pnpm build` 全绿。

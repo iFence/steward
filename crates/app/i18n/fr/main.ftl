@@ -23,3 +23,5 @@ settings-theme-amber = Ambre
 settings-about = À propos
 settings-about-description = Steward – un lanceur rapide et économe en mémoire et une plateforme de plugins
 settings-version = Version
+pin-calendar = Épingler
+unpin-calendar = Détacher

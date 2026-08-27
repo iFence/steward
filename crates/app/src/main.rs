@@ -159,6 +159,7 @@ fn main() {
         plugin_hits: RefCell::new(Vec::new()),
         plugin_views: RefCell::new(Vec::new()),
         plugin_calendar: RefCell::new(None),
+        calendar_pinned: false,
         hotkey_manager: None,
         summon_hotkey: None,
         settings_hotkey: None,

@@ -23,3 +23,5 @@ settings-theme-amber = 琥珀
 settings-about = 关于
 settings-about-description = Steward —— 快速、低内存占用的启动器与插件平台
 settings-version = 版本
+pin-calendar = 固定
+unpin-calendar = 取消固定

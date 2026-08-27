@@ -7,3 +7,4 @@ edition.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 steward-core-engine = { path = "../core-engine" }
+tyme4rs.workspace = true

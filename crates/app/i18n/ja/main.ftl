@@ -23,3 +23,5 @@ settings-theme-amber = 琥珀
 settings-about = について
 settings-about-description = Steward – 高速で省メモリなランチャーとプラグインプラットフォーム
 settings-version = バージョン
+pin-calendar = 固定
+unpin-calendar = 固定解除

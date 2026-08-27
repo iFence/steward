@@ -23,3 +23,5 @@ settings-theme-amber = 앰버
 settings-about = 정보
 settings-about-description = Steward – 빠르고 메모리 사용량이 낮은 런처 및 플러그인 플랫폼
 settings-version = 버전
+pin-calendar = 고정
+unpin-calendar = 고정 해제

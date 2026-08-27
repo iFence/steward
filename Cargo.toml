@@ -36,6 +36,7 @@ tracing = "0.1"
 anyhow = "1"
 dirs = "6"
 crossbeam-channel = "0.5"
+tyme4rs = "1.5"
 
 # i18n (Fluent — Zed's localization stack)
 i18n-embed = { version = "0.16", features = ["desktop-requester", "fluent-system"] }
