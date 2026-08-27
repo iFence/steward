@@ -1,33 +1,181 @@
 //! Message protocol shared between the main process and the plugin runtime.
 //!
-//! M2 milestone will grow this into the full JSON-RPC envelope (request /
-//! response / notification) used over Unix Domain Sockets / Windows Named
-//! Pipes. The minimal skeleton below is the serializable contract start.
+//! M2 carries JSON-RPC 2.0 envelopes over a newline-delimited JSON stream
+//! (NDJSON) on the runtime process's stdin/stdout. The transport is swappable:
+//! the Windows Named Pipe branch is scheduled for M4, and only the framing
+//! helpers here (plus the transport-specific code in `plugin-host` /
+//! `plugin-runtime`) would change.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// A JSON-RPC style request from the main process to the plugin runtime.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// JSON-RPC protocol version marker, present on every message.
+pub const JSONRPC_VERSION: &str = "2.0";
+
+/// A JSON-RPC 2.0 request from the main process to the plugin runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {
+    pub jsonrpc: String,
     pub id: u64,
     pub method: String,
     #[serde(default)]
     pub params: Value,
 }
 
-/// A JSON-RPC style response from the plugin runtime back to the main process.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A JSON-RPC 2.0 response from the plugin runtime back to the main process.
+/// Exactly one of `result` / `error` is present on a well-formed response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Response {
+    pub jsonrpc: String,
     pub id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
-    pub error: Option<Error>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Error {
+/// A JSON-RPC 2.0 notification: a fire-and-forget message with no id (e.g.
+/// the runtime reporting a toast the plugin wants shown).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Notification {
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+/// One frame on the wire. `Notification` is never a response to a request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Message {
+    Request(Request),
+    Response(Response),
+    Notification(Notification),
+}
+
+/// JSON-RPC error object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RpcError {
     pub code: i64,
     pub message: String,
+}
+
+impl RpcError {
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+impl Request {
+    pub fn new(id: u64, method: impl Into<String>, params: Value) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id,
+            method: method.into(),
+            params,
+        }
+    }
+
+    /// Convenience for requests without meaningful parameters.
+    pub fn new_empty(id: u64, method: impl Into<String>) -> Self {
+        Self::new(id, method, Value::Null)
+    }
+}
+
+impl Response {
+    pub fn ok(id: u64, result: Value) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id,
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    pub fn error(id: u64, error: RpcError) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.into(),
+            id,
+            result: None,
+            error: Some(error),
+        }
+    }
+}
+
+impl Notification {
+    pub fn new(method: impl Into<String>, params: Value) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.into(),
+            method: method.into(),
+            params,
+        }
+    }
+}
+
+/// JSON-RPC standard error codes.
+pub mod code {
+    /// Invalid JSON was received by the server.
+    pub const PARSE_ERROR: i64 = -32700;
+    /// The JSON sent is not a valid Request object.
+    pub const INVALID_REQUEST: i64 = -32600;
+    /// The method does not exist / is not available.
+    pub const METHOD_NOT_FOUND: i64 = -32601;
+    /// Invalid method parameter(s).
+    pub const INVALID_PARAMS: i64 = -32602;
+    /// Internal JSON-RPC error.
+    pub const INTERNAL_ERROR: i64 = -32603;
+
+    // Steward-specific codes (application error range, -32000..-32099).
+    /// The plugin called a host function its manifest did not grant.
+    pub const PERMISSION_DENIED: i64 = -32000;
+    /// The plugin did not answer within its deadline; its isolate was killed.
+    pub const TIMEOUT: i64 = -32001;
+    /// The requested plugin is not loaded in this runtime.
+    pub const PLUGIN_NOT_FOUND: i64 = -32002;
+    /// The requested command does not exist on the plugin.
+    pub const COMMAND_NOT_FOUND: i64 = -32003;
+    /// The manifest declared a permission M2 does not implement.
+    pub const UNSUPPORTED_PERMISSION: i64 = -32004;
+}
+
+/// Main process -> runtime methods.
+pub mod method {
+    /// Load a plugin bundle into an isolate. Params: `{ id, entry_path,
+    /// manifest }`; result: `{ isolate_id }`.
+    pub const PLUGIN_LOAD: &str = "plugin.load";
+    /// Run one plugin command. Params: `{ isolate_id, command, input,
+    /// deadline_ms }`; result: `{ view }`.
+    pub const COMMAND_INVOKE: &str = "command.invoke";
+    /// Invoke a rendered list item's `onSelect`. Params: `{ isolate_id,
+    /// item_id }`; result: `{}`.
+    pub const ITEM_INVOKE: &str = "item.invoke";
+    /// Drop a plugin's isolate. Params: `{ isolate_id }`; result: `{}`.
+    pub const PLUGIN_UNLOAD: &str = "plugin.unload";
+    /// Liveness probe. Params: `{}`; result: `{ pong: true }`.
+    pub const PING: &str = "ping";
+
+    /// Runtime -> main process notification: show a toast. Params:
+    /// `{ message, kind?, durationMs? }`.
+    pub const TOAST_SHOW: &str = "toast.show";
+}
+
+/// Encode one message as a single NDJSON line (including the trailing `\n`).
+pub fn encode_line(message: &Message) -> serde_json::Result<String> {
+    let mut line = serde_json::to_string(message)?;
+    line.push('\n');
+    Ok(line)
+}
+
+/// Decode one NDJSON line into a message. Blank lines are skipped.
+pub fn decode_line(line: &str) -> serde_json::Result<Option<Message>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str(trimmed).map(Some)
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -38,14 +186,54 @@ mod tests {
 
     #[test]
     fn request_round_trips_through_json() {
-        let request = Request {
-            id: 42,
-            method: "command.invoke".into(),
-            params: serde_json::json!({ "name": "calculate" }),
-        };
+        let request = Request::new(
+            42,
+            method::COMMAND_INVOKE,
+            serde_json::json!({ "isolate_id": 7, "command": "calendar" }),
+        );
         let json = serde_json::to_string(&request).unwrap();
         let decoded: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.jsonrpc, JSONRPC_VERSION);
         assert_eq!(decoded.id, 42);
-        assert_eq!(decoded.method, "command.invoke");
+    }
+
+    #[test]
+    fn response_error_round_trips() {
+        let response = Response::error(
+            42,
+            RpcError::new(code::PERMISSION_DENIED, "permission not granted"),
+        );
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.error.unwrap().code, code::PERMISSION_DENIED);
+        assert!(decoded.result.is_none());
+    }
+
+    #[test]
+    fn message_envelope_round_trips_ndjson() {
+        let messages = vec![
+            Message::Request(Request::new_empty(1, method::PING)),
+            Message::Response(Response::ok(1, serde_json::json!({ "pong": true }))),
+            Message::Notification(Notification::new(
+                method::TOAST_SHOW,
+                serde_json::json!({ "message": "Copied" }),
+            )),
+        ];
+        let mut wire = String::new();
+        for message in &messages {
+            wire.push_str(&encode_line(message).unwrap());
+        }
+        let decoded = wire
+            .lines()
+            .filter_map(|line| decode_line(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, messages);
+    }
+
+    #[test]
+    fn blank_lines_are_skipped() {
+        assert_eq!(decode_line("").unwrap(), None);
+        assert_eq!(decode_line("  \n").unwrap(), None);
     }
 }
