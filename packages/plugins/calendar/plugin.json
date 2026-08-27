@@ -1,0 +1,14 @@
+{
+  "id": "com.example.calendar",
+  "name": "Calendar",
+  "version": "0.1.0",
+  "commands": [
+    {
+      "name": "calendar",
+      "title": "Calendar",
+      "trigger": { "type": "command" }
+    }
+  ],
+  "permissions": ["clipboard.write"],
+  "isolation": "shared-pool"
+}

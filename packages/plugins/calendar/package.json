@@ -1,0 +1,14 @@
+{
+  "name": "@steward/plugin-calendar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Official example plugin: Calendar.",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@steward/extension-api": "workspace:*"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --format=iife --global-name=__stewardPlugin --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit"
+  }
+}
