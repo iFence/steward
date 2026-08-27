@@ -1,11 +1,12 @@
 {
   "id": "com.example.calendar",
   "name": "Calendar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "commands": [
     {
       "name": "calendar",
       "title": "Calendar",
+      "keywords": ["日历"],
       "trigger": { "type": "command" }
     }
   ],

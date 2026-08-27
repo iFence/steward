@@ -1,10 +1,12 @@
 # Calendar (official example plugin)
 
 The M2 end-to-end example: TypeScript -> esbuild single-file IIFE -> QuickJS ->
-launcher UI. Typing `calendar` opens a real month calendar view; the month can
-be shifted with `calendar +3` / `calendar -1` or set absolutely with
-`calendar 2026-09`. Arrow keys move the selected day, Enter or a click copies
-the ISO date to the clipboard and shows a toast.
+launcher UI. Typing `calendar` (or a partial/fuzzy form like `cal`, `cldr` or
+`CAL`) opens a real month calendar view; the manifest also declares the
+localized keyword `日历`, so Chinese input (or its pinyin `rili` / `rl`)
+matches too. The month can be shifted with `calendar +3` / `calendar -1` or
+set absolutely with `calendar 2026-09`. Arrow keys move the selected day,
+Enter or a click copies the ISO date to the clipboard and shows a toast.
 
 ```text
 packages/plugins/calendar/

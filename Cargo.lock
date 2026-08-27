@@ -7111,9 +7111,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "nucleo",
  "regex",
  "serde",
  "serde_json",
+ "steward-core-engine",
  "steward-ipc-protocol",
  "steward-plugin-registry",
 ]

@@ -111,6 +111,12 @@ pub struct PluginCommand {
     /// Human-readable command title.
     pub title: String,
     pub trigger: Trigger,
+    /// Optional localized aliases / keywords (e.g. `"日历"` for `calendar`).
+    /// The host fuzzy-matches queries against the name, title and these
+    /// keywords (with pinyin forms for Chinese text), so plugins can declare
+    /// their own multi-language search terms.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
 }
 
 impl PluginCommand {
@@ -126,6 +132,14 @@ impl PluginCommand {
                 "plugin '{}': command '{}' title must not be empty",
                 plugin_id, self.name
             )));
+        }
+        for keyword in &self.keywords {
+            if keyword.trim().is_empty() {
+                return Err(ManifestError(format!(
+                    "plugin '{}': command '{}' keyword must not be empty",
+                    plugin_id, self.name
+                )));
+            }
         }
         match self.trigger.kind {
             TriggerType::Command => {
@@ -301,7 +315,41 @@ mod tests {
         let manifest = calendar();
         assert_eq!(manifest.isolation, Isolation::SharedPool);
         assert_eq!(manifest.permissions, vec![Permission::ClipboardWrite]);
+        assert!(
+            manifest.commands[0].keywords.is_empty(),
+            "keywords default to empty for backward compatibility"
+        );
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn localized_keywords_are_accepted() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "com.example.calendar",
+                "name": "Calendar",
+                "version": "1.0.0",
+                "commands": [
+                    {
+                        "name": "calendar",
+                        "title": "Calendar",
+                        "keywords": ["日历", "rili"],
+                        "trigger": { "type": "command" }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.commands[0].keywords, vec!["日历", "rili"]);
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn empty_keyword_is_rejected() {
+        let mut manifest = calendar();
+        manifest.commands[0].keywords = vec!["  ".into()];
+        let error = manifest.validate().unwrap_err();
+        assert!(error.0.contains("keyword must not be empty"));
     }
 
     #[test]

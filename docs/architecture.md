@@ -326,4 +326,7 @@ steward/
 - 崩溃恢复：共享池 / 专用进程崩溃后按指数退避（500ms 起、封顶 30s）重启并重载插件；隔离实例超时 / 超堆后 kill，下次调用按需重建。
 - 开发期环境变量：`STEWARD_PLUGINS_DIR` 覆盖插件根目录（如指向仓库 `packages/plugins`），`STEWARD_PLUGIN_RUNTIME_BIN` 覆盖运行时二进制路径。
 - 修订（同日）：应产品要求，插件视图契约在 M2 内扩展 `calendar` 类型（原定 M3 的 Grid 提前落地最小形态）：启动器把下拉区切换为月历网格（月份头 + 星期行 + 6 周网格，今天高亮），方向键移动选中日、回车/点击经 `item.invoke` 把日期交给插件；查询变化自动回到列表模式。`ui-components::calendar` 提供网格渲染与周历计算，app 负责视图解析、窗口加高与键盘导航。
+- 修订（2026-08-27）：日历视图美化——左侧新增 ISO 周数列（`W` 前缀，按该行周四归属周，跨年月/跨年周正确），行高 44→52，网格包入圆角卡片（`BACKGROUND_ALT` 淡背景 + 1px 白 0.08 细边框），今天/选中日改为圆角药丸高亮；`CALENDAR_GRID_HEIGHT` 重定义为含卡片边框与内边距的外高（324→382），启动器窗口高度随常量自动更新，插件与视图契约不变。
+- 修订（2026-08-27）：`command` 触发改为与应用搜索一致的模糊匹配——精确命令名（或命令名 + 参数）优先，其余按 nucleo 子序列得分排序；`cal` / `cldr` / `CAL` 都能命中 `calendar`，`calendarx` 这类仅是前缀更长的词仍不命中。needle 在匹配前统一小写（nucleo 要求调用方预归一化，否则大写查询失效），`prefix` / `regex` / `dynamic` 触发行为不变。
+- 修订（2026-08-27）：多语言适配——manifest 命令新增可选 `keywords`（本地化别名，如日历插件声明 `"日历"`）；宿主路由把命令名、标题与每个关键词一起经 `core-engine::search_haystacks` 展开成拼音变体（全拼 / 空格全拼 / 首字母）做模糊匹配，因此 `日历`、`rili`、`rl` 都能命中 calendar，与 App 搜索同一套匹配词表。`keywords` 向后兼容（缺省为空数组），每命令 haystack 上限 32 条防膨胀。
 - 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（121 项）全绿；`pnpm lint` / `pnpm typecheck` / `pnpm build` 全绿。

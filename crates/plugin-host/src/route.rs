@@ -2,11 +2,14 @@
 //! answer it, *before* any plugin process is woken.
 //!
 //! M2 supports the four manifest trigger kinds with a strict precedence:
-//! exact command name, keyword prefix (longest prefix wins), regex, and
+//! command name (exact, or fuzzy like app search, including the plugin's
+//! localized keywords), keyword prefix (longest prefix wins), regex, and
 //! dynamic (every query, subject to the 100 ms response timeout). A plugin is
 //! only invoked when a route actually matches, so cold-start and search cost
 //! stay proportional to the active plugin count, never the installed one.
 
+use nucleo::{Config, Matcher, Utf32Str, Utf32String};
+use steward_core_engine::search_haystacks;
 use steward_plugin_registry::{PluginCommand, TriggerType};
 
 /// A deadline for a static (non-dynamic) command, in milliseconds. Dynamic
@@ -16,6 +19,10 @@ pub const STATIC_DEADLINE_MS: u64 = 500;
 /// Circuit-break deadline for dynamic commands: if the plugin has not answered
 /// within 100 ms the runtime kills the isolate and this render skips the row.
 pub const DYNAMIC_DEADLINE_MS: u64 = 100;
+/// Upper bound on fuzzy haystack variants kept per command route (name +
+/// title + keywords, each with their pinyin forms), so even keyword-heavy
+/// plugins cannot bloat the routing table.
+const MAX_ROUTE_HAYSTACKS: usize = 32;
 
 /// One query match: the plugin command to invoke plus the input to pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +47,10 @@ struct Route {
     kind: TriggerType,
     /// Prefix or regex value; `None` for `command` / `dynamic`.
     value: Option<String>,
+    /// Pre-built fuzzy haystacks (command name, title and localized keywords
+    /// with pinyin forms, in UTF-32), reused across queries; only meaningful
+    /// for `command` routes.
+    haystacks: Vec<Utf32String>,
 }
 
 /// Routing tables for all loaded plugins. Pure data: no process or I/O, so it
@@ -69,6 +80,7 @@ impl RouteIndex {
                 title: command.title.clone(),
                 kind: command.trigger.kind,
                 value: command.trigger.value.clone(),
+                haystacks: route_haystacks(command),
             };
             match command.trigger.kind {
                 TriggerType::Command => self.commands.push(route),
@@ -117,18 +129,32 @@ impl RouteIndex {
             return self.dynamics.iter().map(hit_for).collect();
         }
 
-        let mut hits = Vec::new();
+        // Command routes: exact matches first, then fuzzy (subsequence)
+        // matches ranked by nucleo score, mirroring app search.
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let mut needle_buf = Vec::new();
+        // nucleo requires the caller to case-fold the needle; the matcher
+        // normalizes the haystack, so lowercasing the query keeps matching
+        // case-insensitive in both directions.
+        let needle_text = query.to_lowercase();
+        let needle = Utf32Str::new(&needle_text, &mut needle_buf);
+        let mut command_hits = Vec::new();
         for route in &self.commands {
-            if matches_command(&route.command, query) {
-                hits.push(RouteHit {
-                    plugin_id: route.plugin_id.clone(),
-                    command: route.command.clone(),
-                    title: route.title.clone(),
-                    input: query.to_string(),
-                    deadline_ms: STATIC_DEADLINE_MS,
-                });
+            if let Some(score) = command_score(route, query, needle, &mut matcher) {
+                command_hits.push((
+                    score,
+                    RouteHit {
+                        plugin_id: route.plugin_id.clone(),
+                        command: route.command.clone(),
+                        title: route.title.clone(),
+                        input: query.to_string(),
+                        deadline_ms: STATIC_DEADLINE_MS,
+                    },
+                ));
             }
         }
+        command_hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        let mut hits: Vec<RouteHit> = command_hits.into_iter().map(|(_, hit)| hit).collect();
 
         // Longest-prefix priority: among all routes whose prefix matches,
         // only those with the longest prefix fire (a shorter, generic prefix
@@ -205,6 +231,56 @@ fn hit_for(route: &Route) -> RouteHit {
     }
 }
 
+/// Score a `command` trigger against the query: an exact command name (or the
+/// name followed by arguments) scores highest; otherwise the query is
+/// fuzzy-matched against the command name, exactly like app search. Returns
+/// `None` when neither form matches.
+fn command_score(
+    route: &Route,
+    query: &str,
+    needle: Utf32Str<'_>,
+    matcher: &mut Matcher,
+) -> Option<u16> {
+    if matches_command(&route.command, query) {
+        return Some(u16::MAX);
+    }
+    let mut best: Option<u16> = None;
+    for haystack in &route.haystacks {
+        let hay: Utf32Str<'_> = haystack.slice(..);
+        if let Some(score) = matcher.fuzzy_match(hay, needle) {
+            best = Some(best.map_or(score, |current| current.max(score)));
+        }
+    }
+    best
+}
+
+/// Build the fuzzy haystacks for a command route: the command name, its title
+/// and every localized keyword, each expanded with pinyin search forms (see
+/// `steward_core_engine::search_haystacks`). Variants are deduplicated
+/// case-insensitively and capped by [`MAX_ROUTE_HAYSTACKS`].
+fn route_haystacks(command: &PluginCommand) -> Vec<Utf32String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut haystacks = Vec::new();
+    for text in std::iter::once(&command.name)
+        .chain(std::iter::once(&command.title))
+        .chain(command.keywords.iter())
+    {
+        for variant in search_haystacks(text) {
+            let key = variant.to_string().to_lowercase();
+            if seen.insert(key) {
+                haystacks.push(variant);
+                if haystacks.len() >= MAX_ROUTE_HAYSTACKS {
+                    return haystacks;
+                }
+            }
+        }
+        if haystacks.len() >= MAX_ROUTE_HAYSTACKS {
+            return haystacks;
+        }
+    }
+    haystacks
+}
+
 /// `command` triggers match the exact command name or the name followed by a
 /// space (so `calendar tomorrow` reaches the calendar command), but never a
 /// mere prefix of another word (`calendarx` does not match `calendar`).
@@ -228,6 +304,7 @@ mod tests {
                 kind,
                 value: value.map(str::to_string),
             },
+            keywords: Vec::new(),
         }
     }
 
@@ -247,7 +324,58 @@ mod tests {
         assert_eq!(hits[0].input, "calendar tomorrow");
 
         assert!(index.match_query("calendarx").is_empty());
-        assert!(index.match_query("calend").is_empty());
+    }
+
+    #[test]
+    fn command_trigger_fuzzy_matches_partial_names_like_app_search() {
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "com.example.calendar",
+            &[command("calendar", TriggerType::Command, None)],
+        );
+        // Prefix of the name matches without typing the full command.
+        assert_eq!(index.match_query("cal").len(), 1);
+        assert_eq!(index.match_query("calend").len(), 1);
+        // Subsequence ("fuzzy") matches work too, ignoring case.
+        assert_eq!(index.match_query("cldr").len(), 1);
+        assert_eq!(index.match_query("CAL").len(), 1);
+        // A word that merely starts with the name still does not match.
+        assert!(index.match_query("calendarx").is_empty());
+    }
+
+    #[test]
+    fn command_fuzzy_hits_rank_exact_before_fuzzy() {
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "com.example.short",
+            &[
+                command("cal", TriggerType::Command, None),
+                command("calendar", TriggerType::Command, None),
+            ],
+        );
+        let hits = index.match_query("cal");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].command, "cal", "exact match ranks first");
+        assert_eq!(hits[1].command, "calendar", "fuzzy match follows");
+    }
+
+    #[test]
+    fn command_trigger_matches_localized_keywords() {
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "com.example.calendar",
+            &[PluginCommand {
+                keywords: vec!["日历".into()],
+                ..command("calendar", TriggerType::Command, None)
+            }],
+        );
+        // The plugin's own localized keyword matches directly...
+        assert_eq!(index.match_query("日历").len(), 1);
+        // ...and its pinyin forms match too, like app search.
+        assert_eq!(index.match_query("rili").len(), 1, "full pinyin");
+        assert_eq!(index.match_query("rl").len(), 1, "pinyin initials");
+        // A word merely containing the keyword still does not match.
+        assert!(index.match_query("日历x").is_empty());
     }
 
     #[test]

@@ -139,13 +139,14 @@ impl Engine {
     }
 }
 
-/// Build the search haystack variants for one app name: the name itself plus,
-/// for Chinese text, compact full pinyin (`zidongbofang`), full pinyin with
-/// spaces (`zi dong bo fang`) and first-letter initials (`zdbf`), so queries
-/// like `zd` can find 终端 / 自动播放 / 设置向导 the way other launchers do.
-/// Characters without a pinyin reading (Latin, digits, punctuation) are copied
-/// through, keeping mixed names such as "QQ音乐" searchable by either part.
-fn search_haystacks(name: &str) -> Vec<Utf32String> {
+/// Build the search haystack variants for a label or keyword: the text itself
+/// plus, for Chinese text, compact full pinyin (`zidongbofang`), full pinyin
+/// with spaces (`zi dong bo fang`) and first-letter initials (`zdbf`), so
+/// queries like `zd` can find 终端 / 自动播放 / 设置向导 the way other launchers
+/// do. Characters without a pinyin reading (Latin, digits, punctuation) are
+/// copied through, keeping mixed names such as "QQ音乐" searchable by either
+/// part. App names and plugin keywords share this matcher vocabulary.
+pub fn search_haystacks(name: &str) -> Vec<Utf32String> {
     let mut seen = std::collections::HashSet::new();
     let mut variants = Vec::new();
     for text in std::iter::once(name.to_owned()).chain(pinyin_variants(name)) {

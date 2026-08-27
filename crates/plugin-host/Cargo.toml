@@ -6,8 +6,10 @@ edition.workspace = true
 [dependencies]
 steward-ipc-protocol = { path = "../ipc-protocol" }
 steward-plugin-registry = { path = "../plugin-registry" }
+steward-core-engine = { path = "../core-engine" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 regex.workspace = true
 crossbeam-channel.workspace = true
+nucleo.workspace = true

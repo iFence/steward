@@ -31,13 +31,14 @@
 | `commands` | array | 是 | 命令列表 |
 | `commands[].name` | string | 是 | 命令名 |
 | `commands[].title` | string | 是 | 命令标题 |
+| `commands[].keywords` | string[] | 否 | 本地化搜索关键词（如 `"日历"`），配合命令名/标题一起参与模糊匹配，默认空数组 |
 | `commands[].trigger` | object | 是 | 触发条件 |
 | `permissions` | string[] | 否 | 能力白名单，默认空数组（零权限） |
 | `isolation` | string | 否 | 隔离级别，默认 `shared-pool` |
 
 ## trigger.type
 
-- `command`：固定命令名
+- `command`：命令名，按应用搜索同样支持部分输入/模糊命中（精确名或命令名+参数优先，其余按 fuzzy 得分排序）
 - `prefix`：关键字前缀（如 `=`）
 - `regex`：正则触发（谨慎开放）
 - `dynamic`：每次输入都参与，必须带响应超时熔断（如 100ms 未返回则跳过本次渲染）
