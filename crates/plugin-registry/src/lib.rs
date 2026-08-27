@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
 
-pub use manifest::{ManifestError, PluginManifest};
+pub use manifest::{ManifestError, Permission, PluginManifest};
 
 /// On-disk database file name inside the Steward data directory.
 const DB_FILE: &str = "plugins.db";
@@ -140,7 +140,8 @@ impl Registry {
                     name: row.get(1)?,
                     version: row.get(2)?,
                     isolation: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-                    permissions: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                    permissions: serde_json::from_str(&row.get::<_, String>(6)?)
+                        .unwrap_or_default(),
                     commands: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
                 };
                 Ok(PluginMeta {

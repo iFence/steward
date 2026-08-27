@@ -359,11 +359,7 @@ mod tests {
 
     #[test]
     fn unimplemented_permissions_are_rejected() {
-        for permission in [
-            Permission::Network,
-            Permission::FsRead,
-            Permission::FsWrite,
-        ] {
+        for permission in [Permission::Network, Permission::FsRead, Permission::FsWrite] {
             let mut manifest = calendar();
             manifest.permissions = vec![permission];
             let error = manifest.validate().unwrap_err();

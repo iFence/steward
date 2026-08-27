@@ -1,11 +1,30 @@
-//! Standalone plugin host process.
+//! Standalone plugin runtime process.
 //!
-//! M2 milestone embeds QuickJS (`rquickjs`) here and speaks
-//! `steward-ipc-protocol` over the platform IPC transport.
+//! Embeds QuickJS (`rquickjs`) and speaks `steward-ipc-protocol` over
+//! newline-delimited JSON on stdin/stdout. The main process spawns one
+//! instance as the shared isolate pool, or one instance per plugin with
+//! `--dedicated` for privileged/heavy plugins (dedicated-process isolation).
+//!
+//! All diagnostics go to stderr; stdout carries only protocol frames so the
+//! NDJSON stream stays parseable by the host.
 
-fn main() {
-    println!(
-        "steward-plugin-runtime {} (placeholder: QuickJS host arrives in M2)",
-        env!("CARGO_PKG_VERSION")
+use steward_plugin_runtime::{isolated_process, run_service, ServiceConfig};
+
+fn main() -> anyhow::Result<()> {
+    let dedicated = std::env::args().any(|arg| arg == "--dedicated");
+    let config = if dedicated {
+        isolated_process::dedicated_config()
+    } else {
+        ServiceConfig::default()
+    };
+    eprintln!(
+        "steward-plugin-runtime {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        if dedicated {
+            "dedicated"
+        } else {
+            "shared-pool"
+        }
     );
+    run_service(&config)
 }
