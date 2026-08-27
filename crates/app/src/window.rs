@@ -8,7 +8,10 @@ use gpui::{
     KeyBinding, QuitMode, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
     WindowKind, WindowOptions,
 };
-use steward_ui_components::{init_components, ResultItem, ResultList, ResultListDelegate};
+use steward_ui_components::{
+    init_components, CalendarSelectCallback, CalendarView, ResultItem, ResultList,
+    ResultListDelegate,
+};
 
 use crate::config::{
     HideWindow, CLOSE_ON_HIDE, DEFAULT_ACCENT, LAUNCHER_HEIGHT, LAUNCHER_WIDTH, THEME_COLOR_SETTING,
@@ -129,6 +132,27 @@ pub(crate) fn open_launcher_window(
             let results_for_cb = last_results.clone();
             let confirm_storage = storage.clone();
             let plugin_host = state.borrow().plugin_host.clone();
+            let calendar_state = state.clone();
+            let on_calendar_select: CalendarSelectCallback = Rc::new(move |date: String, _cx| {
+                // Clicking a day confirms it: dispatch `item.invoke` to the
+                // plugin that produced the calendar view and keep the launcher
+                // open.
+                let active = calendar_state.borrow().plugin_calendar.borrow().clone();
+                if let Some(active) = active {
+                    if calendar_state
+                        .borrow()
+                        .plugin_host
+                        .borrow_mut()
+                        .invoke_item(&active.plugin_id, &date)
+                        .is_none()
+                    {
+                        eprintln!(
+                            "[steward] plugin {} not ready for item.invoke",
+                            active.plugin_id
+                        );
+                    }
+                }
+            });
             let on_confirm = move |index: usize, cx: &mut App| -> bool {
                 let item = results_for_cb.borrow().get(index).cloned();
                 match item {
@@ -186,6 +210,7 @@ pub(crate) fn open_launcher_window(
                         }
                     });
                 let results = ResultList::new(delegate, window, cx);
+                let calendar = CalendarView::new(Some(on_calendar_select), window, cx);
                 let mut app = StewardApp {
                     focus_handle: focus.clone(),
                     input: SearchInput {
@@ -199,6 +224,8 @@ pub(crate) fn open_launcher_window(
                     storage: storage.clone(),
                     last_results,
                     results,
+                    calendar,
+                    calendar_selected: String::new(),
                     base_items: Vec::new(),
                     base_icons: Vec::new(),
                     builtin_count: 0,

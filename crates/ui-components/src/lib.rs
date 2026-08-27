@@ -2,9 +2,11 @@
 
 use gpui::App;
 
+pub mod calendar;
 pub mod palette;
 pub mod results_list;
 
+pub use calendar::*;
 pub use palette::*;
 pub use results_list::*;
 

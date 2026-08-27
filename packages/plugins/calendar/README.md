@@ -1,9 +1,10 @@
 # Calendar (official example plugin)
 
 The M2 end-to-end example: TypeScript -> esbuild single-file IIFE -> QuickJS ->
-launcher rows. Typing `calendar` (optionally with an offset, e.g.
-`calendar +3`) shows the next seven days; selecting a row copies its ISO date
-to the clipboard and shows a toast.
+launcher UI. Typing `calendar` opens a real month calendar view; the month can
+be shifted with `calendar +3` / `calendar -1` or set absolutely with
+`calendar 2026-09`. Arrow keys move the selected day, Enter or a click copies
+the ISO date to the clipboard and shows a toast.
 
 ```text
 packages/plugins/calendar/

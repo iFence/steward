@@ -325,4 +325,5 @@ steward/
 - 查询代际（query generation）：每次搜索递增 gen，迟到的插件响应按 gen 丢弃，避免旧查询污染新结果。
 - 崩溃恢复：共享池 / 专用进程崩溃后按指数退避（500ms 起、封顶 30s）重启并重载插件；隔离实例超时 / 超堆后 kill，下次调用按需重建。
 - 开发期环境变量：`STEWARD_PLUGINS_DIR` 覆盖插件根目录（如指向仓库 `packages/plugins`），`STEWARD_PLUGIN_RUNTIME_BIN` 覆盖运行时二进制路径。
-- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（114 项）全绿；`pnpm lint` / `pnpm typecheck` / `pnpm build` 全绿。
+- 修订（同日）：应产品要求，插件视图契约在 M2 内扩展 `calendar` 类型（原定 M3 的 Grid 提前落地最小形态）：启动器把下拉区切换为月历网格（月份头 + 星期行 + 6 周网格，今天高亮），方向键移动选中日、回车/点击经 `item.invoke` 把日期交给插件；查询变化自动回到列表模式。`ui-components::calendar` 提供网格渲染与周历计算，app 负责视图解析、窗口加高与键盘导航。
+- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（121 项）全绿；`pnpm lint` / `pnpm typecheck` / `pnpm build` 全绿。

@@ -27,8 +27,22 @@ export interface ListOptions {
   onSelect?: (item: ListItem) => void;
 }
 
-/** A serializable view returned by `command` (M2 supports `list` only). */
-export type View = { type: "list"; items: ListItem[] } | null;
+/**
+ * A serializable view returned by `command`. M2 supports:
+ * - `list`: rows rendered in the launcher drop-down;
+ * - `calendar`: a month grid (year/month/today, Monday or Sunday first).
+ */
+export type View =
+  | { type: "list"; items: ListItem[] }
+  | {
+      type: "calendar";
+      year: number;
+      month: number;
+      today: string;
+      startOfWeek?: 0 | 1;
+      selected?: string;
+    }
+  | null;
 
 /** The module shape the host reads from `globalThis.__stewardPlugin`. */
 export interface PluginModule {

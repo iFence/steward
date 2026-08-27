@@ -21,7 +21,10 @@ use gpui::{
 use gpui_component::ActiveTheme;
 use steward_plugin_host::{PluginHost, RouteHit};
 use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
-use steward_ui_components::{ResultItem, ResultList};
+use steward_ui_components::{
+    days_in_month, iso_date, CalendarData, CalendarView, ResultItem, ResultList,
+    CALENDAR_GRID_HEIGHT,
+};
 
 use crate::config::{
     HideWindow, LAUNCHER_HEIGHT, LAUNCHER_MARGIN, LAUNCHER_WIDTH, MAX_PLUGIN_ROWS, MAX_RESULT_ROWS,
@@ -56,6 +59,20 @@ fn launcher_height(result_count: usize) -> f32 {
     LAUNCHER_HEIGHT + 2.0 * LAUNCHER_MARGIN + result_height(result_count)
 }
 
+/// Total launcher window height when a plugin calendar view is active: the
+/// input bar plus the month grid (no results list).
+fn calendar_height() -> f32 {
+    LAUNCHER_HEIGHT + 2.0 * LAUNCHER_MARGIN + CALENDAR_GRID_HEIGHT
+}
+
+/// A plugin `calendar` view currently displayed in the launcher, plus the
+/// plugin that produced it (needed for `item.invoke` on day selection).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveCalendar {
+    pub data: CalendarData,
+    pub plugin_id: String,
+}
+
 pub(crate) struct StewardApp {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) input: SearchInput,
@@ -68,6 +85,11 @@ pub(crate) struct StewardApp {
     /// the selected index into an app path (or a calculator result to copy).
     pub(crate) last_results: Rc<RefCell<Vec<ResultItem>>>,
     pub(crate) results: ResultList,
+    /// Month calendar grid, shown instead of the results list when the current
+    /// query's plugin view is a `calendar` view.
+    pub(crate) calendar: CalendarView,
+    /// Keyboard-selected date inside the calendar grid (ISO `YYYY-MM-DD`).
+    pub(crate) calendar_selected: String,
     /// Base rows of the current query (builtin actions + app matches) and the
     /// icons aligned with them, kept separate from the plugin rows so a late
     /// plugin response can re-merge without re-running the search.
@@ -148,6 +170,9 @@ pub(crate) struct LauncherState {
     /// Views received for each hit; `None` until the response (or an error)
     /// lands for this query.
     pub(crate) plugin_views: RefCell<Vec<Option<serde_json::Value>>>,
+    /// The active calendar view (from the first calendar-typed plugin view of
+    /// the current query), if any.
+    pub(crate) plugin_calendar: RefCell<Option<ActiveCalendar>>,
     /// Logical launcher height last requested from a resize, so `search` can
     /// skip redundant resize calls when the result-count-driven height has not
     /// changed (e.g. every IME composition update).
@@ -169,7 +194,11 @@ impl LauncherState {
     /// Total launcher window height for the current result count: the input
     /// bar plus the result drop-down.
     pub(crate) fn height(&self) -> f32 {
-        launcher_height(self.result_count)
+        if self.plugin_calendar.borrow().is_some() {
+            calendar_height()
+        } else {
+            launcher_height(self.result_count)
+        }
     }
 
     /// Seed the search index from the SQLite cache and, when the cache is
@@ -319,6 +348,23 @@ impl LauncherState {
         }
         rows
     }
+
+    /// Extract the active calendar view from the current query's plugin views
+    /// (the first `calendar`-typed response). Returns `None` when no plugin
+    /// answered with a calendar view yet.
+    pub(crate) fn extract_calendar(&self) -> Option<ActiveCalendar> {
+        let hits = self.plugin_hits.borrow();
+        let views = self.plugin_views.borrow();
+        for (hit, view) in hits.iter().zip(views.iter()) {
+            let Some(view) = view else {
+                continue;
+            };
+            if let Some(active) = parse_calendar_view(view, &hit.plugin_id) {
+                return Some(active);
+            }
+        }
+        None
+    }
 }
 
 /// Extract the list items from a plugin command result. The runtime wraps the
@@ -332,32 +378,99 @@ fn plugin_view_items(view: &serde_json::Value) -> Option<&Vec<serde_json::Value>
     view.get("items").and_then(|items| items.as_array())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plugin_view_items_unwraps_response_envelope() {
-        let wrapped = serde_json::json!({
-            "view": {
-                "type": "list",
-                "items": [{ "id": "a", "title": "Alpha", "subtitle": "first" }]
-            }
-        });
-        let items = plugin_view_items(&wrapped).expect("wrapped list view");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["id"], "a");
-
-        // A bare view (no envelope) is tolerated too.
-        let bare = serde_json::json!({ "type": "list", "items": [] });
-        assert_eq!(plugin_view_items(&bare).map(|items| items.len()), Some(0));
-
-        // Non-list views and missing envelopes yield no rows.
-        let not_list = serde_json::json!({ "view": { "type": "detail" } });
-        assert!(plugin_view_items(&not_list).is_none());
-        let missing = serde_json::json!({ "view": {} });
-        assert!(plugin_view_items(&missing).is_none());
+/// Parse a plugin `calendar` view (wrapped or bare) into the display data.
+fn parse_calendar_view(view: &serde_json::Value, plugin_id: &str) -> Option<ActiveCalendar> {
+    let view = view.get("view").unwrap_or(view);
+    if view.get("type").and_then(|kind| kind.as_str()) != Some("calendar") {
+        return None;
     }
+    let year = view.get("year")?.as_i64()? as i32;
+    let month = view.get("month")?.as_i64()? as u32;
+    let today = view.get("today")?.as_str()?.to_string();
+    let start_of_week = view
+        .get("startOfWeek")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1) as u8;
+    let selected = view
+        .get("selected")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&today)
+        .to_string();
+    Some(ActiveCalendar {
+        data: CalendarData {
+            year,
+            month: month.clamp(1, 12),
+            today,
+            selected,
+            start_of_week: start_of_week % 7,
+        },
+        plugin_id: plugin_id.to_string(),
+    })
+}
+
+/// Parse `YYYY-MM-DD` into `(year, month, day)`.
+fn parse_iso_date(iso: &str) -> Option<(i32, u32, u32)> {
+    let bytes = iso.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        if index == 4 || index == 7 {
+            continue;
+        }
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+    }
+    let year = iso[..4].parse().ok()?;
+    let month = iso[5..7].parse().ok()?;
+    let day = iso[8..10].parse().ok()?;
+    Some((year, month, day))
+}
+
+/// Localized month label for the calendar header, e.g. "August 2026" or
+/// "2026 年 8 月".
+fn calendar_month_label(language: &str, year: i32, month: u32) -> String {
+    if language.starts_with("zh") {
+        format!("{year} 年 {month} 月")
+    } else {
+        const MONTHS: [&str; 12] = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
+        let name = MONTHS
+            .get(month.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or("?");
+        format!("{name} {year}")
+    }
+}
+
+/// Localized weekday labels ordered from `start_of_week` (0 = Sunday-first,
+/// 1 = Monday-first).
+fn calendar_weekday_labels(language: &str, start_of_week: u8) -> [String; 7] {
+    // Canonical Sunday-first order; rotated by `start_of_week` below.
+    let base: [&str; 7] = if language.starts_with("zh") {
+        ["日", "一", "二", "三", "四", "五", "六"]
+    } else {
+        ["S", "M", "T", "W", "T", "F", "S"]
+    };
+    let start = (start_of_week % 7) as usize;
+    let mut labels = std::array::from_fn(|_| String::new());
+    for (index, label) in labels.iter_mut().enumerate() {
+        *label = base[(start + index) % 7].to_string();
+    }
+    labels
 }
 
 /// GPUI's text-input interface. The launcher's query is a single-line
@@ -654,6 +767,7 @@ impl gpui::Render for StewardApp {
         let _ = window;
 
         let result_count = self.results.visible_count(cx);
+        let calendar_active = self.state.borrow().plugin_calendar.borrow().is_some();
         let primary = cx.theme().primary;
         let root = div()
             .track_focus(&self.focus_handle)
@@ -713,7 +827,19 @@ impl gpui::Render for StewardApp {
                     )
                     .child(drag_strip().w(px(LAUNCHER_MARGIN))),
             )
-            .when(result_count > 0, |this| {
+            .when(calendar_active, |this| {
+                // A plugin calendar view replaces the results drop-down: the
+                // same separator, then the month grid pinned to its own
+                // height.
+                this.child(div().w_full().h(px(1.0)).bg(rgb(0xffffff).opacity(0.10)))
+                    .child(
+                        div()
+                            .h(px(CALENDAR_GRID_HEIGHT))
+                            .mx(px(LAUNCHER_MARGIN))
+                            .child(self.calendar.render(CALENDAR_GRID_HEIGHT, cx)),
+                    )
+            })
+            .when(!calendar_active && result_count > 0, |this| {
                 // A subtle light hairline separates the search box from the
                 // results list (Tinycast's `separator`, white 0.10); it only
                 // shows while the drop-down is open.
@@ -902,6 +1028,31 @@ impl StewardApp {
                 open_settings_window_from_launcher(&self.state, self.i18n.clone(), &mut *cx);
                 cx.stop_propagation();
                 return;
+            }
+        }
+
+        // A plugin calendar view owns the arrow keys and Enter: navigate the
+        // selected day or confirm (copy) it. Typing still edits the query,
+        // which returns the launcher to list mode until the next view lands.
+        if self.state.borrow().plugin_calendar.borrow().is_some() {
+            match keystroke.key.as_str() {
+                "up" | "down" | "left" | "right" => {
+                    let delta = match keystroke.key.as_str() {
+                        "up" => -7,
+                        "down" => 7,
+                        "left" => -1,
+                        _ => 1,
+                    };
+                    self.calendar_move(delta, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "enter" => {
+                    self.calendar_confirm(cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -1118,6 +1269,21 @@ impl StewardApp {
     /// window. Used by `search` and by the poll task when a plugin view lands.
     fn render_merged(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         let plugin_rows = self.state.borrow().plugin_rows();
+        let active_calendar = self.state.borrow().extract_calendar();
+        *self.state.borrow().plugin_calendar.borrow_mut() = active_calendar.clone();
+        if let Some(active) = &active_calendar {
+            // A calendar view replaces the results list: push the month grid's
+            // data, localized labels and selection into the calendar widget.
+            let language = self.i18n.language();
+            self.calendar_selected = active.data.selected.clone();
+            self.calendar.set_data(
+                active.data.clone(),
+                calendar_month_label(&language, active.data.year, active.data.month),
+                calendar_weekday_labels(&language, active.data.start_of_week),
+                active.data.selected.clone(),
+                cx,
+            );
+        }
         let plugin_count = plugin_rows.len();
         let builtin_count = self.builtin_count;
         let mut items = Vec::with_capacity(self.base_items.len() + plugin_count);
@@ -1133,7 +1299,11 @@ impl StewardApp {
         self.results.set_results(items, icons, cx);
 
         let count = self.results.visible_count(cx);
-        let height = launcher_height(count);
+        let height = if active_calendar.is_some() {
+            calendar_height()
+        } else {
+            launcher_height(count)
+        };
         let mut state = self.state.borrow_mut();
         state.result_count = count;
         // Resize through GPUI's own window API, which runs the native
@@ -1159,6 +1329,42 @@ impl StewardApp {
     /// never re-invokes plugins.
     pub(crate) fn apply_plugin_views(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         self.render_merged(window, cx);
+    }
+
+    /// Move the calendar selection by `delta` days (clamped to the displayed
+    /// month), updating both the widget highlight and the confirm target.
+    fn calendar_move(&mut self, delta: i32, cx: &mut gpui::Context<Self>) {
+        let Some((year, month, day)) = parse_iso_date(&self.calendar_selected) else {
+            return;
+        };
+        let days = days_in_month(year, month);
+        let new_day = (day as i32 + delta).clamp(1, days as i32) as u32;
+        let iso = iso_date(year, month, new_day);
+        self.calendar_selected = iso.clone();
+        self.calendar.set_selected(&iso, cx);
+        cx.notify();
+    }
+
+    /// Confirm the selected calendar day: dispatch `item.invoke` to the plugin
+    /// that produced the view and keep the launcher open.
+    fn calendar_confirm(&mut self, _cx: &mut gpui::Context<Self>) {
+        let Some(active) = self.state.borrow().plugin_calendar.borrow().clone() else {
+            return;
+        };
+        let selected = self.calendar_selected.clone();
+        if self
+            .state
+            .borrow()
+            .plugin_host
+            .borrow_mut()
+            .invoke_item(&active.plugin_id, &selected)
+            .is_none()
+        {
+            eprintln!(
+                "[steward] plugin {} not ready for item.invoke",
+                active.plugin_id
+            );
+        }
     }
 
     /// Reset the launcher to its idle (bar-only) state and hide it. Called
@@ -1215,4 +1421,100 @@ fn cursor(primary: Hsla) -> impl IntoElement {
 /// stays interactive (text cursor) instead of dragging the window.
 fn drag_strip() -> Div {
     div().window_control_area(gpui::WindowControlArea::Drag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_view_items_unwraps_response_envelope() {
+        let wrapped = serde_json::json!({
+            "view": {
+                "type": "list",
+                "items": [{ "id": "a", "title": "Alpha", "subtitle": "first" }]
+            }
+        });
+        let items = plugin_view_items(&wrapped).expect("wrapped list view");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "a");
+
+        // A bare view (no envelope) is tolerated too.
+        let bare = serde_json::json!({ "type": "list", "items": [] });
+        assert_eq!(plugin_view_items(&bare).map(|items| items.len()), Some(0));
+
+        // Non-list views and missing envelopes yield no rows.
+        let not_list = serde_json::json!({ "view": { "type": "detail" } });
+        assert!(plugin_view_items(&not_list).is_none());
+        let missing = serde_json::json!({ "view": {} });
+        assert!(plugin_view_items(&missing).is_none());
+    }
+
+    #[test]
+    fn parse_calendar_view_handles_wrapped_and_bare_views() {
+        let wrapped = serde_json::json!({
+            "view": {
+                "type": "calendar",
+                "year": 2026,
+                "month": 8,
+                "today": "2026-08-27",
+                "startOfWeek": 1,
+                "selected": "2026-08-27"
+            }
+        });
+        let calendar =
+            parse_calendar_view(&wrapped, "com.example.calendar").expect("calendar view");
+        assert_eq!(calendar.plugin_id, "com.example.calendar");
+        assert_eq!(calendar.data.year, 2026);
+        assert_eq!(calendar.data.month, 8);
+        assert_eq!(calendar.data.today, "2026-08-27");
+        assert_eq!(calendar.data.start_of_week, 1);
+
+        // Bare view (no envelope) and defaulted fields are tolerated.
+        let bare = serde_json::json!({
+            "type": "calendar",
+            "year": 2026,
+            "month": 13,
+            "today": "2026-01-01"
+        });
+        let calendar = parse_calendar_view(&bare, "com.example.calendar").unwrap();
+        assert_eq!(calendar.data.month, 12, "month clamps to 1..=12");
+        assert_eq!(
+            calendar.data.selected, "2026-01-01",
+            "selected defaults to today"
+        );
+        assert_eq!(
+            calendar.data.start_of_week, 1,
+            "startOfWeek defaults to Monday"
+        );
+
+        // Non-calendar and malformed views yield no calendar.
+        assert!(
+            parse_calendar_view(&serde_json::json!({ "view": { "type": "list" } }), "p").is_none()
+        );
+        assert!(
+            parse_calendar_view(&serde_json::json!({ "view": { "type": "calendar" } }), "p")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn iso_date_parsing_and_navigation_helpers() {
+        assert_eq!(parse_iso_date("2026-08-27"), Some((2026, 8, 27)));
+        assert_eq!(
+            parse_iso_date("2026-8-27"),
+            None,
+            "month must be zero-padded"
+        );
+        assert_eq!(parse_iso_date("garbage"), None);
+        assert_eq!(parse_iso_date("2026-08-27-extra"), None);
+
+        assert_eq!(calendar_month_label("zh", 2026, 8), "2026 年 8 月");
+        assert_eq!(calendar_month_label("en", 2026, 8), "August 2026");
+
+        let monday_first = calendar_weekday_labels("zh", 1);
+        assert_eq!(monday_first, ["一", "二", "三", "四", "五", "六", "日"]);
+        let sunday_first = calendar_weekday_labels("en", 0);
+        assert_eq!(sunday_first, ["S", "M", "T", "W", "T", "F", "S"]);
+    }
 }

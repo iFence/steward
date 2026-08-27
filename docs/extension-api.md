@@ -12,9 +12,11 @@
 | `showToast` | 显示短暂通知（`message` / `kind` / `durationMs`） |
 | `selectItem` | 把 `item.invoke` 分发给最近一次 `List` 注册的 `onSelect` |
 
-> M2 视图仅支持 `{ type: "list", items: [...] }` 且同步返回；插件通过导出
-> `command(name, input)` 与 `select(itemId)` 暴露能力，宿主读取
-> `globalThis.__stewardPlugin`。
+> M2 视图支持 `{ type: "list", items: [...] }` 与
+> `{ type: "calendar", year, month, today, startOfWeek?, selected? }`，且同步
+> 返回；插件通过导出 `command(name, input)` 与 `select(itemId)` 暴露能力，
+> 宿主读取 `globalThis.__stewardPlugin`。日历视图在启动器中渲染为月历网格，
+> 方向键移动选中日、回车/点击把日期交给 `select`。
 
 ## M3 扩展
 | API | 说明 |
