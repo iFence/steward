@@ -42,7 +42,7 @@ steward/
 │   ├── extension-api/              # 面向插件开发者的 TS 类型声明 + 运行时 polyfill
 │   ├── create-plugin-cli/          # 脚手架 CLI（可选，后期做）
 │   └── plugins/
-│       ├── calculator/              # 官方示例插件 1
+│       ├── calendar/                # 官方示例插件 1
 │       └── clipboard-history/       # 官方示例插件 2
 ├── docs/
 │   ├── architecture.md             # 架构说明（把讨论结论固化进去）
@@ -94,16 +94,16 @@ steward/
 这一阶段直接把 1000 插件规模下会暴露的问题设计进去，避免后面返工。
 
 **基础链路**
-- [ ] `ipc-protocol`：定义主进程 <-> 插件运行时消息格式（JSON-RPC）
-- [ ] `plugin-runtime`：独立二进制，内嵌 rquickjs，能加载 JS 文件并调用
-- [ ] `packages/extension-api`：暴露 `List`、`ActionPanel`、`showToast` 等最小 API 集
-- [ ] 用 `packages/plugins/calculator` 跑通端到端：TS -> esbuild -> QuickJS -> UI 渲染
+- [x] `ipc-protocol`：定义主进程 <-> 插件运行时消息格式（JSON-RPC）
+- [x] `plugin-runtime`：独立二进制，内嵌 rquickjs，能加载 JS 文件并调用
+- [x] `packages/extension-api`：暴露 `List`、`ActionPanel`、`showToast` 等最小 API 集
+- [x] 用 `packages/plugins/calendar` 跑通端到端：TS -> esbuild -> QuickJS -> UI 渲染
 
 **规模化对策（4 项必须做，不是可选项）**
-- [ ] **元数据缓存**（`plugin-registry`）：插件 manifest 解析结果缓存进 SQLite，只有版本变化才重新扫描解析；启动时直接读缓存，杜绝全量文件 I/O 扫描拖慢冷启动
-- [ ] **触发条件路由**（`plugin-manifest-spec.md` + `plugin-host`）：manifest 声明命令名 / 关键字前缀 / 正则触发条件，搜索时先做路由过滤，绝不对未匹配插件发起唤起；对声明“动态参与”的插件加响应超时熔断（如 100ms 未返回则跳过本次渲染）
-- [ ] **分级隔离**（`isolate_pool.rs` + `isolated_process.rs`）：默认插件走进程内多实例池，设置 QuickJS 堆内存上限 + 执行超时，超限直接 kill 该实例；声明了网络/文件系统权限或依赖较重的插件升级为独立子进程隔离
-- [ ] **最小权限模型**：manifest 声明所需能力，主进程按声明开放对应 host function，插件默认零权限
+- [x] **元数据缓存**（`plugin-registry`）：插件 manifest 解析结果缓存进 SQLite，只有版本变化才重新扫描解析；启动时直接读缓存，杜绝全量文件 I/O 扫描拖慢冷启动
+- [x] **触发条件路由**（`plugin-manifest-spec.md` + `plugin-host`）：manifest 声明命令名 / 关键字前缀 / 正则触发条件，搜索时先做路由过滤，绝不对未匹配插件发起唤起；对声明“动态参与”的插件加响应超时熔断（如 100ms 未返回则跳过本次渲染）
+- [x] **分级隔离**（`isolate_pool.rs` + `isolated_process.rs`）：默认插件走进程内多实例池，设置 QuickJS 堆内存上限 + 执行超时，超限直接 kill 该实例；声明了网络/文件系统权限或依赖较重的插件升级为独立子进程隔离
+- [x] **最小权限模型**：manifest 声明所需能力，主进程按声明开放对应 host function，插件默认零权限
 
 **验收标准**：模拟安装 500-1000 个插件（可脚本批量生成测试 manifest），验证冷启动时间、搜索响应延迟不随安装量线性劣化，只随“实际激活数”变化
 
@@ -308,3 +308,21 @@ steward/
 - **保留：窗口隐藏策略（实测后定）**：关闭窗口回收极少——DirectX 设备与 DirectWrite 字体是平台级资源，GPUI 会话内常驻——而重建窗口使二次呼出增加 ~150 ms；默认 `CLOSE_ON_HIDE=false`（隐藏窗口，二次呼出 21 ms）。
 - **保留：查询路径**：`nucleo::Matcher` 从每次查询新建改为 `Engine` 内复用。
 - **保留：release 构建**：`[profile.release] lto="thin"`、`codegen-units=1`、`panic="abort"`、`strip=true`，二进制 26.7 MB → 17.8 MB。
+
+### 2026-08-27（Roadmap 对齐与重排）
+
+- 规划文档 `docs/roadmap.md`（2026-08-27 由仓库外迁入）按仓库现状重排为 M0–M10：M0/M1 采用仓库定义（均 DONE）；M2 合并仓库 M2 与 roadmap 原 Plugin Kernel/QuickJS Runtime，落在现有 crate（`plugin-host` / `plugin-registry` / `ipc-protocol` / `plugin-runtime`）与 `packages/extension-api`；M3 合并仓库 M3 与 roadmap 原 GPUI UI Framework；M4 沿用仓库 Windows 支持；M5 沿用仓库插件生态基础设施 v1。排序原则：插件系统（M2–M4）优先，生态基础设施（M5）其次，AI/MCP/兼容层/市场（M6–M10）最后。
+- 命名以仓库为准：插件 API 包名 `@steward/extension-api`（非 `@steward/api`）；manifest 字段遵循 `docs/plugin-manifest-spec.md`（`id/name/version/commands/permissions/isolation`，非 `capabilities/runtime/entry`）；Node 兼容在 M3 走 QuickJS 内 polyfill，Node Sidecar 仅作为 M9 兼容层（非核心）；WASM 运行时归入 M10，届时在 `[workspace.dependencies]` 引入。
+- 后续 roadmap 与本文件（及 README 里程碑）变更需保持一致；本文件仍是架构唯一 ground truth，重大决策继续在此记录。
+- 修订（同日）：AI Capability（M6）与 MCP 兼容层（M7）定位为产品核心能力，纳入正式规划而非愿景；AI Search（M8）同为 AI 能力层正式项；M9（Raycast/Vicinae 兼容）与 M10（WASM/市场）为后期扩展。
+
+### 2026-08-27（M2 插件系统 v1 落地）
+
+- 官方示例插件由 calculator 改为 calendar：内置计算器保留在 `core-engine::calc`（同步、零进程），插件端跑通端到端链路（TS -> esbuild IIFE -> QuickJS -> 启动器列表）；`packages/plugins/calculator` 删除。
+- 传输层 M2 采用 stdio NDJSON（JSON-RPC 2.0，一帧一行）：Named Pipe 分支推迟到 M4，协议帧定义收敛在 `ipc-protocol`，换传输只需改 `plugin-host` / `plugin-runtime` 两侧的 IO 层。
+- M2 最小 host function：`steward.clipboard.read/write`（arboard）与 `steward.showToast`；`network` / `fs.*` 被 manifest 识别但扫描时拒绝（"not supported in M2"）。toast 在 M2 仅打 stderr（事件已上抛），真实 toast 组件随 M3 UI 框架落地。
+- 插件视图（View）M2 仅支持 `{ type: "list", items: [...] }` 且同步返回；异步命令显式报错（M3 支持）。`item.invoke` 走插件导出的 `select(itemId)`，选中后启动器保持打开。
+- 查询代际（query generation）：每次搜索递增 gen，迟到的插件响应按 gen 丢弃，避免旧查询污染新结果。
+- 崩溃恢复：共享池 / 专用进程崩溃后按指数退避（500ms 起、封顶 30s）重启并重载插件；隔离实例超时 / 超堆后 kill，下次调用按需重建。
+- 开发期环境变量：`STEWARD_PLUGINS_DIR` 覆盖插件根目录（如指向仓库 `packages/plugins`），`STEWARD_PLUGIN_RUNTIME_BIN` 覆盖运行时二进制路径。
+- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（114 项）全绿；`pnpm lint` / `pnpm typecheck` / `pnpm build` 全绿。

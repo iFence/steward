@@ -6,14 +6,14 @@
 
 ```json
 {
-  "id": "com.example.calculator",
-  "name": "Calculator",
+  "id": "com.example.calendar",
+  "name": "Calendar",
   "version": "1.0.0",
   "commands": [
     {
-      "name": "calculate",
-      "title": "Calculator",
-      "trigger": { "type": "prefix", "value": "=" }
+      "name": "calendar",
+      "title": "Calendar",
+      "trigger": { "type": "command" }
     }
   ],
   "permissions": ["clipboard.write"],
