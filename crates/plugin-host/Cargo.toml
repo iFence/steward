@@ -4,3 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+steward-ipc-protocol = { path = "../ipc-protocol" }
+steward-plugin-registry = { path = "../plugin-registry" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+regex.workspace = true
+crossbeam-channel.workspace = true

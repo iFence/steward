@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
 
-pub use manifest::{ManifestError, Permission, PluginManifest};
+pub use manifest::{
+    Isolation, ManifestError, Permission, PluginCommand, PluginManifest, Trigger, TriggerType,
+};
 
 /// On-disk database file name inside the Steward data directory.
 const DB_FILE: &str = "plugins.db";
