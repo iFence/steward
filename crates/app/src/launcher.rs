@@ -293,10 +293,7 @@ impl LauncherState {
             let Some(view) = view else {
                 continue;
             };
-            if view["type"] != "list" {
-                continue;
-            }
-            let Some(items) = view["items"].as_array() else {
+            let Some(items) = plugin_view_items(view) else {
                 continue;
             };
             for item in items {
@@ -321,6 +318,45 @@ impl LauncherState {
             }
         }
         rows
+    }
+}
+
+/// Extract the list items from a plugin command result. The runtime wraps the
+/// view in `{ "view": ... }` (see `command.invoke` in the service loop), so
+/// both the wrapped response and a bare view are accepted.
+fn plugin_view_items(view: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    let view = view.get("view").unwrap_or(view);
+    if view.get("type").and_then(|kind| kind.as_str()) != Some("list") {
+        return None;
+    }
+    view.get("items").and_then(|items| items.as_array())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_view_items_unwraps_response_envelope() {
+        let wrapped = serde_json::json!({
+            "view": {
+                "type": "list",
+                "items": [{ "id": "a", "title": "Alpha", "subtitle": "first" }]
+            }
+        });
+        let items = plugin_view_items(&wrapped).expect("wrapped list view");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "a");
+
+        // A bare view (no envelope) is tolerated too.
+        let bare = serde_json::json!({ "type": "list", "items": [] });
+        assert_eq!(plugin_view_items(&bare).map(|items| items.len()), Some(0));
+
+        // Non-list views and missing envelopes yield no rows.
+        let not_list = serde_json::json!({ "view": { "type": "detail" } });
+        assert!(plugin_view_items(&not_list).is_none());
+        let missing = serde_json::json!({ "view": {} });
+        assert!(plugin_view_items(&missing).is_none());
     }
 }
 
