@@ -16,7 +16,8 @@
 > `{ type: "calendar", year, month, today, startOfWeek?, selected? }`，且同步
 > 返回；插件通过导出 `command(name, input)` 与 `select(itemId)` 暴露能力，
 > 宿主读取 `globalThis.__stewardPlugin`。日历视图在启动器中渲染为月历网格，
-> 方向键移动选中日、回车/点击把日期交给 `select`。
+> 方向键移动选中日、回车/点击把日期交给 `select`。日历左侧的周数列
+> （`W` 前缀，ISO 8601）为纯展示，不改变视图契约。
 
 ## M3 扩展
 | API | 说明 |
