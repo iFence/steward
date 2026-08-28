@@ -247,10 +247,9 @@ pub(crate) fn spawn_event_poll_task(
                             // switched to another window. The cursor guard
                             // exempts IME candidate windows, which take the
                             // foreground while the user is still typing into
-                            // the launcher; a pinned calendar is exempt too.
-                            let pinned = state.borrow().calendar_pinned;
-                            if foreground != hwnd && !platform::cursor_hits_window(hwnd) && !pinned
-                            {
+                            // the launcher. Detached plugin-view windows are
+                            // independent and are never hidden here.
+                            if foreground != hwnd && !platform::cursor_hits_window(hwnd) {
                                 if let Some(handle) = state.borrow().window {
                                     let _ =
                                         handle.update(cx, |_, window, cx| hide_window(window, cx));

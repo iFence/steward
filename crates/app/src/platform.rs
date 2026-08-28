@@ -22,9 +22,11 @@ mod windows {
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
         UI::WindowsAndMessaging::{
-            GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowRect,
-            GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, SetWindowPos,
-            ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+            GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow,
+            GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+            SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE,
+            HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SW_HIDE, SW_SHOW, WS_THICKFRAME,
         },
     };
 
@@ -123,6 +125,29 @@ mod windows {
 
     pub fn is_visible(window: &Window) -> bool {
         hwnd(window).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd) != 0 })
+    }
+
+    /// Make a borderless PopUp window user-resizable. GPUI's `WindowKind::PopUp`
+    /// branch does not add `WS_THICKFRAME` even when `WindowOptions::is_resizable`
+    /// is set, so the OS never opens a resize loop; add the style after creation
+    /// and re-frame so the edges become draggable.
+    pub fn make_resizable(window: &Window) {
+        let Some(hwnd) = hwnd(window) else {
+            return;
+        };
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+            SetWindowLongPtrW(hwnd, GWL_STYLE, (style | WS_THICKFRAME) as isize);
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
     }
 
     /// HWND-based visibility check, safe to call from the event-poll thread
@@ -562,6 +587,9 @@ mod stub {
     /// Native titlebar dark-mode forcing is Windows-only; other platforms
     /// already follow the app theme.
     pub fn force_dark_titlebar(_window: &Window) {}
+
+    /// Other platforms apply `is_resizable: true` natively; no style patch.
+    pub fn make_resizable(_window: &Window) {}
 
     pub fn caret_blink_period() -> Duration {
         Duration::from_millis(1060)

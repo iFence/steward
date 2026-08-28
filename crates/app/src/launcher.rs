@@ -12,7 +12,7 @@ use std::{
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::GlobalHotKeyManager;
 use gpui::{
-    div, point, prelude::*, px, rgb, size, Animation, AnimationExt, AnyElement, App, Bounds,
+    div, point, prelude::*, px, rgb, size, svg, Animation, AnimationExt, AnyElement, App, Bounds,
     ClipboardItem, DispatchPhase, Div, Element, ElementId, ElementInputHandler, EntityInputHandler,
     FocusHandle, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, KeyDownEvent,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Subscription,
@@ -22,7 +22,7 @@ use gpui_component::ActiveTheme;
 use steward_plugin_host::{PluginHost, RouteHit};
 use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
 use steward_ui_components::{
-    days_in_month, iso_date, CalendarData, CalendarView, ResultItem, ResultList, ToggleCalendarPin,
+    days_in_month, iso_date, CalendarData, CalendarView, ResultItem, ResultList,
     CALENDAR_GRID_HEIGHT,
 };
 
@@ -44,6 +44,10 @@ const GLYPH_WIDTH: f32 = 9.0;
 /// The query text's left edge, in window coordinates: the launcher's left
 /// drag-strip margin plus the input row's `px_3` padding.
 const INPUT_TEXT_X: f32 = LAUNCHER_MARGIN + 12.0;
+
+/// Lucide `external-link` icon (24x24, stroke 2, `currentColor`), used by the
+/// generic "pop out a plugin view" control shown on detachable list panels.
+const POP_OUT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>"#;
 
 /// Height of the results drop-down for `count` visible rows, capped at
 /// `MAX_RESULT_ROWS` so the window stops growing once the list scrolls.
@@ -71,6 +75,12 @@ fn calendar_height() -> f32 {
 pub(crate) struct ActiveCalendar {
     pub data: CalendarData,
     pub plugin_id: String,
+    /// The command that produced this view (routing key for the detach
+    /// registry, so re-opening a detached window reuses the same key).
+    pub command: String,
+    /// Whether the command declared `detachable` (controls the detach/dock
+    /// affordance shown in the calendar header).
+    pub detachable: bool,
 }
 
 pub(crate) struct StewardApp {
@@ -101,6 +111,11 @@ pub(crate) struct StewardApp {
     /// Result count is published here so the tray/hotkey path can size the
     /// window when it is summoned.
     pub(crate) state: Rc<RefCell<LauncherState>>,
+    /// The unique detachable `list` plugin view currently displayed, if any
+    /// (`(plugin_id, command)`). Drives the launcher's "pop out" button; only
+    /// set when the active query has exactly one detachable list panel so the
+    /// target is unambiguous.
+    pub(crate) detachable_list_target: Option<(String, String)>,
     /// Keeps the window-activation observer alive for the view's lifetime.
     pub(crate) _activation_subscription: Subscription,
     /// Whether a left-button drag is actively extending a text selection in
@@ -144,6 +159,10 @@ pub(crate) struct LauncherState {
     /// `None` entries mark paths whose icon could not be extracted. Shared so
     /// a recreated window keeps its icons.
     pub(crate) icon_cache: RefCell<HashMap<std::path::PathBuf, Option<Arc<gpui::Image>>>>,
+    /// Plugin row icons (inline SVG from the manifest cache, wrapped as
+    /// `gpui::Image`), keyed by plugin id. Refreshed at startup and after
+    /// every plugin scan, so plugin rows render an icon like app rows.
+    pub(crate) plugin_icons: RefCell<HashMap<String, Option<Arc<gpui::Image>>>>,
     /// Generation counter for background icon batches: bumped on every search
     /// so a finished extraction that predates a newer query only fills the
     /// cache instead of re-running the (stale) search.
@@ -173,11 +192,11 @@ pub(crate) struct LauncherState {
     /// The active calendar view (from the first calendar-typed plugin view of
     /// the current query), if any.
     pub(crate) plugin_calendar: RefCell<Option<ActiveCalendar>>,
-    /// Whether the calendar view is pinned open: when set, losing window
-    /// activation no longer hides the launcher (see the activation observer
-    /// in `window.rs`). Reset when the calendar view goes away or the window
-    /// is dismissed.
-    pub(crate) calendar_pinned: bool,
+    /// Open plugin-view windows, keyed by `(plugin_id, command)`. Each entry
+    /// is an independent PopUp that lives outside the launcher (never toggled
+    /// by the summon hotkey and never hidden on launcher blur). Generic: any
+    /// command whose manifest sets `detachable` can pop a view here.
+    pub(crate) panel_view_windows: RefCell<HashMap<(String, String), gpui::AnyWindowHandle>>,
     /// Logical launcher height last requested from a resize, so `search` can
     /// skip redundant resize calls when the result-count-driven height has not
     /// changed (e.g. every IME composition update).
@@ -199,11 +218,50 @@ impl LauncherState {
     /// Total launcher window height for the current result count: the input
     /// bar plus the result drop-down.
     pub(crate) fn height(&self) -> f32 {
-        if self.plugin_calendar.borrow().is_some() {
+        if self.plugin_calendar.borrow().is_some() && !self.is_active_panel_detached() {
             calendar_height()
         } else {
             launcher_height(self.result_count)
         }
+    }
+
+    /// Whether a plugin view is currently popped out into its own window.
+    pub(crate) fn plugin_window_open(&self, plugin_id: &str, command: &str) -> bool {
+        self.panel_view_windows
+            .borrow()
+            .contains_key(&(plugin_id.to_string(), command.to_string()))
+    }
+
+    /// The open detached window handle for a plugin view, if any.
+    pub(crate) fn plugin_window(
+        &self,
+        plugin_id: &str,
+        command: &str,
+    ) -> Option<gpui::AnyWindowHandle> {
+        self.panel_view_windows
+            .borrow()
+            .get(&(plugin_id.to_string(), command.to_string()))
+            .cloned()
+    }
+
+    /// Whether the active calendar panel is detached into its own window.
+    pub(crate) fn is_active_panel_detached(&self) -> bool {
+        self.plugin_calendar
+            .borrow()
+            .as_ref()
+            .is_some_and(|active| self.plugin_window_open(&active.plugin_id, &active.command))
+    }
+
+    /// The raw plugin `view` for a given `(plugin_id, command)` hit, if its
+    /// response has landed for the current query. Used to hand the view to a
+    /// detached window host.
+    pub(crate) fn plugin_view(&self, plugin_id: &str, command: &str) -> Option<serde_json::Value> {
+        let hits = self.plugin_hits.borrow();
+        let views = self.plugin_views.borrow();
+        hits.iter()
+            .zip(views.iter())
+            .find(|(hit, _)| hit.plugin_id == plugin_id && hit.command == command)
+            .and_then(|(_, view)| view.clone())
     }
 
     /// Seed the search index from the SQLite cache and, when the cache is
@@ -264,6 +322,7 @@ impl LauncherState {
             .cached_plugins()
             .unwrap_or_default();
         if !cached.is_empty() {
+            self.refresh_plugin_icons(&cached);
             if let Err(error) = self.plugin_host.borrow_mut().set_plugins(&cached) {
                 eprintln!("failed to start the plugin runtime: {error:#}");
             }
@@ -301,6 +360,7 @@ impl LauncherState {
         };
         match rx.try_recv() {
             Ok((report, metas)) => {
+                self.refresh_plugin_icons(&metas);
                 if let Err(error) = self.plugin_host.borrow_mut().set_plugins(&metas) {
                     eprintln!("failed to load plugins after scan: {error:#}");
                 }
@@ -316,23 +376,59 @@ impl LauncherState {
         }
     }
 
-    /// Build the `ResultItem::Plugin` rows from the current query's plugin
-    /// hits and the views that have answered so far. Views arrive
-    /// asynchronously; this is called on every merge.
-    pub(crate) fn plugin_rows(&self) -> Vec<ResultItem> {
+    /// Rebuild the plugin icon map from the current plugin set. Each manifest
+    /// icon is an inline SVG document, wrapped as `ImageFormat::Svg` so the
+    /// results list renders it through the same `img()` path as app icons.
+    pub(crate) fn refresh_plugin_icons(&self, metas: &[PluginMeta]) {
+        let mut icons = HashMap::with_capacity(metas.len());
+        for meta in metas {
+            icons.insert(
+                meta.manifest.id.clone(),
+                meta.icon.as_ref().map(|svg| {
+                    Arc::new(gpui::Image::from_bytes(
+                        gpui::ImageFormat::Svg,
+                        svg.as_bytes().to_vec(),
+                    ))
+                }),
+            );
+        }
+        *self.plugin_icons.borrow_mut() = icons;
+    }
+
+    /// Build the rows for the current query's plugin views: a `Plugin` row per
+    /// list item, plus one `Calendar` row per calendar-typed view (the grid is
+    /// only revealed after the user confirms that row, mirroring how apps are
+    /// launched). Views arrive asynchronously; this is called on every merge.
+    /// `command_label` is the localized "Command" tag shown on calendar rows.
+    pub(crate) fn plugin_rows_and_calendar_rows(
+        &self,
+        command_label: &str,
+    ) -> (Vec<ResultItem>, Vec<ResultItem>) {
         let hits = self.plugin_hits.borrow();
         let views = self.plugin_views.borrow();
         let mut rows = Vec::new();
+        let mut calendars = Vec::new();
         for (hit, view) in hits.iter().zip(views.iter()) {
             let Some(view) = view else {
                 continue;
             };
             let Some(items) = plugin_view_items(view) else {
+                // Not a list view: a calendar view contributes a confirmable
+                // row instead of auto-replacing the results list.
+                if parse_calendar_view(view, &hit.plugin_id, &hit.command, hit.detachable).is_some()
+                {
+                    calendars.push(ResultItem::Calendar {
+                        plugin_id: hit.plugin_id.clone(),
+                        command: hit.command.clone(),
+                        title: hit.title.clone(),
+                        subtitle: command_label.to_string(),
+                    });
+                }
                 continue;
             };
             for item in items {
                 if rows.len() >= MAX_PLUGIN_ROWS {
-                    return rows;
+                    return (rows, calendars);
                 }
                 let Some(item_id) = item["id"].as_str() else {
                     continue;
@@ -351,31 +447,14 @@ impl LauncherState {
                 });
             }
         }
-        rows
-    }
-
-    /// Extract the active calendar view from the current query's plugin views
-    /// (the first `calendar`-typed response). Returns `None` when no plugin
-    /// answered with a calendar view yet.
-    pub(crate) fn extract_calendar(&self) -> Option<ActiveCalendar> {
-        let hits = self.plugin_hits.borrow();
-        let views = self.plugin_views.borrow();
-        for (hit, view) in hits.iter().zip(views.iter()) {
-            let Some(view) = view else {
-                continue;
-            };
-            if let Some(active) = parse_calendar_view(view, &hit.plugin_id) {
-                return Some(active);
-            }
-        }
-        None
+        (rows, calendars)
     }
 }
 
 /// Extract the list items from a plugin command result. The runtime wraps the
 /// view in `{ "view": ... }` (see `command.invoke` in the service loop), so
 /// both the wrapped response and a bare view are accepted.
-fn plugin_view_items(view: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+pub(crate) fn plugin_view_items(view: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
     let view = view.get("view").unwrap_or(view);
     if view.get("type").and_then(|kind| kind.as_str()) != Some("list") {
         return None;
@@ -384,7 +463,12 @@ fn plugin_view_items(view: &serde_json::Value) -> Option<&Vec<serde_json::Value>
 }
 
 /// Parse a plugin `calendar` view (wrapped or bare) into the display data.
-fn parse_calendar_view(view: &serde_json::Value, plugin_id: &str) -> Option<ActiveCalendar> {
+pub(crate) fn parse_calendar_view(
+    view: &serde_json::Value,
+    plugin_id: &str,
+    command: &str,
+    detachable: bool,
+) -> Option<ActiveCalendar> {
     let view = view.get("view").unwrap_or(view);
     if view.get("type").and_then(|kind| kind.as_str()) != Some("calendar") {
         return None;
@@ -410,11 +494,13 @@ fn parse_calendar_view(view: &serde_json::Value, plugin_id: &str) -> Option<Acti
             start_of_week: start_of_week % 7,
         },
         plugin_id: plugin_id.to_string(),
+        command: command.to_string(),
+        detachable,
     })
 }
 
 /// Parse `YYYY-MM-DD` into `(year, month, day)`.
-fn parse_iso_date(iso: &str) -> Option<(i32, u32, u32)> {
+pub(crate) fn parse_iso_date(iso: &str) -> Option<(i32, u32, u32)> {
     let bytes = iso.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return None;
@@ -435,7 +521,7 @@ fn parse_iso_date(iso: &str) -> Option<(i32, u32, u32)> {
 
 /// Localized month label for the calendar header, e.g. "August 2026" or
 /// "2026 年 8 月".
-fn calendar_month_label(language: &str, year: i32, month: u32) -> String {
+pub(crate) fn calendar_month_label(language: &str, year: i32, month: u32) -> String {
     if language.starts_with("zh") {
         format!("{year} 年 {month} 月")
     } else {
@@ -463,7 +549,7 @@ fn calendar_month_label(language: &str, year: i32, month: u32) -> String {
 
 /// Localized weekday labels ordered from `start_of_week` (0 = Sunday-first,
 /// 1 = Monday-first).
-fn calendar_weekday_labels(language: &str, start_of_week: u8) -> [String; 7] {
+pub(crate) fn calendar_weekday_labels(language: &str, start_of_week: u8) -> [String; 7] {
     // Canonical Sunday-first order; rotated by `start_of_week` below.
     let base: [&str; 7] = if language.starts_with("zh") {
         ["日", "一", "二", "三", "四", "五", "六"]
@@ -772,31 +858,16 @@ impl gpui::Render for StewardApp {
         let _ = window;
 
         let result_count = self.results.visible_count(cx);
-        let calendar_active = self.state.borrow().plugin_calendar.borrow().is_some();
+        let state = self.state.borrow();
+        let calendar_active =
+            state.plugin_calendar.borrow().is_some() && !state.is_active_panel_detached();
         let primary = cx.theme().primary;
         let root = div()
             .track_focus(&self.focus_handle)
             .on_action({
-                // Esc dismisses the launcher and clears any pinned calendar.
-                let state = self.state.clone();
-                move |_: &HideWindow, window, cx| {
-                    state.borrow_mut().calendar_pinned = false;
-                    hide_window(window, cx);
-                }
-            })
-            .on_action({
-                // Pin toggle from the calendar header: flip the shared state
-                // and push the pinned state back into the calendar view.
-                let state = self.state.clone();
-                let calendar = self.calendar.clone();
-                move |_: &ToggleCalendarPin, _window, cx| {
-                    let pinned = {
-                        let mut state = state.borrow_mut();
-                        state.calendar_pinned = !state.calendar_pinned;
-                        state.calendar_pinned
-                    };
-                    calendar.set_pinned(pinned, cx);
-                }
+                // Esc dismisses the launcher. Detached plugin-view windows are
+                // independent and remain open.
+                move |_: &HideWindow, window, cx| hide_window(window, cx)
             })
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
@@ -833,23 +904,31 @@ impl gpui::Render for StewardApp {
                             .px_3()
                             .cursor_text()
                             .child(
-                                if self.input.query.is_empty() && self.input.marked.is_none() {
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .child(cursor(primary))
-                                        .child(
+                                div()
+                                    .flex_1()
+                                    .child(
+                                        if self.input.query.is_empty() && self.input.marked.is_none()
+                                        {
                                             div()
-                                                .text_color(rgb(
-                                                    steward_ui_components::palette::MUTED_FOREGROUND,
-                                                ))
-                                                .child(self.i18n.translate("search-placeholder")),
-                                        )
-                                } else {
-                                    self.render_query_text(primary)
-                                },
-                            ),
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .child(cursor(primary))
+                                                .child(
+                                                    div()
+                                                        .text_color(rgb(
+                                                            steward_ui_components::palette::MUTED_FOREGROUND,
+                                                        ))
+                                                        .child(self.i18n.translate(
+                                                            "search-placeholder",
+                                                        )),
+                                                )
+                                        } else {
+                                            self.render_query_text(primary)
+                                        },
+                                    ),
+                            )
+                            .child(self.detach_control(cx)),
                     )
                     .child(drag_strip().w(px(LAUNCHER_MARGIN))),
             )
@@ -897,6 +976,55 @@ impl gpui::Render for StewardApp {
 }
 
 impl StewardApp {
+    /// The launcher's generic "pop out" control for the currently displayed
+    /// detachable `list` plugin view. Rendered only when [`Self::detachable_list_target`]
+    /// is set (exactly one detachable list panel), so the target is
+    /// unambiguous; clicking opens the view in its own independent window.
+    fn detach_control(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        let Some(target) = self.detachable_list_target.clone() else {
+            return div().into_any_element();
+        };
+        let target_for_cb = target.clone();
+        div()
+            .id(ElementId::from("detach-list-control"))
+            .flex()
+            .items_center()
+            .justify_center()
+            .h(px(22.0))
+            .px_2()
+            .rounded_full()
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgb(0xffffff).opacity(0.08))
+            .hover(|style| style.bg(rgb(steward_ui_components::palette::HOVER).opacity(0.05)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let state = this.state.clone();
+                let i18n = this.i18n.clone();
+                let view = state
+                    .borrow()
+                    .plugin_view(&target_for_cb.0, &target_for_cb.1);
+                if let Some(view) = view {
+                    let _ = crate::plugin_panel_window::open_plugin_panel(
+                        &state,
+                        i18n,
+                        target_for_cb.0.clone(),
+                        target_for_cb.1.clone(),
+                        view,
+                        true,
+                        cx,
+                    );
+                }
+            }))
+            .child(
+                svg()
+                    .data(POP_OUT_ICON_SVG)
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND)),
+            )
+            .into_any_element()
+    }
+
     /// Render the query text: leading text, the active IME composition
     /// (underlined), the active text selection (washed), the caret and the
     /// trailing text.
@@ -1057,10 +1185,18 @@ impl StewardApp {
             }
         }
 
-        // A plugin calendar view owns the arrow keys and Enter: navigate the
-        // selected day or confirm (copy) it. Typing still edits the query,
-        // which returns the launcher to list mode until the next view lands.
-        if self.state.borrow().plugin_calendar.borrow().is_some() {
+        // A plugin calendar view owns the arrow keys and Enter while it is
+        // shown inline (not popped out): navigate the selected day or confirm
+        // (copy) it. Typing still edits the query, which returns the launcher
+        // to list mode until the next view lands. When the calendar is
+        // detached, the launcher instead owns the results-list keys.
+        let (calendar_active, calendar_detached) = {
+            let state = self.state.borrow();
+            let active = state.plugin_calendar.borrow().is_some();
+            let detached = state.is_active_panel_detached();
+            (active, detached)
+        };
+        if calendar_active && !calendar_detached {
             match keystroke.key.as_str() {
                 "up" | "down" | "left" | "right" => {
                     let delta = match keystroke.key.as_str() {
@@ -1294,14 +1430,83 @@ impl StewardApp {
     /// matches, push the merged list to the results view and resize the
     /// window. Used by `search` and by the poll task when a plugin view lands.
     fn render_merged(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        let plugin_rows = self.state.borrow().plugin_rows();
-        let active_calendar = self.state.borrow().extract_calendar();
-        *self.state.borrow().plugin_calendar.borrow_mut() = active_calendar.clone();
-        if let Some(active) = &active_calendar {
+        // The displayed calendar survives only while the current query still
+        // yields its view: a new search resets `plugin_views` to `None`, so
+        // the grid falls back to the row-based list.
+        let active_calendar = {
+            let state = self.state.borrow();
+            let current = state.plugin_calendar.borrow().clone();
+            match current {
+                Some(active) => {
+                    let hits = state.plugin_hits.borrow();
+                    let views = state.plugin_views.borrow();
+                    let still_active = hits.iter().zip(views.iter()).any(|(hit, view)| {
+                        hit.plugin_id == active.plugin_id
+                            && view.as_ref().is_some_and(|view| {
+                                parse_calendar_view(
+                                    view,
+                                    &hit.plugin_id,
+                                    &hit.command,
+                                    hit.detachable,
+                                )
+                                .is_some()
+                            })
+                    });
+                    if still_active {
+                        Some(active)
+                    } else {
+                        // The view for this command is gone from the current
+                        // query: drop it so a later `calendar` starts fresh.
+                        *state.plugin_calendar.borrow_mut() = None;
+                        None
+                    }
+                }
+                None => None,
+            }
+        };
+        // Whether the (still-active) calendar has been popped out into its own
+        // window: while it is detached the launcher shows the command row, not
+        // the grid, and keeps the data so docking it back can restore the grid.
+        let detached = active_calendar.as_ref().is_some_and(|active| {
+            self.state
+                .borrow()
+                .plugin_window_open(&active.plugin_id, &active.command)
+        });
+        let show_calendar_grid = active_calendar.is_some() && !detached;
+        let (plugin_rows, calendar_rows) = self
+            .state
+            .borrow()
+            .plugin_rows_and_calendar_rows(&self.i18n.translate("command"));
+        // Resolve the single detachable list panel (if any) for the launcher's
+        // generic "pop out" control. Ambiguous (two or more) detachable list
+        // views suppress the control rather than guessing.
+        self.detachable_list_target = {
+            let state = self.state.borrow();
+            let hits = state.plugin_hits.borrow();
+            let views = state.plugin_views.borrow();
+            let mut target = None;
+            for (hit, view) in hits.iter().zip(views.iter()) {
+                if hit.detachable
+                    && view
+                        .as_ref()
+                        .is_some_and(|view| plugin_view_items(view).is_some())
+                {
+                    if target.is_some() {
+                        target = None;
+                        break;
+                    }
+                    target = Some((hit.plugin_id.clone(), hit.command.clone()));
+                }
+            }
+            target
+        };
+        if show_calendar_grid {
             // A calendar view replaces the results list: push the month grid's
             // data, localized labels and selection into the calendar widget.
+            let active = active_calendar
+                .as_ref()
+                .expect("show_calendar_grid implies Some");
             let language = self.i18n.language();
-            let pinned = self.state.borrow().calendar_pinned;
             self.calendar_selected = active.data.selected.clone();
             self.calendar.set_data(
                 active.data.clone(),
@@ -1310,28 +1515,47 @@ impl StewardApp {
                 active.data.selected.clone(),
                 cx,
             );
-            self.calendar.set_pinned(pinned, cx);
-        } else {
-            // The calendar view went away (query changed): clear any pin so a
-            // later calendar starts unpinned.
-            self.state.borrow_mut().calendar_pinned = false;
+            // Only a manifest-detachable command shows the detach control, and
+            // inline (not popped out) it always renders in the unpinned state.
+            self.calendar.set_detachable(active.detachable, cx);
+            self.calendar.set_pinned(false, cx);
         }
-        let plugin_count = plugin_rows.len();
+        let plugin_count = plugin_rows.len() + calendar_rows.len();
         let builtin_count = self.builtin_count;
+        // Icons for the plugin / calendar rows, resolved by plugin id from the
+        // manifest cache, so they look like app rows.
+        let plugin_icons = {
+            let state = self.state.borrow();
+            plugin_rows
+                .iter()
+                .chain(calendar_rows.iter())
+                .map(|row| match row {
+                    ResultItem::Plugin { plugin_id, .. }
+                    | ResultItem::Calendar { plugin_id, .. } => state
+                        .plugin_icons
+                        .borrow()
+                        .get(plugin_id)
+                        .cloned()
+                        .flatten(),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
         let mut items = Vec::with_capacity(self.base_items.len() + plugin_count);
         items.extend_from_slice(&self.base_items[..builtin_count]);
         items.extend(plugin_rows);
+        items.extend(calendar_rows);
         items.extend_from_slice(&self.base_items[builtin_count..]);
         let mut icons = Vec::with_capacity(self.base_icons.len() + plugin_count);
         icons.extend_from_slice(&self.base_icons[..builtin_count]);
-        icons.extend(std::iter::repeat_n(None, plugin_count));
+        icons.extend(plugin_icons);
         icons.extend_from_slice(&self.base_icons[builtin_count..]);
 
         *self.last_results.borrow_mut() = items.clone();
         self.results.set_results(items, icons, cx);
 
         let count = self.results.visible_count(cx);
-        let height = if active_calendar.is_some() {
+        let height = if show_calendar_grid {
             calendar_height()
         } else {
             launcher_height(count)
@@ -1494,9 +1718,11 @@ mod tests {
                 "selected": "2026-08-27"
             }
         });
-        let calendar =
-            parse_calendar_view(&wrapped, "com.example.calendar").expect("calendar view");
+        let calendar = parse_calendar_view(&wrapped, "com.example.calendar", "calendar", true)
+            .expect("calendar view");
         assert_eq!(calendar.plugin_id, "com.example.calendar");
+        assert_eq!(calendar.command, "calendar");
+        assert!(calendar.detachable);
         assert_eq!(calendar.data.year, 2026);
         assert_eq!(calendar.data.month, 8);
         assert_eq!(calendar.data.today, "2026-08-27");
@@ -1509,7 +1735,9 @@ mod tests {
             "month": 13,
             "today": "2026-01-01"
         });
-        let calendar = parse_calendar_view(&bare, "com.example.calendar").unwrap();
+        let calendar =
+            parse_calendar_view(&bare, "com.example.calendar", "calendar", false).unwrap();
+        assert!(!calendar.detachable);
         assert_eq!(calendar.data.month, 12, "month clamps to 1..=12");
         assert_eq!(
             calendar.data.selected, "2026-01-01",
@@ -1521,13 +1749,20 @@ mod tests {
         );
 
         // Non-calendar and malformed views yield no calendar.
-        assert!(
-            parse_calendar_view(&serde_json::json!({ "view": { "type": "list" } }), "p").is_none()
-        );
-        assert!(
-            parse_calendar_view(&serde_json::json!({ "view": { "type": "calendar" } }), "p")
-                .is_none()
-        );
+        assert!(parse_calendar_view(
+            &serde_json::json!({ "view": { "type": "list" } }),
+            "p",
+            "list",
+            false
+        )
+        .is_none());
+        assert!(parse_calendar_view(
+            &serde_json::json!({ "view": { "type": "calendar" } }),
+            "p",
+            "calendar",
+            false
+        )
+        .is_none());
     }
 
     #[test]

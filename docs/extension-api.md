@@ -33,3 +33,5 @@
 - 插件产物是 esbuild 打包的单文件 JS（IIFE + `--global-name=__stewardPlugin`），不依赖 Node API。
 - M3 起提供 20-30 个常用 Node 内置模块 polyfill（fs、path、buffer、http 等），不支持 native binding。
 - 默认零权限：需要的能力在 manifest `permissions` 中声明。
+- manifest 可选的 `icon` 字段是内联 SVG 文档；宿主会把它缓存并在启动器结果行中
+  与应用图标一样渲染（未声明时插件行不显示图标）。

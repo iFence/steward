@@ -55,6 +55,15 @@ pub enum ResultItem {
         title: String,
         subtitle: String,
     },
+    /// A plugin command row whose confirmed view is a calendar: confirming
+    /// reveals the month grid (the app owns the view) and keeps the launcher
+    /// open. Rendered like a plugin row, with the plugin's icon when present.
+    Calendar {
+        plugin_id: String,
+        command: String,
+        title: String,
+        subtitle: String,
+    },
 }
 
 /// Design (96-DPI) geometry of a result row, in logical pixels. GPUI scales
@@ -153,6 +162,7 @@ fn render_row(
         ResultItem::Action { .. } => ElementId::from(format!("result-action-{index}")),
         ResultItem::Link { .. } => ElementId::from(format!("result-link-{index}")),
         ResultItem::Plugin { .. } => ElementId::from(format!("result-plugin-{index}")),
+        ResultItem::Calendar { .. } => ElementId::from(format!("result-calendar-{index}")),
     };
     let row = div()
         .id(id)
@@ -246,12 +256,49 @@ fn render_row(
                     .text_size(px(11.0))
                     .child(command_label.to_owned()),
             ),
-        // A plugin row mirrors the action-row layout: item title on the left,
-        // its subtitle on the right. M2 renders no icon; selection dispatches
-        // `item.invoke` to the plugin and keeps the launcher open.
+        // A plugin row mirrors the app-row layout: the manifest's SVG icon
+        // (when declared), item title on the left, its subtitle on the right.
+        // Confirming dispatches `item.invoke` to the plugin and keeps the
+        // launcher open.
         ResultItem::Plugin {
             title, subtitle, ..
         } => row
+            .when_some(icon, |this, icon| {
+                this.child(
+                    img(ImageSource::Image(icon))
+                        .w(px(DESIGN_ICON_SIZE))
+                        .h(px(DESIGN_ICON_SIZE)),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::FOREGROUND))
+                    .text_sm()
+                    .child(title.to_owned()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_size(px(11.0))
+                    .child(subtitle.to_owned()),
+            ),
+        // A calendar row mirrors the plugin row: the plugin's icon, the
+        // command title on the left and the "Command" tag on the right.
+        // Confirming reveals the calendar grid (see the app's `on_confirm`).
+        ResultItem::Calendar {
+            title, subtitle, ..
+        } => row
+            .when_some(icon, |this, icon| {
+                this.child(
+                    img(ImageSource::Image(icon))
+                        .w(px(DESIGN_ICON_SIZE))
+                        .h(px(DESIGN_ICON_SIZE)),
+                )
+            })
             .child(
                 div()
                     .flex_1()

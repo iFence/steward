@@ -9,8 +9,8 @@ use gpui::{
     WindowKind, WindowOptions,
 };
 use steward_ui_components::{
-    init_components, CalendarSelectCallback, CalendarView, ResultItem, ResultList,
-    ResultListDelegate,
+    init_components, CalendarSelectCallback, CalendarView, PinToggleCallback, ResultItem,
+    ResultList, ResultListDelegate,
 };
 
 use crate::config::{
@@ -62,7 +62,11 @@ pub(crate) fn init_ui_common(cx: &mut App, state: &Rc<RefCell<LauncherState>>) -
     // by window id so settings-window close events don't clear the launcher
     // handle.
     let closed_state = state.clone();
-    cx.on_window_closed(move |_cx, window_id| {
+    cx.on_window_closed(move |cx, window_id| {
+        // A detached plugin-view window was closed (Esc / close button / test):
+        // drop it from the registry and re-render the launcher so the view
+        // reappears inline.
+        crate::plugin_panel_window::panel_window_closed(&closed_state, window_id, cx);
         let launcher_id = closed_state.borrow().window.as_ref().map(|h| h.window_id());
         if launcher_id == Some(window_id) {
             closed_state.borrow_mut().window = None;
@@ -153,6 +157,24 @@ pub(crate) fn open_launcher_window(
                     }
                 }
             });
+            // Pin/detach the calendar: in the inline grid, the (unpinned)
+            // control flips the shared state to "popped out" and opens the
+            // independent window. A direct callback (same pattern as day
+            // clicks) instead of an action dispatch: `App::dispatch_action`
+            // routes through the platform's active window, which is unreliable
+            // for a PopUp launcher.
+            let pin_state = state.clone();
+            let pin_i18n = i18n.clone();
+            let on_toggle_pin: PinToggleCallback = Rc::new(move |pinned: bool, cx: &mut App| {
+                if pinned {
+                    crate::plugin_panel_window::open_plugin_panel_window(
+                        &pin_state,
+                        pin_i18n.clone(),
+                        cx,
+                    );
+                }
+            });
+            let confirm_state = state.clone();
             let on_confirm = move |index: usize, cx: &mut App| -> bool {
                 let item = results_for_cb.borrow().get(index).cloned();
                 match item {
@@ -192,6 +214,75 @@ pub(crate) fn open_launcher_window(
                         }
                         false
                     }
+                    // A calendar command row: reveal the stored calendar view
+                    // (the grid replaces the results list) without leaving the
+                    // launcher. The view must already have landed; a query
+                    // change hides the grid again via `render_merged`.
+                    Some(ResultItem::Calendar {
+                        plugin_id, command, ..
+                    }) => {
+                        let (hit, view) = {
+                            let state = confirm_state.borrow();
+                            let hits = state.plugin_hits.borrow();
+                            let views = state.plugin_views.borrow();
+                            let Some((hit, view)) =
+                                hits.iter().zip(views.iter()).find(|(hit, _)| {
+                                    hit.plugin_id == plugin_id && hit.command == command
+                                })
+                            else {
+                                return false;
+                            };
+                            (hit.clone(), view.clone())
+                        };
+                        let Some(view) = view else {
+                            return false;
+                        };
+                        // If the calendar is already popped into its own
+                        // window, just bring that window forward instead of
+                        // re-populating the launcher grid.
+                        if confirm_state
+                            .borrow()
+                            .plugin_window_open(&plugin_id, &command)
+                        {
+                            crate::plugin_panel_window::focus_plugin_panel_window(
+                                &confirm_state,
+                                &plugin_id,
+                                &command,
+                                cx,
+                            );
+                            return false;
+                        }
+                        if let Some(active) = crate::launcher::parse_calendar_view(
+                            &view,
+                            &plugin_id,
+                            &hit.command,
+                            hit.detachable,
+                        ) {
+                            *confirm_state.borrow_mut().plugin_calendar.borrow_mut() = Some(active);
+                            // Reveal the grid after the current key-event
+                            // dispatch completes: while an event is being
+                            // handled the window is taken out of the app's
+                            // window registry, so updating it synchronously
+                            // fails with "window not found". Deferring
+                            // mirrors how GPUI dispatches window actions.
+                            let confirm_state = confirm_state.clone();
+                            cx.defer(move |cx| {
+                                // Copy the handle out so the borrow on the
+                                // shared state ends before `app.update`
+                                // re-enters it (a `RefCell` double borrow
+                                // would panic).
+                                let handle = confirm_state.borrow().window;
+                                if let Some(handle) = handle {
+                                    if let Some(app) = handle.downcast::<StewardApp>() {
+                                        let _ = app.update(cx, |app, window, cx| {
+                                            app.apply_plugin_views(window, cx)
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                        false
+                    }
                     None => false,
                 }
             };
@@ -202,18 +293,18 @@ pub(crate) fn open_launcher_window(
             cx.new(|cx| {
                 focus.focus(window, cx);
                 // Dismiss the launcher whenever another application takes
-                // activation (e.g. the user clicks another window) - unless
-                // the calendar view is pinned open.
-                let activation_state = state.clone();
+                // activation (e.g. the user clicks another window). Detached
+                // plugin-view windows live in their own windows and are not
+                // affected by the launcher's activation.
                 let activation_subscription =
                     cx.observe_window_activation(window, move |_, window, cx| {
-                        if !window.is_window_active() && !activation_state.borrow().calendar_pinned
-                        {
+                        if !window.is_window_active() {
                             hide_window(window, cx);
                         }
                     });
                 let results = ResultList::new(delegate, window, cx);
-                let calendar = CalendarView::new(Some(on_calendar_select), window, cx);
+                let calendar =
+                    CalendarView::new(Some(on_calendar_select), Some(on_toggle_pin), window, cx);
                 let mut app = StewardApp {
                     focus_handle: focus.clone(),
                     input: SearchInput {
@@ -233,6 +324,7 @@ pub(crate) fn open_launcher_window(
                     base_icons: Vec::new(),
                     builtin_count: 0,
                     state: state.clone(),
+                    detachable_list_target: None,
                     _activation_subscription: activation_subscription,
                     mouse_selecting: false,
                     mouse_anchor: 0,
@@ -269,7 +361,6 @@ pub(crate) fn toggle_launcher(
             drop(state_ref);
             let _ = handle.update(cx, |_, window, cx| {
                 if platform::is_visible(window) {
-                    state.borrow_mut().calendar_pinned = false;
                     hide_window(window, cx);
                 } else {
                     // Re-apply the height so a freshly-created window matches

@@ -36,6 +36,7 @@ mod i18n;
 mod launch;
 mod launcher;
 mod platform;
+mod plugin_panel_window;
 mod search_input;
 mod settings;
 mod theme;
@@ -149,6 +150,7 @@ fn main() {
         storage,
         engine: Rc::new(RefCell::new(Engine::new())),
         icon_cache: RefCell::new(HashMap::new()),
+        plugin_icons: RefCell::new(HashMap::new()),
         icon_gen: Cell::new(0),
         icon_rx: RefCell::new(None),
         scan_rx: RefCell::new(None),
@@ -159,7 +161,7 @@ fn main() {
         plugin_hits: RefCell::new(Vec::new()),
         plugin_views: RefCell::new(Vec::new()),
         plugin_calendar: RefCell::new(None),
-        calendar_pinned: false,
+        panel_view_windows: RefCell::new(HashMap::new()),
         hotkey_manager: None,
         summon_hotkey: None,
         settings_hotkey: None,

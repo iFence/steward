@@ -13,6 +13,11 @@ pub const LAUNCHER_HEIGHT: f32 = 60.0;
 /// Width of the non-interactive margin around the input box. This margin is
 /// the window's drag handle; the input box itself is not draggable.
 pub const LAUNCHER_MARGIN: f32 = 4.0;
+/// Width of a detached plugin-view widget window (logical px). A floating
+/// calendar / list panel is compact so it sits unobtrusively beside the bar.
+pub const PLUGIN_WIDGET_WIDTH: f32 = 560.0;
+/// Vertical padding around a detached plugin-view widget window.
+pub const PLUGIN_WIDGET_PADDING: f32 = 8.0;
 
 /// Fixed row height of a launcher result. Must match `results_list.rs` so the
 /// window resize stays in sync with the rendered list.

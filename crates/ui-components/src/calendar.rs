@@ -10,17 +10,26 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, rgb, App, AppContext, Context, ElementId, Entity,
+    div, prelude::FluentBuilder as _, px, rgb, svg, App, AppContext, Context, ElementId, Entity,
     InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _,
 };
 
 use crate::lunar::lunar_info;
 
-// Toggle the launcher's pinned state while a calendar view is open. The app
-// handles it: when pinned, losing window activation no longer hides the
-// launcher, so the calendar stays visible while the user works elsewhere.
-gpui::actions!(steward, [ToggleCalendarPin]);
+/// Callback fired when the pin toggle is clicked: the new pinned state plus
+/// the app context (so the launcher can mirror the state into its hide
+/// / detach logic). The view flips its own `pinned` on the same frame; the
+/// callback lets the host open (pin) or dock (unpin) the view's window. With
+/// the launcher's detach model, "pinned" means "popped into its own window".
+pub type PinToggleCallback = Rc<dyn Fn(bool, &mut App)>;
+
+/// Lucide `pin` icon (24x24, stroke 2, `currentColor`), embedded directly so
+/// the calendar header renders the same pushpin glyph in both states. GPUI's
+/// SVG renderer treats the artwork as an alpha mask and tints it with the
+/// element's text color, which is how the pinned state is told apart
+/// (accent vs. muted).
+const PIN_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>"#;
 
 /// Parsed plugin calendar view: one month grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,9 +199,30 @@ pub struct CalendarViewState {
     weekday_labels: [String; 7],
     selected: String,
     on_select: Option<CalendarSelectCallback>,
+    on_toggle_pin: Option<PinToggleCallback>,
     /// Whether the launcher is pinned open (blur no longer hides it).
     pinned: bool,
+    /// Whether the view may be popped into its own window (the command's
+    /// manifest `detachable` flag). Gates the pin/detach affordance so a
+    /// non-detachable calendar does not show a control that does nothing.
+    detachable: bool,
     max_height: f32,
+}
+
+impl CalendarViewState {
+    /// The height of each of the six week rows, derived from the card's
+    /// `max_height` so the grid scales with the window: the header and weekday
+    /// rows stay fixed and the remaining height is split across the rows. The
+    /// floor keeps the geometry valid at very small sizes; the launcher's fixed
+    /// height still yields [`CALENDAR_ROW_HEIGHT`] per row.
+    fn row_height(&self) -> f32 {
+        let fixed = CALENDAR_CARD_BORDER * 2.0
+            + CALENDAR_CARD_PADDING_Y * 2.0
+            + CALENDAR_HEADER_HEIGHT
+            + CALENDAR_WEEKDAY_HEIGHT;
+        let rows = CALENDAR_ROWS as f32;
+        ((self.max_height - fixed) / rows).max(1.0)
+    }
 }
 
 impl Render for CalendarViewState {
@@ -202,6 +232,12 @@ impl Render for CalendarViewState {
         let selected = self.selected.clone();
         let today = data.today.clone();
         let pinned = self.pinned;
+        let detachable = self.detachable;
+        let row_height = self.row_height();
+        // Rows grow/shrink with the window, but the type stays at its natural
+        // size so a larger widget spreads out instead of rendering giant text.
+        let day_font = 14.0;
+        let lunar_font = 10.0;
 
         let header = div()
             .id(ElementId::from("cal-header"))
@@ -213,8 +249,12 @@ impl Render for CalendarViewState {
             .px_3()
             .text_color(rgb(crate::palette::FOREGROUND))
             .text_sm()
-            .child(div().flex_1().child(self.month_label.clone()))
-            .child(pin_button(pinned, cx));
+            .child(div().flex_1().child(self.month_label.clone()));
+        let header = if detachable {
+            header.child(pin_button(pinned, cx))
+        } else {
+            header
+        };
 
         let weekday_row = div()
             .id(ElementId::from("cal-weekdays"))
@@ -244,7 +284,7 @@ impl Render for CalendarViewState {
             let mut row = div()
                 .id(ElementId::from(format!("cal-week-{week_index}")))
                 .w_full()
-                .h(px(CALENDAR_ROW_HEIGHT))
+                .h(px(row_height))
                 .flex()
                 .flex_row()
                 .child(week_rail_cell(Some((week_number, week_index))));
@@ -271,7 +311,7 @@ impl Render for CalendarViewState {
                             } else {
                                 rgb(crate::palette::FOREGROUND)
                             })
-                            .text_sm()
+                            .text_size(px(day_font))
                             .cursor_pointer()
                             .when(is_selected, |this| {
                                 this.bg(rgb(crate::palette::SELECTION).opacity(0.14))
@@ -295,7 +335,7 @@ impl Render for CalendarViewState {
                                 let info = lunar.as_ref().expect("checked");
                                 this.child(
                                     div()
-                                        .text_size(px(10.0))
+                                        .text_size(px(lunar_font))
                                         .text_color(if info.highlighted() {
                                             rgb(crate::palette::ACCENT)
                                         } else {
@@ -358,10 +398,12 @@ fn week_rail_cell(week: Option<(String, usize)>) -> impl IntoElement {
     }
 }
 
-/// The pin/unpin toggle in the calendar header. Clicking it dispatches
-/// [`ToggleCalendarPin`]; the launcher flips the shared pinned state and
-/// pushes it back through [`CalendarView::set_pinned`]. Both states share the
-/// same pushpin glyph; the accent border/fill marks the pinned state.
+/// The pin/unpin toggle in the calendar header. Clicking it flips the view's
+/// own pinned state immediately (so the accent styling updates on the same
+/// frame) and reports the new state to the launcher through
+/// [`PinToggleCallback`]; in the launcher that means "pop out into a window"
+/// (pinned) / "dock back" (unpinned). Pinned and unpinned share the Lucide
+/// pushpin glyph; the accent tint marks the pinned state.
 fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoElement {
     div()
         .id(ElementId::from("cal-pin-toggle"))
@@ -373,23 +415,36 @@ fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoEle
         .rounded_full()
         .cursor_pointer()
         .border_1()
-        .border_color(rgb(0xffffff).opacity(if pinned { 0.20 } else { 0.08 }))
-        .text_size(px(14.0))
-        .text_color(if pinned {
-            rgb(crate::palette::ACCENT)
+        .border_color(if pinned {
+            rgb(crate::palette::ACCENT).opacity(0.55)
         } else {
-            rgb(crate::palette::MUTED_FOREGROUND)
+            rgb(0xffffff).opacity(0.08)
         })
         .when(pinned, |this| {
-            this.bg(rgb(crate::palette::ACCENT).opacity(0.12))
+            this.bg(rgb(crate::palette::ACCENT).opacity(0.16))
         })
         .when(!pinned, |this| {
             this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
         })
-        .on_click(cx.listener(|_, _, _, cx| {
-            cx.dispatch_action(&ToggleCalendarPin);
+        .on_click(cx.listener(|this, _, _, cx| {
+            let pinned = !this.pinned;
+            this.pinned = pinned;
+            if let Some(callback) = this.on_toggle_pin.clone() {
+                callback(pinned, cx);
+            }
+            cx.notify();
         }))
-        .child("📌")
+        .child(
+            svg()
+                .data(PIN_ICON_SVG)
+                .w(px(14.0))
+                .h(px(14.0))
+                .text_color(if pinned {
+                    rgb(crate::palette::ACCENT)
+                } else {
+                    rgb(crate::palette::MUTED_FOREGROUND)
+                }),
+        )
 }
 
 /// The launcher's calendar grid: a small entity wrapper so the app can update
@@ -402,6 +457,7 @@ pub struct CalendarView {
 impl CalendarView {
     pub fn new<C>(
         on_select: Option<CalendarSelectCallback>,
+        on_toggle_pin: Option<PinToggleCallback>,
         _window: &mut gpui::Window,
         cx: &mut Context<C>,
     ) -> Self {
@@ -417,7 +473,9 @@ impl CalendarView {
             weekday_labels: Default::default(),
             selected: String::new(),
             on_select,
+            on_toggle_pin,
             pinned: false,
+            detachable: true,
             max_height: CALENDAR_GRID_HEIGHT,
         });
         Self { state }
@@ -450,10 +508,20 @@ impl CalendarView {
         });
     }
 
-    /// Reflect the launcher's pinned state.
+    /// Reflect the launcher's pinned state (whether the detach control renders
+    /// in its "pinned / popped out" state).
     pub fn set_pinned<C: gpui::AppContext>(&self, pinned: bool, cx: &mut C) {
         self.state.update(cx, |this, cx| {
             this.pinned = pinned;
+            cx.notify();
+        });
+    }
+
+    /// Reflect the command's `detachable` flag (whether the pin/detach control
+    /// is shown at all). Defaults to `true` for backward compatibility.
+    pub fn set_detachable<C: gpui::AppContext>(&self, detachable: bool, cx: &mut C) {
+        self.state.update(cx, |this, cx| {
+            this.detachable = detachable;
             cx.notify();
         });
     }

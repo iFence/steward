@@ -19,3 +19,28 @@ Build: `pnpm --filter @steward/plugin-calendar build`.
 
 To run the app against this repo's plugin instead of the installed copy, point
 `STEWARD_PLUGINS_DIR` at `packages/plugins` (one plugin directory per entry).
+
+## Install
+
+The distributable plugin package (`target/plugins/steward-plugin-calendar-<version>.zip`,
+built by `scripts/package-plugins.ps1`) is a plain archive containing one
+`calendar/` folder:
+
+```text
+calendar/
+├── plugin.json
+└── dist/index.js
+```
+
+To install it into the app:
+
+1. Extract the zip into `%APPDATA%\Steward\plugins` (create the folder if
+   missing), so the archive's `calendar/` folder lands directly under it:
+   `%APPDATA%\Steward\plugins\calendar\plugin.json`.
+2. Start Steward (or restart it if it is already running) — the plugin
+   registry scans that root on startup and picks the plugin up automatically.
+3. Summon the launcher (`Ctrl+Alt+Space`) and type `calendar` (or `日历`).
+
+The plugin host binary (`steward-plugin-runtime.exe`) is bundled by the MSI
+installer next to `steward-app.exe`; without it the app runs with plugins
+disabled.
