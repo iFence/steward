@@ -31,6 +31,10 @@ pub struct RouteHit {
     pub command: String,
     /// Human-readable command title (the row label before the view returns).
     pub title: String,
+    /// Whether the command's view may be popped out into its own window (the
+    /// manifest's `commands[].detachable`). Used by the launcher to show a
+    /// generic detach affordance; ignored by routing itself.
+    pub detachable: bool,
     /// Query text passed to the command: the full query for `command` /
     /// `regex` / `dynamic`, the text after the prefix for `prefix`.
     pub input: String,
@@ -44,6 +48,7 @@ struct Route {
     plugin_id: String,
     command: String,
     title: String,
+    detachable: bool,
     kind: TriggerType,
     /// Prefix or regex value; `None` for `command` / `dynamic`.
     value: Option<String>,
@@ -78,6 +83,7 @@ impl RouteIndex {
                 plugin_id: plugin_id.to_string(),
                 command: command.name.clone(),
                 title: command.title.clone(),
+                detachable: command.detachable,
                 kind: command.trigger.kind,
                 value: command.trigger.value.clone(),
                 haystacks: route_haystacks(command),
@@ -147,6 +153,7 @@ impl RouteIndex {
                         plugin_id: route.plugin_id.clone(),
                         command: route.command.clone(),
                         title: route.title.clone(),
+                        detachable: route.detachable,
                         input: query.to_string(),
                         deadline_ms: STATIC_DEADLINE_MS,
                     },
@@ -173,6 +180,7 @@ impl RouteIndex {
                         plugin_id: route.plugin_id.clone(),
                         command: route.command.clone(),
                         title: route.title.clone(),
+                        detachable: route.detachable,
                         input: rest.trim().to_string(),
                         deadline_ms: STATIC_DEADLINE_MS,
                     });
@@ -189,6 +197,7 @@ impl RouteIndex {
                         plugin_id: route.plugin_id.clone(),
                         command: route.command.clone(),
                         title: route.title.clone(),
+                        detachable: route.detachable,
                         input: query.to_string(),
                         deadline_ms: STATIC_DEADLINE_MS,
                     });
@@ -200,6 +209,7 @@ impl RouteIndex {
             plugin_id: route.plugin_id.clone(),
             command: route.command.clone(),
             title: route.title.clone(),
+            detachable: route.detachable,
             input: query.to_string(),
             deadline_ms: DYNAMIC_DEADLINE_MS,
         }));
@@ -223,6 +233,7 @@ fn hit_for(route: &Route) -> RouteHit {
         plugin_id: route.plugin_id.clone(),
         command: route.command.clone(),
         title: route.title.clone(),
+        detachable: route.detachable,
         input: String::new(),
         deadline_ms: match route.kind {
             TriggerType::Dynamic => DYNAMIC_DEADLINE_MS,
@@ -304,6 +315,7 @@ mod tests {
                 kind,
                 value: value.map(str::to_string),
             },
+            detachable: false,
             keywords: Vec::new(),
         }
     }
@@ -376,6 +388,29 @@ mod tests {
         assert_eq!(index.match_query("rl").len(), 1, "pinyin initials");
         // A word merely containing the keyword still does not match.
         assert!(index.match_query("日历x").is_empty());
+    }
+
+    #[test]
+    fn detachable_flag_flows_into_route_hits() {
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "com.example.calendar",
+            &[PluginCommand {
+                detachable: true,
+                ..command("calendar", TriggerType::Command, None)
+            }],
+        );
+        let hits = index.match_query("calendar");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].detachable);
+
+        // Commands that do not opt in stay non-detachable (default false).
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "com.example.static",
+            &[command("static", TriggerType::Command, None)],
+        );
+        assert!(!index.match_query("static")[0].detachable);
     }
 
     #[test]

@@ -84,6 +84,7 @@ fn write_plugin(
         manifest,
         dir: dir.clone(),
         entry: dir.join("dist").join("index.js"),
+        icon: None,
         scanned_at: 0,
     }
 }
