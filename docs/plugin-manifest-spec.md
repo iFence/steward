@@ -31,6 +31,7 @@
 | `commands` | array | 是 | 命令列表 |
 | `commands[].name` | string | 是 | 命令名 |
 | `commands[].title` | string | 是 | 命令标题 |
+| `commands[].detachable` | bool | 否 | 该命令返回的视图可否弹出为独立窗口（默认 `false`）。宿主据此在视图上显示通用「弹出」控件，弹出后窗口不受启动器全局热键/失焦隐显影响；仅影响 UI 呈现，不新增权限。 |
 | `commands[].keywords` | string[] | 否 | 本地化搜索关键词（如 `"日历"`），配合命令名/标题一起参与模糊匹配，默认空数组 |
 | `commands[].trigger` | object | 是 | 触发条件 |
 | `permissions` | string[] | 否 | 能力白名单，默认空数组（零权限） |

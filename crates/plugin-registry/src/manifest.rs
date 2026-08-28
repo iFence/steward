@@ -27,6 +27,10 @@ pub struct PluginManifest {
     pub name: String,
     /// Semantic version; a change is the only reason to re-parse a plugin.
     pub version: String,
+    /// Optional launcher row icon: an inline SVG document. The app renders it
+    /// next to the plugin's rows, mirroring application icons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     #[serde(default)]
     pub commands: Vec<PluginCommand>,
     /// Capability whitelist; empty by default (zero permissions).
@@ -74,6 +78,16 @@ impl PluginManifest {
                 self.id
             )));
         }
+        if self
+            .icon
+            .as_ref()
+            .is_some_and(|icon| icon.trim().is_empty())
+        {
+            return Err(ManifestError(format!(
+                "plugin '{}': icon must not be empty when present",
+                self.id
+            )));
+        }
         if self.commands.is_empty() {
             return Err(ManifestError(format!(
                 "plugin '{}': at least one command is required",
@@ -111,12 +125,24 @@ pub struct PluginCommand {
     /// Human-readable command title.
     pub title: String,
     pub trigger: Trigger,
+    /// Whether the view returned by this command may be popped out into its
+    /// own independent window (e.g. a month calendar floats beside the
+    /// launcher). Defaults to `false`; affects the launcher's detach affordance
+    /// and routing only, never plugin execution or permissions.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub detachable: bool,
     /// Optional localized aliases / keywords (e.g. `"日历"` for `calendar`).
     /// The host fuzzy-matches queries against the name, title and these
     /// keywords (with pinyin forms for Chinese text), so plugins can declare
     /// their own multi-language search terms.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+}
+
+/// serde helper: omit `detachable` from the manifest / cache when it is false
+/// (the default), keeping existing plugin.json files and cache rows valid.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl PluginCommand {
@@ -319,7 +345,73 @@ mod tests {
             manifest.commands[0].keywords.is_empty(),
             "keywords default to empty for backward compatibility"
         );
+        assert!(
+            !manifest.commands[0].detachable,
+            "detachable defaults to false for backward compatibility"
+        );
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn detachable_command_roundtrips() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "com.example.calendar",
+                "name": "Calendar",
+                "version": "1.0.0",
+                "commands": [
+                    {
+                        "name": "calendar",
+                        "title": "Calendar",
+                        "detachable": true,
+                        "trigger": { "type": "command" }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert!(manifest.commands[0].detachable);
+        manifest.validate().unwrap();
+
+        // A false value is omitted from serialization (cache stays compact).
+        let ser = serde_json::to_string(&manifest).unwrap();
+        assert!(ser.contains("\"detachable\":true"));
+
+        let manifest = calendar();
+        assert!(!manifest.commands[0].detachable);
+        let ser = serde_json::to_string(&manifest).unwrap();
+        assert!(!ser.contains("detachable"));
+    }
+
+    #[test]
+    fn icon_is_optional_and_roundtrips() {
+        let with_icon: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "com.example.calendar",
+                "name": "Calendar",
+                "version": "1.0.0",
+                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"></svg>",
+                "commands": [
+                    { "name": "calendar", "title": "Calendar", "trigger": { "type": "command" } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_icon.icon.as_deref(),
+            Some("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"></svg>")
+        );
+        with_icon.validate().unwrap();
+
+        // Manifests without an icon (the pre-icon schema) still parse.
+        let without_icon = calendar();
+        assert!(without_icon.icon.is_none());
+        without_icon.validate().unwrap();
+
+        // An empty icon is rejected once present.
+        let mut empty = with_icon;
+        empty.icon = Some("   ".into());
+        assert!(empty.validate().is_err());
     }
 
     #[test]

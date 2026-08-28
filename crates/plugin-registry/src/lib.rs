@@ -32,6 +32,8 @@ pub struct PluginMeta {
     pub dir: PathBuf,
     /// Absolute bundle entry path (`dir/dist/index.js`).
     pub entry: PathBuf,
+    /// Inline SVG icon for launcher rows, if the manifest declares one.
+    pub icon: Option<String>,
     /// UNIX timestamp of the last time this row was (re)written.
     pub scanned_at: i64,
 }
@@ -128,13 +130,29 @@ impl Registry {
                     version TEXT NOT NULL,
                     dir TEXT NOT NULL,
                     entry TEXT NOT NULL,
+                    icon TEXT,
                     isolation TEXT NOT NULL,
                     permissions TEXT NOT NULL,
                     commands TEXT NOT NULL,
                     scanned_at INTEGER NOT NULL
                 );",
             )
-            .context("run plugin schema migrations")
+            .context("run plugin schema migrations")?;
+        // Databases created before the icon column existed: add it in place so
+        // the cold-start cache keeps serving without a full rescan.
+        let has_icon = self
+            .conn
+            .prepare("PRAGMA table_info(plugins)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|column| column == "icon");
+        if !has_icon {
+            self.conn
+                .execute("ALTER TABLE plugins ADD COLUMN icon TEXT", [])
+                .context("add icon column to plugin cache")?;
+        }
+        Ok(())
     }
 
     /// The plugin installation root this registry manages.
@@ -153,7 +171,7 @@ impl Registry {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, name, version, dir, entry, isolation, permissions, commands, scanned_at
+                "SELECT id, name, version, dir, entry, icon, isolation, permissions, commands, scanned_at
                  FROM plugins",
             )
             .context("prepare cached plugins query")?;
@@ -163,16 +181,19 @@ impl Registry {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     version: row.get(2)?,
-                    isolation: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-                    permissions: serde_json::from_str(&row.get::<_, String>(6)?)
+                    icon: row.get(5)?,
+                    isolation: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                    permissions: serde_json::from_str(&row.get::<_, String>(7)?)
                         .unwrap_or_default(),
-                    commands: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+                    commands: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
                 };
+                let icon = manifest.icon.clone();
                 Ok(PluginMeta {
                     manifest,
                     dir: PathBuf::from(row.get::<_, String>(3)?),
                     entry: PathBuf::from(row.get::<_, String>(4)?),
-                    scanned_at: row.get(8)?,
+                    icon,
+                    scanned_at: row.get(9)?,
                 })
             })
             .context("query cached plugins")?;
@@ -259,13 +280,14 @@ impl Registry {
         let now = unix_seconds();
         self.conn
             .execute(
-                "INSERT INTO plugins (id, name, version, dir, entry, isolation, permissions, commands, scanned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "INSERT INTO plugins (id, name, version, dir, entry, icon, isolation, permissions, commands, scanned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     version = excluded.version,
                     dir = excluded.dir,
                     entry = excluded.entry,
+                    icon = excluded.icon,
                     isolation = excluded.isolation,
                     permissions = excluded.permissions,
                     commands = excluded.commands,
@@ -276,6 +298,7 @@ impl Registry {
                     &manifest.version,
                     &dir.to_string_lossy(),
                     &entry.to_string_lossy(),
+                    &manifest.icon,
                     &serde_json::to_string(&manifest.isolation).unwrap_or_default(),
                     &serde_json::to_string(&manifest.permissions).unwrap_or_default(),
                     &serde_json::to_string(&manifest.commands).unwrap_or_default(),
@@ -289,6 +312,7 @@ impl Registry {
                 manifest: manifest.clone(),
                 dir: dir.to_path_buf(),
                 entry: entry.to_path_buf(),
+                icon: manifest.icon.clone(),
                 scanned_at: now,
             },
         );
@@ -410,6 +434,93 @@ mod tests {
             assert_eq!(cached.len(), 1);
             assert_eq!(cached[0].manifest.id, "com.test.alpha");
         }
+        std::fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn manifest_icon_is_cached_and_survives_reopen() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "steward-registry-icon-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let mut registry = Registry::open_at(&data_dir).unwrap();
+        let plugin_dir = registry.plugins_root().join("com.example.icon");
+        std::fs::create_dir_all(plugin_dir.join("dist")).unwrap();
+        std::fs::write(
+            plugin_dir.join("plugin.json"),
+            r#"{
+                "id": "com.example.icon",
+                "name": "Icon",
+                "version": "1.0.0",
+                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"></svg>",
+                "commands": [
+                    { "name": "icon", "title": "Icon", "trigger": { "type": "command" } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(plugin_dir.join("dist").join("index.js"), "// bundle").unwrap();
+
+        registry.scan().unwrap();
+        let cached = registry.cached_plugins().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert!(cached[0].icon.as_deref().unwrap().contains("<svg"));
+        drop(registry);
+
+        // A fresh registry on the same data dir serves the icon from cache.
+        let registry = Registry::open_at(&data_dir).unwrap();
+        let cached = registry.cached_plugins().unwrap();
+        assert!(cached[0].icon.is_some(), "icon must survive cold start");
+        drop(registry);
+        std::fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn existing_database_without_icon_column_is_migrated() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "steward-registry-migrate-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        // Simulate a cache written by a pre-icon build.
+        {
+            let conn = Connection::open(data_dir.join(DB_FILE)).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE plugins (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    dir TEXT NOT NULL,
+                    entry TEXT NOT NULL,
+                    isolation TEXT NOT NULL,
+                    permissions TEXT NOT NULL,
+                    commands TEXT NOT NULL,
+                    scanned_at INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO plugins (id, name, version, dir, entry, isolation, permissions, commands, scanned_at)
+                 VALUES ('com.example.old', 'Old', '1.0.0', 'dir', 'entry', 'shared-pool', '[]', '[]', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let registry = Registry::open_at(&data_dir).unwrap();
+        let cached = registry.cached_plugins().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].manifest.id, "com.example.old");
+        assert!(cached[0].icon.is_none());
+        drop(registry);
         std::fs::remove_dir_all(&data_dir).unwrap();
     }
 
