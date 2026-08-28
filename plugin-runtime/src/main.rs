@@ -8,6 +8,13 @@
 //! All diagnostics go to stderr; stdout carries only protocol frames so the
 //! NDJSON stream stays parseable by the host.
 
+// The app process is a GUI-subsystem binary (no console), so without this
+// attribute Windows would allocate a *visible* console window for this
+// process every time the host spawns it (each spawn is a black window on the
+// user's desktop). The GUI subsystem still gets the piped stdin/stdout the
+// host sets up; stderr simply goes nowhere when the parent has no console.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use steward_plugin_runtime::{isolated_process, run_service, ServiceConfig};
 
 fn main() -> anyhow::Result<()> {
