@@ -6,8 +6,10 @@
 
       cargo wix -p steward-app
 
-  The installer installs steward-app.exe to Program Files, registers the
-  product icon in Add/Remove Programs, and adds a Start Menu shortcut.
+  The installer installs steward-app.exe and the sibling
+  steward-plugin-runtime.exe to Program Files (the runtime is required for
+  plugins), registers the product icon in Add/Remove Programs, and adds a
+  Start Menu shortcut.
 -->
 
 <?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
@@ -69,6 +71,17 @@
                             Source='$(var.CargoTargetBinDir)\steward-app.exe'
                             KeyPath='yes'/>
                     </Component>
+
+                    <!-- Plugin host runtime: resolved as a sibling of the app
+                         executable by `HostConfig::from_env`. -->
+                    <Component Id='runtime0' Guid='*'>
+                        <File
+                            Id='runtime0exe'
+                            Name='steward-plugin-runtime.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\steward-plugin-runtime.exe'
+                            KeyPath='yes'/>
+                    </Component>
                 </Directory>
             </Directory>
 
@@ -101,6 +114,7 @@
             Absent='disallow'>
             <ComponentRef Id='License'/>
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='runtime0'/>
             <ComponentRef Id='ApplicationShortcut'/>
         </Feature>
 
