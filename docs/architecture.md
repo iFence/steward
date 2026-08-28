@@ -332,3 +332,21 @@ steward/
 - 修订（2026-08-27）：日历视图可固定——日历头部新增固定/取消固定按钮（`ToggleCalendarPin` 动作，固定与取消固定共用图钉图标，固定态以强调色/填充标识）。固定后启动器窗口失焦不再自动隐藏（窗口为 `PopUp` 置顶类型，保持可见），方便边看日历边做别的事；Esc / 热键隐藏或查询变化导致日历视图关闭时自动复位为未固定。前台窗口监听的兜底隐藏路径同样遵循固定状态。
 - 修订（2026-08-27）：日历视图每格新增农历信息——公历日下方第二行显示农历标签，优先级为农历传统节日 > 公历节日 > 二十四节气 > 农历月初月份名 > 农历日名；宿主在 `ui-components` 引入 `tyme4rs`（workspace 依赖）负责公历→农历转换，插件与视图契约不变；节日/节气标签用强调色（`ACCENT`），其余用弱化色（`MUTED_FOREGROUND`）。
 - 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`（121 项）全绿；`pnpm lint` / `pnpm typecheck` / `pnpm build` 全绿。
+
+### 2026-08-28（插件视图弹出独立窗口）
+
+- 能力定位：把「视图弹出为独立窗口」做成插件级可扩展能力，而不是耦合到 calendar 插件。插件在 manifest 的 `commands[].detachable: true` 声明某命令的视图可弹出；宿主提供通用「弹出 / 移回」机制与通用独立窗口宿主，calendar 是第一个启用者（`packages/plugins/calendar/plugin.json` 设置 `detachable: true`）。
+- 契约与类型：`PluginCommand` 新增 `#[serde(default)] detachable: bool`（默认 false，序列化省略，`deny_unknown_fields` 下向后兼容）；`RouteHit` 新增 `detachable: bool`，由路由构建时从 `command.detachable` 填入。`extension-api` 的 `View`/`PluginModule` 与 `plugin-runtime` 不变。
+- 通用窗口宿主：`plugin_panel_window.rs` 的 `PluginPanelWindow` 按 `view["type"]` 分发渲染——`calendar` 复用 `CalendarView`（点击日期 / 方向键 / Enter 走 `item.invoke`），`list` 复用 `ResultList`/`ResultItem::Plugin`（行确认走 `item.invoke`）。窗口为无边框、始终置顶、无任务栏、不可缩放的 `WindowKind::PopUp`，尺寸按视图类型推导（日历用 `CALENDAR_GRID_HEIGHT`，列表按行数）。
+- 通用注册表：`LauncherState.panel_view_windows: HashMap<(plugin_id, command), AnyWindowHandle>` 取代原先的 `calendar_pinned`/单窗口思路；同命令只保留一个独立窗口，重复弹出仅聚焦已有窗口。`on_window_closed` 按 `window_id` 比对并清理，触发移回。
+- 与启动器解耦：删除 `calendar_pinned` 对启动器失焦 / 前台切换隐显的豁免（`observe_window_activation`、foreground-watch 均不再因日历保持启动器），并移除 `toggle_launcher` 隐藏分支对该位的清零；独立窗口不受全局唤醒热键影响，主面板可继续搜索使用。
+- 弹出 / 移回：日历内嵌网格头部的图钉按钮语义改为「弹出」（仅 manifest `detachable` 时显示，`CalendarView` 新增 `detachable` 门控）；detachable `list` 视图在启动器结果头部显示通用「弹出」按钮（`external-link` 图标，仅在恰有一个可弹出 list 面板时出现，避免歧义）。关闭 / Esc / 点击已弹出态按钮触发 `dock_panel_back`，把视图交还启动器主面板。
+- 假设：弹出属于 UI 呈现能力，不作为 `permissions` 授予；弹出 / 移回不改动启动器查询；若用户在弹出态改了查询，移回时按当前查询显示，需重新触发才恢复该视图。
+
+### 2026-08-28（M2 插件懒加载：冷启动与搜索只随实际激活数变化）
+
+- 问题：此前 `plugin-host::set_plugins` 在启动时对每个插件逐个发 `plugin.load`（O(N) 次 bundle 求值），且共享池容量（默认 8）满后按 LRU 驱逐 isolate，但宿主 `conn.isolates` 仍保留被驱逐插件的旧 `isolate_id`——后续 `invoke` 会向运行时发送失效 isolate，恒返回 `PLUGIN_NOT_FOUND`，插件实际不可用。既违背「冷启动不随安装量线性」（启动做了 N 次 bundle 求值），也违背决策记录里的「下次调用按需重建」（驱逐后不再重载）。
+- 方案：改为**延迟按需加载**。`set_plugins` 只做 `rebuild_routes` + 按插件集 spawn 共享池 / 各 dedicated 进程，不再发 `plugin.load`；isolate 在首次 `invoke`/`item.invoke` 时才 `ensure_loaded`（发 `plugin.load`），驱逐 / 超时 / 超堆被 kill 后再次命中会重载。
+- 宿主新增 `loading_plugins`（在途 load）与 `queued`（等待加载完成后重放的 command/item 调用）。`handle_response` 对 `PLUGIN_NOT_FOUND` 走 `handle_stale_isolate`：清掉失效 isolate → 若未在加载则 `ensure_loaded` 一次并重入队（以 `loading_plugins` 防循环）；`plugin.load` 成功后 `flush_queued` 把积压调用转成真实请求；加载失败则把积压调用以错误事件上抛。连接崩溃（`handle_eof`）改用 `forget_conn_state` 清理该连接的 loading/queued/pending，重启后空连接由下一次调用懒加载。
+- 验收：新增宿主级规模化回归测试（`plugin-host/tests/scaling.rs`）：N=100 下 `cmd0/cmd50/cmd75/cmd99`（远超共享池容量）均能正确懒加载出 list view，证明任意索引插件可用、不存在失效 isolate；并宽松断言 `set_plugins(N=100)` 与单次冷查询耗时不随安装量显著增长。`cargo test` / `cargo clippy -D warnings` 全绿。
+- 测试稳定化：`isolate_pool` 单测在并行线程同时创建多个 QuickJS `Runtime` 时偶发失败（参数传入异常），生产服务循环单线程，故仅在本模块测试内加 `RUNTIME_TEST_LOCK` 串行化，属测试稳定化而非产物改动。

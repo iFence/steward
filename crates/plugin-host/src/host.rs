@@ -9,7 +9,7 @@
 //! caller can drop them when a newer query already superseded them.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -126,23 +126,22 @@ struct RuntimeConn {
 
 /// What a pending request id is waiting for.
 enum Pending {
-    Load {
-        plugin_id: String,
-    },
-    Invoke {
-        gen: u64,
-        plugin_id: String,
-        command: String,
-    },
-    Item {
-        plugin_id: String,
-        item_id: String,
-    },
+    Load { plugin_id: String },
+    Invoke { gen: u64, hit: RouteHit },
+    Item { plugin_id: String, item_id: String },
+}
+
+/// A call that must wait for its plugin's isolate to be (re)loaded before it
+/// can be dispatched. Used by the lazy-load path so an invoice arriving
+/// before the isolate is materialized is replayed once the `plugin.load`
+/// response lands, instead of being dropped.
+enum QueuedCall {
+    Command { gen: u64, hit: RouteHit },
+    Item { plugin_id: String, item_id: String },
 }
 
 /// Restart bookkeeping for one crashed connection.
 struct RestartState {
-    plugins: Vec<PluginMeta>,
     attempts: u32,
     next_attempt: Instant,
 }
@@ -157,6 +156,11 @@ pub struct PluginHost {
     next_request_id: u64,
     pending: HashMap<u64, Pending>,
     restarts: HashMap<String, RestartState>,
+    /// Plugins whose `plugin.load` is currently in flight (per connection).
+    /// Used to avoid duplicate loads and to drive the reload-on-NotFound path.
+    loading_plugins: HashSet<String>,
+    /// Calls waiting for their plugin's isolate to load, keyed by plugin id.
+    queued: HashMap<String, Vec<QueuedCall>>,
     /// plugin_id -> (isolation, meta) of everything currently loaded; used to
     /// detect whether a plugin-set change needs a process reload and to
     /// reload plugins after a runtime crash.
@@ -172,15 +176,21 @@ impl PluginHost {
             next_request_id: 1,
             pending: HashMap::new(),
             restarts: HashMap::new(),
+            loading_plugins: HashSet::new(),
+            queued: HashMap::new(),
             loaded: HashMap::new(),
         }
     }
 
     /// Load the given plugin set: rebuild routing, spawn the shared pool (if
     /// any shared-pool plugin is installed) and one dedicated process per
-    /// `dedicated-process` plugin, then send `plugin.load` for each. When the
-    /// plugin set is unchanged this is a no-op (the common cold-start path:
-    /// registry cache read -> same set -> no process churn).
+    /// `dedicated-process` plugin. Plugins are *lazy*: no `plugin.load` is
+    /// sent here, so cold start evaluates no JS bundle and cost is proportional
+    /// to the installed count only through the cheap route build — never the
+    /// active plugin count. An isolate is materialized on first invoke and
+    /// re-created on demand when it is LRU-evicted or killed. When the plugin
+    /// set is unchanged this is a no-op (the common cold-start path: registry
+    /// cache read -> same set -> no process churn).
     pub fn set_plugins(&mut self, metas: &[PluginMeta]) -> Result<()> {
         let target = metas
             .iter()
@@ -214,20 +224,13 @@ impl PluginHost {
             self.spawn_conn(SHARED_POOL_KEY, None)?;
         }
         for meta in metas {
-            match meta.manifest.isolation {
-                Isolation::SharedPool => {
-                    self.load_into(SHARED_POOL_KEY, meta);
-                }
-                Isolation::DedicatedProcess => {
-                    if let Err(error) = self.spawn_conn(&meta.manifest.id, Some(&meta.manifest.id))
-                    {
-                        eprintln!(
-                            "[plugin-host] cannot start dedicated runtime for '{}': {error:#}",
-                            meta.manifest.id
-                        );
-                        continue;
-                    }
-                    self.load_into(&meta.manifest.id, meta);
+            if meta.manifest.isolation == Isolation::DedicatedProcess {
+                if let Err(error) = self.spawn_conn(&meta.manifest.id, Some(&meta.manifest.id)) {
+                    eprintln!(
+                        "[plugin-host] cannot start dedicated runtime for '{}': {error:#}",
+                        meta.manifest.id
+                    );
+                    continue;
                 }
             }
         }
@@ -248,65 +251,84 @@ impl PluginHost {
 
     /// Send `command.invoke` for a route hit and remember its response under
     /// the query generation `gen`. Returns the request id, or `None` when the
-    /// plugin's isolate is not ready yet (still loading, crashed, or absent).
+    /// plugin cannot be dispatched at all (its connection is missing or the
+    /// plugin is not in the current set). A plugin whose isolate is not yet
+    /// materialized is lazy-loaded here: the invoke is queued and replayed as
+    /// soon as `plugin.load` completes, so cold plugins are still rendered
+    /// without a full startup scan. When the invoke is queued rather than sent
+    /// immediately, `Some(0)` is returned as a sentinel (real request ids
+    /// start at 1).
     pub fn invoke(&mut self, gen: u64, hit: &RouteHit) -> Option<u64> {
-        let conn_key = self.conn_key_for(&hit.plugin_id);
-        let conn = self.conns.get_mut(&conn_key)?;
-        let isolate_id = *conn.isolates.get(&hit.plugin_id)?;
-        let id = self.next_request_id;
-        self.next_request_id += 1;
-        let request = Request::new(
-            id,
-            method::COMMAND_INVOKE,
-            json!({
-                "isolate_id": isolate_id,
-                "command": hit.command,
-                "input": hit.input,
-                "deadline_ms": hit.deadline_ms,
-            }),
-        );
-        if conn.send(&request).is_err() {
+        let plugin_id = hit.plugin_id.clone();
+        let conn_key = self.conn_key_for(&plugin_id);
+        if !self.conns.contains_key(&conn_key) {
             return None;
         }
-        self.pending.insert(
-            id,
-            Pending::Invoke {
+        if self
+            .conns
+            .get(&conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(&plugin_id))
+        {
+            let id = self.dispatch_command(&conn_key, hit)?;
+            self.pending.insert(
+                id,
+                Pending::Invoke {
+                    gen,
+                    hit: hit.clone(),
+                },
+            );
+            return Some(id);
+        }
+        if !self.loaded.contains_key(&plugin_id) {
+            return None;
+        }
+        self.queued
+            .entry(plugin_id.clone())
+            .or_default()
+            .push(QueuedCall::Command {
                 gen,
-                plugin_id: hit.plugin_id.clone(),
-                command: hit.command.clone(),
-            },
-        );
-        Some(id)
+                hit: hit.clone(),
+            });
+        self.ensure_loaded(&conn_key, &plugin_id);
+        Some(0)
     }
 
     /// Send `item.invoke` for a rendered list row (fire-and-forget; the
-    /// launcher stays open). Errors surface as toast events.
+    /// launcher stays open). Errors surface as toast events. Like [`invoke`],
+    /// a not-yet-loaded plugin is lazy-loaded here, with `Some(0)` returned as
+    /// the sentinel for a queued call.
     pub fn invoke_item(&mut self, plugin_id: &str, item_id: &str) -> Option<u64> {
         let conn_key = self.conn_key_for(plugin_id);
-        let conn = self.conns.get_mut(&conn_key)?;
-        let isolate_id = *conn.isolates.get(plugin_id)?;
-        let id = self.next_request_id;
-        self.next_request_id += 1;
-        let request = Request::new(
-            id,
-            method::ITEM_INVOKE,
-            json!({
-                "isolate_id": isolate_id,
-                "item_id": item_id,
-                "deadline_ms": crate::route::STATIC_DEADLINE_MS,
-            }),
-        );
-        if conn.send(&request).is_err() {
+        if !self.conns.contains_key(&conn_key) {
             return None;
         }
-        self.pending.insert(
-            id,
-            Pending::Item {
+        if self
+            .conns
+            .get(&conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(plugin_id))
+        {
+            let id = self.dispatch_item(&conn_key, plugin_id, item_id)?;
+            self.pending.insert(
+                id,
+                Pending::Item {
+                    plugin_id: plugin_id.to_string(),
+                    item_id: item_id.to_string(),
+                },
+            );
+            return Some(id);
+        }
+        if !self.loaded.contains_key(plugin_id) {
+            return None;
+        }
+        self.queued
+            .entry(plugin_id.to_string())
+            .or_default()
+            .push(QueuedCall::Item {
                 plugin_id: plugin_id.to_string(),
                 item_id: item_id.to_string(),
-            },
-        );
-        Some(id)
+            });
+        self.ensure_loaded(&conn_key, plugin_id);
+        Some(0)
     }
 
     /// Process all pending runtime frames and due restarts; returns events
@@ -359,6 +381,8 @@ impl PluginHost {
         }
         self.pending.clear();
         self.restarts.clear();
+        self.loading_plugins.clear();
+        self.queued.clear();
         self.loaded.clear();
     }
 
@@ -383,7 +407,10 @@ impl PluginHost {
         true
     }
 
-    fn load_into(&mut self, conn_key: &str, meta: &PluginMeta) {
+    /// Send a `plugin.load` for `meta` and remember it as in-flight. Returns
+    /// `true` when the request was actually written (so the caller can rely on
+    /// a matching `Pending::Load` to drive the queued calls).
+    fn load_into(&mut self, conn_key: &str, meta: &PluginMeta) -> bool {
         let request = Request::new(
             self.next_request_id,
             method::PLUGIN_LOAD,
@@ -396,21 +423,188 @@ impl PluginHost {
         let id = request.id;
         self.next_request_id += 1;
         let Some(conn) = self.conns.get_mut(conn_key) else {
-            return;
+            return false;
         };
         if conn.send(&request).is_err() {
             eprintln!(
                 "[plugin-host] failed to send plugin.load for '{}'",
                 meta.manifest.id
             );
-            return;
+            return false;
         }
+        self.loading_plugins.insert(meta.manifest.id.clone());
         self.pending.insert(
             id,
             Pending::Load {
                 plugin_id: meta.manifest.id.clone(),
             },
         );
+        true
+    }
+
+    /// Materialize a plugin's isolate in `conn_key`, unless it is already
+    /// loaded or a load is already in flight. This is the lazy-load entry
+    /// point: no JS is evaluated at `set_plugins`; the first `invoke`/`item`
+    /// for a plugin triggers `plugin.load`. Returns `true` when the plugin is
+    /// (or is about to be) loaded.
+    fn ensure_loaded(&mut self, conn_key: &str, plugin_id: &str) -> bool {
+        if self.loading_plugins.contains(plugin_id) {
+            return true;
+        }
+        if self
+            .conns
+            .get(conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(plugin_id))
+        {
+            return true;
+        }
+        let Some(meta) = self.loaded.get(plugin_id).map(|(_, meta)| meta.clone()) else {
+            return false;
+        };
+        self.load_into(conn_key, &meta)
+    }
+
+    /// Send a `command.invoke` for a hit whose isolate is already loaded,
+    /// returning the new request id.
+    fn dispatch_command(&mut self, conn_key: &str, hit: &RouteHit) -> Option<u64> {
+        let conn = self.conns.get_mut(conn_key)?;
+        let isolate_id = *conn.isolates.get(&hit.plugin_id)?;
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let request = Request::new(
+            id,
+            method::COMMAND_INVOKE,
+            json!({
+                "isolate_id": isolate_id,
+                "command": hit.command,
+                "input": hit.input,
+                "deadline_ms": hit.deadline_ms,
+            }),
+        );
+        conn.send(&request).ok()?;
+        Some(id)
+    }
+
+    /// Send an `item.invoke` for a loaded isolate, returning the new request id.
+    fn dispatch_item(&mut self, conn_key: &str, plugin_id: &str, item_id: &str) -> Option<u64> {
+        let conn = self.conns.get_mut(conn_key)?;
+        let isolate_id = *conn.isolates.get(plugin_id)?;
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let request = Request::new(
+            id,
+            method::ITEM_INVOKE,
+            json!({
+                "isolate_id": isolate_id,
+                "item_id": item_id,
+                "deadline_ms": crate::route::STATIC_DEADLINE_MS,
+            }),
+        );
+        conn.send(&request).ok()?;
+        Some(id)
+    }
+
+    /// Replay a plugin's queued calls now that its isolate finished loading.
+    fn flush_queued(&mut self, conn_key: &str, plugin_id: &str) {
+        let Some(calls) = self.queued.remove(plugin_id) else {
+            return;
+        };
+        for call in calls {
+            match call {
+                QueuedCall::Command { gen, hit } => {
+                    let id = self.dispatch_command(conn_key, &hit);
+                    if let Some(id) = id {
+                        self.pending.insert(id, Pending::Invoke { gen, hit });
+                    }
+                }
+                QueuedCall::Item {
+                    plugin_id: pid,
+                    item_id,
+                } => {
+                    let id = self.dispatch_item(conn_key, &pid, &item_id);
+                    if let Some(id) = id {
+                        self.pending.insert(
+                            id,
+                            Pending::Item {
+                                plugin_id: pid,
+                                item_id,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle a `PLUGIN_NOT_FOUND` response: the isolate was LRU-evicted or
+    /// killed by timeout/heap since we last dispatched to it. Drop the stale
+    /// isolate id, reload the plugin once and replay the call (guarded so a
+    /// plugin that is already loading never recurses). If the plugin is no
+    /// longer in the set, surface the original error instead.
+    fn handle_stale_isolate(
+        &mut self,
+        conn_key: &str,
+        call: QueuedCall,
+        events: &mut Vec<HostEvent>,
+    ) {
+        let plugin_id = match &call {
+            QueuedCall::Command { hit, .. } => hit.plugin_id.clone(),
+            QueuedCall::Item { plugin_id, .. } => plugin_id.clone(),
+        };
+        if let Some(conn) = self.conns.get_mut(conn_key) {
+            conn.isolates.remove(&plugin_id);
+        }
+        if self.loading_plugins.contains(&plugin_id) {
+            // An in-flight load will flush this call; keep it queued.
+            self.queued.entry(plugin_id).or_default().push(call);
+            return;
+        }
+        if !self.loaded.contains_key(&plugin_id) {
+            match call {
+                QueuedCall::Command { gen, hit } => events.push(HostEvent::CommandResult {
+                    gen,
+                    plugin_id: hit.plugin_id,
+                    command: hit.command,
+                    result: Err(RpcError::new(
+                        code::PLUGIN_NOT_FOUND,
+                        "plugin isolate is not loaded",
+                    )),
+                }),
+                QueuedCall::Item { plugin_id, item_id } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id} ({item_id}): plugin isolate is not loaded"),
+                        "kind": "error",
+                    }),
+                }),
+            }
+            return;
+        }
+        self.ensure_loaded(conn_key, &plugin_id);
+        self.queued.entry(plugin_id).or_default().push(call);
+    }
+
+    /// Drop all in-flight bookkeeping for a crashed connection: its plugins'
+    /// loading flags, queued calls and any pending requests addressed to it.
+    /// The plugin set in `loaded` is untouched (it drives the next lazy load).
+    fn forget_conn_state(&mut self, key: &str) {
+        let affected: HashSet<String> = if key == SHARED_POOL_KEY {
+            self.loaded
+                .iter()
+                .filter(|(_, (isolation, _))| *isolation == Isolation::SharedPool)
+                .map(|(id, _)| id.clone())
+                .collect()
+        } else {
+            [key.to_string()].into_iter().collect()
+        };
+        self.loading_plugins.retain(|id| !affected.contains(id));
+        self.queued.retain(|id, _| !affected.contains(id));
+        self.pending.retain(|_, pending| {
+            let plugin_id = match pending {
+                Pending::Load { plugin_id } | Pending::Item { plugin_id, .. } => plugin_id,
+                Pending::Invoke { hit, .. } => &hit.plugin_id,
+            };
+            !affected.contains(plugin_id)
+        });
     }
 
     fn handle_response(&mut self, conn_key: &str, response: Response, events: &mut Vec<HostEvent>) {
@@ -419,26 +613,38 @@ impl PluginHost {
         };
         match pending {
             Pending::Load { plugin_id } => {
+                self.loading_plugins.remove(&plugin_id);
                 if let Some(isolate_id) = response
                     .result
                     .as_ref()
                     .and_then(|r| r["isolate_id"].as_u64())
                 {
                     if let Some(conn) = self.conns.get_mut(conn_key) {
-                        conn.isolates.insert(plugin_id, isolate_id);
+                        conn.isolates.insert(plugin_id.clone(), isolate_id);
                     }
+                    self.flush_queued(conn_key, &plugin_id);
                 } else if let Some(error) = response.error {
                     eprintln!(
                         "[plugin-host] failed to load plugin {plugin_id}: {} ({})",
                         error.message, error.code
                     );
+                    // Loading failed: replay the queued calls as errors instead
+                    // of leaving them waiting forever for an isolate that will
+                    // not appear.
+                    self.fail_queued(&plugin_id, error, events);
                 }
             }
-            Pending::Invoke {
-                gen,
-                plugin_id,
-                command,
-            } => {
+            Pending::Invoke { gen, hit } => {
+                if let Some(error) = &response.error {
+                    if error.code == code::PLUGIN_NOT_FOUND {
+                        self.handle_stale_isolate(
+                            conn_key,
+                            QueuedCall::Command { gen, hit },
+                            events,
+                        );
+                        return;
+                    }
+                }
                 let result = match (response.result, response.error) {
                     (Some(result), None) => Ok(result),
                     (_, Some(error)) => Err(error),
@@ -446,12 +652,25 @@ impl PluginHost {
                 };
                 events.push(HostEvent::CommandResult {
                     gen,
-                    plugin_id,
-                    command,
+                    plugin_id: hit.plugin_id,
+                    command: hit.command,
                     result,
                 });
             }
             Pending::Item { plugin_id, item_id } => {
+                if let Some(error) = &response.error {
+                    if error.code == code::PLUGIN_NOT_FOUND {
+                        self.handle_stale_isolate(
+                            conn_key,
+                            QueuedCall::Item {
+                                plugin_id: plugin_id.clone(),
+                                item_id: item_id.clone(),
+                            },
+                            events,
+                        );
+                        return;
+                    }
+                }
                 if let Some(error) = response.error {
                     events.push(HostEvent::Toast {
                         params: json!({
@@ -464,26 +683,37 @@ impl PluginHost {
         }
     }
 
+    /// Replay queued calls for `plugin_id` with an error, used when the
+    /// `plugin.load` request itself failed (so no isolate will ever arrive).
+    fn fail_queued(&mut self, plugin_id: &str, error: RpcError, events: &mut Vec<HostEvent>) {
+        let Some(calls) = self.queued.remove(plugin_id) else {
+            return;
+        };
+        for call in calls {
+            match call {
+                QueuedCall::Command { gen, hit } => events.push(HostEvent::CommandResult {
+                    gen,
+                    plugin_id: hit.plugin_id,
+                    command: hit.command,
+                    result: Err(error.clone()),
+                }),
+                QueuedCall::Item { plugin_id, item_id } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id} ({item_id}): {}", error.message),
+                        "kind": "error",
+                    }),
+                }),
+            }
+        }
+    }
+
     fn handle_eof(&mut self, key: &str, events: &mut Vec<HostEvent>) {
         if let Some(mut conn) = self.conns.remove(key) {
             let _ = conn.child.kill();
             let _ = conn.child.wait();
-            let plugins = if key == SHARED_POOL_KEY {
-                self.loaded
-                    .iter()
-                    .filter(|(_, (isolation, _))| *isolation == Isolation::SharedPool)
-                    .map(|(id, (_, meta))| (id.clone(), meta.clone()))
-                    .collect::<Vec<_>>()
-            } else {
-                self.loaded
-                    .get(key)
-                    .map(|(_, meta)| (key.to_string(), meta.clone()))
-                    .into_iter()
-                    .collect()
-            };
-            // The isolate ids died with the process: forget them so the next
-            // invoke reports the plugin as not-ready instead of sending stale
-            // ids into a fresh process.
+            // The isolate ids and any in-flight loads died with the process, so
+            // forget them; the next invoke lazily reloads into the fresh process.
+            self.forget_conn_state(key);
             let plugin_id = (key != SHARED_POOL_KEY).then(|| key.to_string());
             events.push(HostEvent::RuntimeCrashed {
                 plugin_id: plugin_id.clone(),
@@ -493,7 +723,6 @@ impl PluginHost {
             self.restarts.insert(
                 key.to_string(),
                 RestartState {
-                    plugins: plugins.into_iter().map(|(_, meta)| meta).collect(),
                     attempts,
                     next_attempt: Instant::now() + delay,
                 },
@@ -515,10 +744,6 @@ impl PluginHost {
         };
         match spawn {
             Ok(()) => {
-                let metas = state.plugins.clone();
-                for meta in &metas {
-                    self.load_into(key, meta);
-                }
                 eprintln!("[plugin-host] runtime '{key}' restarted");
                 Some(HostEvent::RuntimeRestarted {
                     plugin_id: dedicated.then(|| key.to_string()),
@@ -530,7 +755,6 @@ impl PluginHost {
                 self.restarts.insert(
                     key.to_string(),
                     RestartState {
-                        plugins: state.plugins,
                         attempts,
                         next_attempt: Instant::now() + delay,
                     },

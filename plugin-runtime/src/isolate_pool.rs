@@ -448,7 +448,21 @@ fn js_value_to_json<'js>(ctx: &Ctx<'js>, value: &JsValue<'js>) -> rquickjs::Resu
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
     use steward_plugin_registry::PluginManifest;
+
+    /// QuickJS `Runtime::new()` is not safe to run concurrently across test
+    /// threads (a flaky `command_returns_serialized_view` showed a missing
+    /// argument value when several runtimes were created in parallel). The
+    /// production service loop is single-threaded, so this is a test-only
+    /// serialization to keep the suite deterministic.
+    static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_test() -> MutexGuard<'static, ()> {
+        RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn manifest(permissions: &[&str]) -> PluginManifest {
         let permissions = permissions
@@ -487,6 +501,7 @@ mod tests {
 
     #[test]
     fn command_returns_serialized_view() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -512,6 +527,7 @@ mod tests {
 
     #[test]
     fn unknown_command_is_rejected() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -530,6 +546,7 @@ mod tests {
 
     #[test]
     fn infinite_loop_is_interrupted_and_isolate_killed() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -554,6 +571,7 @@ mod tests {
 
     #[test]
     fn heap_limit_kills_isolate() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -584,6 +602,7 @@ mod tests {
 
     #[test]
     fn host_bridge_enforces_permissions() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -612,6 +631,7 @@ mod tests {
 
     #[test]
     fn show_toast_emits_notification() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -636,6 +656,7 @@ mod tests {
 
     #[test]
     fn item_invoke_calls_select_handler() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -666,6 +687,7 @@ mod tests {
 
     #[test]
     fn pool_evicts_lru_when_full() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(false, 2, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
@@ -699,6 +721,7 @@ mod tests {
 
     #[test]
     fn dedicated_mode_replaces_plugin() {
+        let _guard = lock_test();
         let mut pool = IsolatePool::new(true, 1, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
         let entry = write_bundle(
             r#"
