@@ -44,10 +44,6 @@ function writePins(pins: Set<string>): void {
   LocalStorage.set(PIN_KEY, JSON.stringify([...pins]));
 }
 
-function formatTime(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString();
-}
-
 /** Pinned entries first, then newest-first. */
 function orderedEntries(): ClipboardEntry[] {
   const pins = readPins();
@@ -60,10 +56,18 @@ function orderedEntries(): ClipboardEntry[] {
 }
 
 /** The serializable action refs rendered by the host action bar. */
-function actionRefs(): { id: string; title: string }[] {
+function actionRefs(): { id: string; title: string; icon: string }[] {
   return [
-    { id: "copy", title: "Copy" },
-    { id: "pin", title: "Pin" },
+    {
+      id: "copy",
+      title: "Copy",
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
+    },
+    {
+      id: "pin",
+      title: "Pin",
+      icon: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>',
+    },
   ];
 }
 
@@ -107,7 +111,6 @@ export function command(_name: string, _input: string): View {
   const items: ListItem[] = entries.map((entry) => ({
     id: entry.id,
     title: entry.text.slice(0, MAX_TEXT_PREVIEW),
-    subtitle: formatTime(entry.copied_at),
     keywords: [entry.text],
   }));
   List({
@@ -130,13 +133,12 @@ export function select(itemId: string): View {
   if (!entry) {
     return null;
   }
-  return {
-    type: "detail",
-    title: entry.text.slice(0, MAX_TEXT_PREVIEW),
-    subtitle: formatTime(entry.copied_at),
-    content: [{ type: "text", value: entry.text }],
-    actionPanel: { actions: actionRefs() },
-  };
+  // Confirm-to-copy: put the entry back on the clipboard so the user can paste
+  // it into the target window. The detail drill-down was replaced by a direct
+  // copy action to match a clipboard-history app's primary interaction.
+  Clipboard.write(entry.text);
+  showToast({ message: "Copied to clipboard", kind: "success" });
+  return null;
 }
 
 export function run(actionId: string, itemId?: string): void {
