@@ -208,9 +208,7 @@ pub(crate) fn open_launcher_window(
                     // own independent application window, then hide the launcher
                     // (each plugin behaves like a launched app).
                     Some(ResultItem::Command {
-                        plugin_id,
-                        command,
-                        ..
+                        plugin_id, command, ..
                     }) => {
                         let view = confirm_state.borrow().plugin_view(&plugin_id, &command);
                         if let Some(view) = view {

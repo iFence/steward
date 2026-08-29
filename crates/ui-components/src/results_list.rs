@@ -203,15 +203,15 @@ fn render_row(
         })
         .when(!selected, |this| {
             this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            // A click both selects the row and confirms it, so a
-                            // subsequent Enter (via the owner's list) always has a
-                            // selection to act on.
-                            this.selected = Some(index);
-                            if let Some(cb) = this.on_confirm.clone() {
-                                let _ = cb(index, cx);
-                            }
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            // A click both selects the row and confirms it, so a
+            // subsequent Enter (via the owner's list) always has a
+            // selection to act on.
+            this.selected = Some(index);
+            if let Some(cb) = this.on_confirm.clone() {
+                let _ = cb(index, cx);
+            }
             cx.notify();
         }));
 
@@ -540,7 +540,9 @@ impl ResultList {
     /// Used by panel action bars to know which item a view-level action targets.
     pub fn selected_item(&self, cx: &App) -> Option<ResultItem> {
         let state = self.state.read(cx);
-        state.selected.and_then(|index| state.items.get(index).cloned())
+        state
+            .selected
+            .and_then(|index| state.items.get(index).cloned())
     }
 
     /// Guarantee a selection exists: if nothing is selected but rows are

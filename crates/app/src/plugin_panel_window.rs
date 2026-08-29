@@ -12,8 +12,8 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, AnyWindowHandle, App, Bounds, Context, ElementId, FocusHandle,
-    KeyDownEvent, svg, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
+    div, prelude::*, px, rgb, size, svg, AnyWindowHandle, App, Bounds, Context, ElementId,
+    FocusHandle, KeyDownEvent, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowKind, WindowOptions,
 };
 use steward_ui_components::{
@@ -419,11 +419,12 @@ impl PluginPanelWindow {
                                 .invoke_action(&list_plugin, &action_id, item_id.as_deref())
                                 .is_none()
                             {
-                                eprintln!("[steward] plugin {list_plugin} not ready for action.invoke");
+                                eprintln!(
+                                    "[steward] plugin {list_plugin} not ready for action.invoke"
+                                );
                             }
                         });
-                    self.action_bar =
-                        Some(ActionBar::new(self.actions.clone(), Some(on_run), cx));
+                    self.action_bar = Some(ActionBar::new(self.actions.clone(), Some(on_run), cx));
                 }
             }
             PanelKind::Detail(data) => {
