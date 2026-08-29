@@ -14,6 +14,8 @@
 pub mod isolate_pool;
 pub mod isolated_process;
 pub mod service;
+pub mod storage;
 
 pub use isolate_pool::{InvokeError, IsolateId, IsolatePool};
 pub use service::{run_service, ServiceConfig};
+pub use storage::PluginStorage;

@@ -550,7 +550,7 @@ mod tests {
         let report = registry.scan().unwrap();
         assert_eq!(report.inserted, 1);
         assert_eq!(report.failed.len(), 1);
-        assert!(report.failed[0].contains("not supported in M2"));
+        assert!(report.failed[0].contains("not supported in M3"));
         let cached = registry.cached_plugins().unwrap();
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].manifest.id, "com.test.alpha");

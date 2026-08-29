@@ -7061,6 +7061,7 @@ name = "steward-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "crossbeam-channel",
  "dirs",
  "embed-resource",
@@ -7075,6 +7076,7 @@ dependencies = [
  "rust-embed",
  "serde_json",
  "steward-core-engine",
+ "steward-ipc-protocol",
  "steward-plugin-host",
  "steward-plugin-registry",
  "steward-storage",
@@ -7139,6 +7141,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "crossbeam-channel",
+ "dirs",
  "regex",
  "rquickjs",
  "serde",

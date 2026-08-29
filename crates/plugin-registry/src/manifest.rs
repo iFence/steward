@@ -105,9 +105,9 @@ impl PluginManifest {
             }
         }
         for permission in &self.permissions {
-            if !permission.supported_in_m2() {
+            if !permission.supported_in_m3() {
                 return Err(ManifestError(format!(
-                    "plugin '{}': permission '{}' is not supported in M2",
+                    "plugin '{}': permission '{}' is not supported in M3",
                     self.id, permission
                 )));
             }
@@ -254,6 +254,8 @@ pub enum Permission {
     ClipboardRead,
     #[serde(rename = "clipboard.write")]
     ClipboardWrite,
+    #[serde(rename = "clipboard.history")]
+    ClipboardHistory,
     #[serde(rename = "network")]
     Network,
     #[serde(rename = "fs.read")]
@@ -263,10 +265,13 @@ pub enum Permission {
 }
 
 impl Permission {
-    /// Permissions with a working host function in M2. The rest are
+    /// Permissions with a working host function in M3. The rest are
     /// recognized so the error message is precise, but rejected at scan.
-    pub fn supported_in_m2(self) -> bool {
-        matches!(self, Self::ClipboardRead | Self::ClipboardWrite)
+    pub fn supported_in_m3(self) -> bool {
+        matches!(
+            self,
+            Self::ClipboardRead | Self::ClipboardWrite | Self::ClipboardHistory
+        )
     }
 }
 
@@ -275,6 +280,7 @@ impl fmt::Display for Permission {
         f.write_str(match self {
             Self::ClipboardRead => "clipboard.read",
             Self::ClipboardWrite => "clipboard.write",
+            Self::ClipboardHistory => "clipboard.history",
             Self::Network => "network",
             Self::FsRead => "fs.read",
             Self::FsWrite => "fs.write",
@@ -504,10 +510,17 @@ mod tests {
             manifest.permissions = vec![permission];
             let error = manifest.validate().unwrap_err();
             assert!(
-                error.0.contains("not supported in M2"),
+                error.0.contains("not supported in M3"),
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn clipboard_history_permission_is_accepted() {
+        let mut manifest = calendar();
+        manifest.permissions = vec![Permission::ClipboardHistory];
+        manifest.validate().unwrap();
     }
 
     #[test]

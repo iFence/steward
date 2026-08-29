@@ -12,6 +12,20 @@ use serde_json::Value;
 /// JSON-RPC protocol version marker, present on every message.
 pub const JSONRPC_VERSION: &str = "2.0";
 
+/// One entry of a plugin's clipboard-history snapshot. The host collects the
+/// clipboard on a background thread and hands a recent slice to plugins whose
+/// manifest grants `clipboard.history` (see `command.invoke` params).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClipboardEntry {
+    /// Stable id within a snapshot (the host assigns monotonically increasing
+    /// row ids).
+    pub id: String,
+    /// The clipboard text.
+    pub text: String,
+    /// UNIX timestamp (seconds) when the text was copied.
+    pub copied_at: i64,
+}
+
 /// A JSON-RPC 2.0 request from the main process to the plugin runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Request {
@@ -152,6 +166,14 @@ pub mod method {
     /// Invoke a rendered list item's `onSelect`. Params: `{ isolate_id,
     /// item_id }`; result: `{}`.
     pub const ITEM_INVOKE: &str = "item.invoke";
+    /// Invoke a view-level action (`ActionPanel`) on a plugin. Params:
+    /// `{ isolate_id, action_id, item_id? }`; result: `{}`. The action's
+    /// `onRun` is looked up by `action_id`; a missing `item_id` is passed as
+    /// `undefined` to the plugin.
+    pub const ACTION_INVOKE: &str = "action.invoke";
+    /// Submit a rendered `form` view. Params: `{ isolate_id, values }`;
+    /// result: `{}`. The plugin's `submit(values)` handler runs.
+    pub const FORM_SUBMIT: &str = "form.submit";
     /// Drop a plugin's isolate. Params: `{ isolate_id }`; result: `{}`.
     pub const PLUGIN_UNLOAD: &str = "plugin.unload";
     /// Liveness probe. Params: `{}`; result: `{ pong: true }`.
@@ -235,5 +257,33 @@ mod tests {
     fn blank_lines_are_skipped() {
         assert_eq!(decode_line("").unwrap(), None);
         assert_eq!(decode_line("  \n").unwrap(), None);
+    }
+
+    #[test]
+    fn clipboard_entry_round_trips() {
+        let entry = ClipboardEntry {
+            id: "7".into(),
+            text: "hello".into(),
+            copied_at: 1_752_000_000,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let decoded: ClipboardEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn action_and_form_methods_are_distinct() {
+        assert_ne!(method::ACTION_INVOKE, method::FORM_SUBMIT);
+        assert_ne!(method::ACTION_INVOKE, method::ITEM_INVOKE);
+        // The request params for a form submit carry a values object that
+        // survives a JSON round trip.
+        let request = Request::new(
+            9,
+            method::FORM_SUBMIT,
+            serde_json::json!({ "isolate_id": 3, "values": { "name": "Ada" } }),
+        );
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.params["values"]["name"], "Ada");
     }
 }

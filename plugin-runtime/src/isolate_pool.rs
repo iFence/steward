@@ -23,8 +23,10 @@ use std::{
 use anyhow::{anyhow, Context as _, Result};
 use rquickjs::{Ctx, Exception, Function, Object, Runtime, Value as JsValue};
 use serde_json::Value as Json;
-use steward_ipc_protocol::{method, Notification};
+use steward_ipc_protocol::{method, ClipboardEntry, Notification};
 use steward_plugin_registry::{Permission, PluginManifest};
+
+use crate::storage::PluginStorage;
 
 /// Default number of isolates in the shared pool.
 pub const DEFAULT_POOL_CAPACITY: usize = 8;
@@ -77,6 +79,9 @@ struct Isolate {
     deadline: Rc<Cell<Option<Instant>>>,
     /// Last time this isolate executed anything; the LRU eviction key.
     last_used: Cell<Instant>,
+    /// Clipboard-history snapshot injected by the host for this invocation
+    /// (read by `clipboard.history()`, gated by `clipboard.history`).
+    clipboard_history: Rc<RefCell<Vec<ClipboardEntry>>>,
 }
 
 /// The shared isolate pool. Not `Send`: QuickJS runtimes are single-threaded
@@ -133,9 +138,17 @@ impl IsolatePool {
 
         let permissions = manifest.permissions.clone();
         let notifications = self.notifications.clone();
+        let clipboard_history = Rc::new(RefCell::new(Vec::new()));
+        let storage = Rc::new(RefCell::new(PluginStorage::load(&manifest.id)?));
         context
             .with(|ctx| -> anyhow::Result<()> {
-                install_host_bridge(&ctx, &permissions, &notifications)?;
+                install_host_bridge(
+                    &ctx,
+                    &permissions,
+                    &notifications,
+                    &clipboard_history,
+                    &storage,
+                )?;
                 ctx.eval_file::<JsValue, _>(entry)
                     .map_err(|error| anyhow!("failed to evaluate {}: {error}", entry.display()))?;
                 verify_module(&ctx).map_err(|error| {
@@ -155,6 +168,7 @@ impl IsolatePool {
             context,
             deadline,
             last_used: Cell::new(Instant::now()),
+            clipboard_history,
         }));
         Ok(id)
     }
@@ -167,10 +181,28 @@ impl IsolatePool {
         input: &Json,
         deadline_ms: u64,
     ) -> Result<Json, InvokeError> {
+        self.invoke_command_with_history(id, command, input, deadline_ms, None)
+    }
+
+    /// Like [`invoke_command`], but injects a host-provided clipboard-hist
+    /// snapshot into the isolate before it runs, so `clipboard.history()` can
+    /// read the entries for this invocation. `None` leaves the previous
+    /// snapshot (or an empty one) unchanged.
+    pub fn invoke_command_with_history(
+        &mut self,
+        id: IsolateId,
+        command: &str,
+        input: &Json,
+        deadline_ms: u64,
+        clipboard_history: Option<Vec<ClipboardEntry>>,
+    ) -> Result<Json, InvokeError> {
         {
             let isolate = self.isolate_mut(id).ok_or(InvokeError::NotFound)?;
             if !isolate.plugin.commands.iter().any(|c| c == command) {
                 return Err(InvokeError::CommandNotFound);
+            }
+            if let Some(history) = clipboard_history {
+                *isolate.clipboard_history.borrow_mut() = history;
             }
         }
         let input_text = match input {
@@ -186,20 +218,90 @@ impl IsolatePool {
         })
     }
 
+    /// Invoke a view-level action from an `ActionPanel`. Calls the plugin's
+    /// exported `run(actionId, itemId?)`; a missing export is a successful
+    /// no-op (the plugin has no actions to handle).
+    pub fn invoke_action(
+        &mut self,
+        id: IsolateId,
+        action_id: &str,
+        item_id: Option<String>,
+        deadline_ms: u64,
+    ) -> Result<(), InvokeError> {
+        let action_id = action_id.to_string();
+        let item_id = item_id.clone();
+        self.run_in_isolate(id, deadline_ms, |ctx| {
+            let module: Object = ctx.globals().get(PLUGIN_GLOBAL)?;
+            let run: JsValue = module.get("run")?;
+            if !run.is_function() {
+                return Ok(());
+            }
+            let run_fn: Function = run.into_function().ok_or_else(|| {
+                rquickjs::Error::new_from_js_message(
+                    "globalThis.__stewardPlugin.run",
+                    "function",
+                    "expected a callable run(actionId, itemId)",
+                )
+            })?;
+            if let Some(item_id) = item_id {
+                run_fn.call::<_, ()>((action_id, item_id))?;
+            } else {
+                run_fn.call::<_, ()>((action_id,))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Submit a rendered `form` view. Calls the plugin's exported
+    /// `submit(values)` (the `values` object is decoded from JSON inside the
+    /// isolate); a missing export is a successful no-op.
+    pub fn invoke_submit(
+        &mut self,
+        id: IsolateId,
+        values: &Json,
+        deadline_ms: u64,
+    ) -> Result<(), InvokeError> {
+        let values_text = serde_json::to_string(values)
+            .map_err(|e| InvokeError::Internal(format!("cannot encode form values: {e}")))?;
+        self.run_in_isolate(id, deadline_ms, |ctx| {
+            let module: Object = ctx.globals().get(PLUGIN_GLOBAL)?;
+            let submit: JsValue = module.get("submit")?;
+            if !submit.is_function() {
+                return Ok(());
+            }
+            let submit_fn: Function = submit.into_function().ok_or_else(|| {
+                rquickjs::Error::new_from_js_message(
+                    "globalThis.__stewardPlugin.submit",
+                    "function",
+                    "expected a callable submit(values)",
+                )
+            })?;
+            // Decode the values object inside the isolate (JSON.parse) so the
+            // plugin receives a real JS object, not a string.
+            let json: Object = ctx.globals().get("JSON")?;
+            let parse: Function = json.get("parse")?;
+            let js_values: JsValue = parse.call((values_text,))?;
+            submit_fn.call::<_, ()>((js_values,))?;
+            Ok(())
+        })
+    }
+
     /// Invoke a rendered list item's `select` handler (if the plugin exports
-    /// one). A missing handler is a no-op success.
+    /// one). A missing handler is a no-op success. The handler may return a
+    /// new view (e.g. a `detail` drill-down), which is returned as the serialized
+    /// JSON view; `None` means the plugin did not return a view.
     pub fn invoke_item(
         &mut self,
         id: IsolateId,
         item_id: &str,
         deadline_ms: u64,
-    ) -> Result<(), InvokeError> {
+    ) -> Result<Option<Json>, InvokeError> {
         let item_id = item_id.to_string();
         self.run_in_isolate(id, deadline_ms, |ctx| {
             let module: Object = ctx.globals().get(PLUGIN_GLOBAL)?;
             let select: JsValue = module.get("select")?;
             if !select.is_function() {
-                return Ok(());
+                return Ok(None);
             }
             let select_fn: Function = select.into_function().ok_or_else(|| {
                 rquickjs::Error::new_from_js_message(
@@ -208,8 +310,13 @@ impl IsolatePool {
                     "expected a callable select(itemId)",
                 )
             })?;
-            select_fn.call::<_, ()>((item_id,))?;
-            Ok(())
+            let result: JsValue = select_fn.call((item_id,))?;
+            let json = js_value_to_json(&ctx, &result)?;
+            if json.is_null() {
+                Ok(None)
+            } else {
+                Ok(Some(json))
+            }
         })
     }
 
@@ -332,15 +439,20 @@ impl IsolatePool {
     }
 }
 
-/// Install `globalThis.steward`: the M2 host bridge (`clipboard.read/write`,
-/// `showToast`), gated by the plugin's permission whitelist.
+/// Install `globalThis.steward`: the M3 host bridge (`clipboard.read/write/
+/// history`, `storage.*`, `showToast`), gated by the plugin's permission
+/// whitelist. Clipboard history and per-plugin storage are `Rc<RefCell<...>>`
+/// so the bridge closures see the isolate's live snapshot / backing store.
 fn install_host_bridge<'js>(
     ctx: &Ctx<'js>,
     permissions: &[Permission],
     notifications: &Rc<RefCell<Vec<Notification>>>,
+    clipboard_history: &Rc<RefCell<Vec<ClipboardEntry>>>,
+    storage: &Rc<RefCell<PluginStorage>>,
 ) -> rquickjs::Result<()> {
     let can_read = permissions.contains(&Permission::ClipboardRead);
     let can_write = permissions.contains(&Permission::ClipboardWrite);
+    let can_history = permissions.contains(&Permission::ClipboardHistory);
 
     let clipboard = Object::new(ctx.clone())?;
     clipboard.set(
@@ -379,9 +491,81 @@ fn install_host_bridge<'js>(
             Ok(())
         }),
     )?;
+    let history = clipboard_history.clone();
+    clipboard.set(
+        "history",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>| -> rquickjs::Result<JsValue<'js>> {
+                if !can_history {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "Steward permission denied: clipboard.history",
+                    ));
+                }
+                let snapshot = history.borrow();
+                let json = serde_json::to_value(&*snapshot).map_err(|error| {
+                    Exception::throw_message(&ctx, &format!("clipboard history failed: {error}"))
+                })?;
+                json_to_js(&ctx, &json)
+            },
+        ),
+    )?;
+
+    let storage_cell = storage.clone();
+    let plugin_storage = Object::new(ctx.clone())?;
+    plugin_storage.set(
+        "get",
+        Function::new(
+            ctx.clone(),
+            move |key: String| -> rquickjs::Result<Option<String>> {
+                Ok(storage_cell.borrow().get(&key))
+            },
+        ),
+    )?;
+    let storage_cell = storage.clone();
+    plugin_storage.set(
+        "set",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, key: String, value: String| -> rquickjs::Result<()> {
+                storage_cell
+                    .borrow_mut()
+                    .set(&key, &value)
+                    .map_err(|error| {
+                        Exception::throw_message(&ctx, &format!("storage set failed: {error}"))
+                    })?;
+                Ok(())
+            },
+        ),
+    )?;
+    let storage_cell = storage.clone();
+    plugin_storage.set(
+        "remove",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, key: String| -> rquickjs::Result<()> {
+                storage_cell.borrow_mut().remove(&key).map_err(|error| {
+                    Exception::throw_message(&ctx, &format!("storage remove failed: {error}"))
+                })?;
+                Ok(())
+            },
+        ),
+    )?;
+    let storage_cell = storage.clone();
+    plugin_storage.set(
+        "clear",
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> rquickjs::Result<()> {
+            storage_cell.borrow_mut().clear().map_err(|error| {
+                Exception::throw_message(&ctx, &format!("storage clear failed: {error}"))
+            })?;
+            Ok(())
+        }),
+    )?;
 
     let steward = Object::new(ctx.clone())?;
     steward.set("clipboard", clipboard)?;
+    steward.set("storage", plugin_storage)?;
     let notifications_toast = notifications.clone();
     steward.set(
         "showToast",
@@ -401,6 +585,22 @@ fn install_host_bridge<'js>(
         ),
     )?;
     ctx.globals().set("steward", steward)
+}
+
+/// Build a JS value by `JSON.parse`-ing a serialized `serde_json::Value`.
+/// Used to pass plugin-facing data (clipboard history snapshot) that is cheap
+/// to produce as a string and must arrive as a real JS object/array.
+fn json_to_js<'js>(ctx: &Ctx<'js>, value: &Json) -> rquickjs::Result<JsValue<'js>> {
+    let text = serde_json::to_string(value).map_err(|error| {
+        rquickjs::Error::new_from_js_message(
+            "Value",
+            "serde_json::Value",
+            format!("cannot encode value for JS: {error}"),
+        )
+    })?;
+    let json: Object = ctx.globals().get("JSON")?;
+    let parse: Function = json.get("parse")?;
+    parse.call((text,))
 }
 
 /// Verify the plugin bundle exposes the M2 module shape: an object with a
@@ -449,6 +649,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard};
+    use steward_ipc_protocol::ClipboardEntry;
     use steward_plugin_registry::PluginManifest;
 
     /// QuickJS `Runtime::new()` is not safe to run concurrently across test
@@ -744,5 +945,137 @@ mod tests {
         assert!(pool
             .invoke_command(second, "echo", &Json::Null, 1000)
             .is_ok());
+    }
+
+    #[test]
+    fn clipboard_history_is_injected_and_gated() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    var h = steward.clipboard.history();
+                    return { type: "list", items: h.map(function (e) {
+                        return { id: String(e.id), title: e.text };
+                    }) };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool
+            .load(&entry, &manifest(&["clipboard.history"]))
+            .unwrap();
+        let history = vec![
+            ClipboardEntry {
+                id: "1".into(),
+                text: "alpha".into(),
+                copied_at: 100,
+            },
+            ClipboardEntry {
+                id: "2".into(),
+                text: "beta".into(),
+                copied_at: 200,
+            },
+        ];
+        let view = pool
+            .invoke_command_with_history(id, "echo", &Json::Null, 1000, Some(history.clone()))
+            .unwrap();
+        assert_eq!(view["items"][0]["title"], "alpha");
+        assert_eq!(view["items"][1]["id"], "2");
+
+        // Without the permission the same call throws permission denied, and
+        // the isolate stays alive (a denial is not a kill).
+        let mut pool2 = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id2 = pool2.load(&entry, &manifest(&[])).unwrap();
+        let error = pool2
+            .invoke_command_with_history(id2, "echo", &Json::Null, 1000, Some(history.clone()))
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::PermissionDenied(m) if m.contains("clipboard.history")),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(pool2.active_count(), 1);
+    }
+
+    #[test]
+    fn storage_round_trips_through_bridge() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    steward.storage.set("k", "v");
+                    var got = steward.storage.get("k") || "null";
+                    steward.storage.remove("k");
+                    var after = steward.storage.get("k") || "null";
+                    steward.storage.set("x", "y");
+                    steward.storage.clear();
+                    var cleared = steward.storage.get("x") || "null";
+                    return { type: "list", items: [
+                        { id: "1", title: got },
+                        { id: "2", title: after },
+                        { id: "3", title: cleared }
+                    ] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let view = pool.invoke_command(id, "echo", &Json::Null, 1000).unwrap();
+        assert_eq!(view["items"][0]["title"], "v");
+        assert_eq!(view["items"][1]["title"], "null");
+        assert_eq!(view["items"][2]["title"], "null");
+    }
+
+    #[test]
+    fn invoke_action_runs_export() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) { return null; }
+                function run(actionId, itemId) {
+                    steward.showToast({ message: "action " + actionId + ":" + itemId });
+                }
+                return { command: command, run: run };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        pool.invoke_action(id, "copy", Some("7".into()), 1000)
+            .unwrap();
+        pool.invoke_action(id, "pin", None, 1000).unwrap();
+        let notifications = pool.drain_notifications();
+        assert_eq!(notifications.len(), 2);
+        assert_eq!(notifications[0].params["message"], "action copy:7");
+        assert_eq!(notifications[1].params["message"], "action pin:undefined");
+    }
+
+    #[test]
+    fn invoke_submit_runs_export() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) { return null; }
+                function submit(values) {
+                    steward.showToast({ message: "name=" + values.name });
+                }
+                return { command: command, submit: submit };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        pool.invoke_submit(id, &serde_json::json!({ "name": "Ada" }), 1000)
+            .unwrap();
+        let notifications = pool.drain_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].params["message"], "name=Ada");
     }
 }

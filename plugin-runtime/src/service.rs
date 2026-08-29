@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use steward_ipc_protocol::{
-    code, decode_line, encode_line, method, Message, Request, Response, RpcError,
+    code, decode_line, encode_line, method, ClipboardEntry, Message, Request, Response, RpcError,
 };
 use steward_plugin_registry::PluginManifest;
 
@@ -63,6 +63,10 @@ struct CommandInvokeParams {
     /// Query text or arbitrary JSON payload for the command.
     #[serde(default)]
     input: Value,
+    /// Host-provided clipboard-history snapshot, present only for plugins
+    /// whose manifest grants `clipboard.history` (used by `CommandInvokeParams`).
+    #[serde(default)]
+    clipboard_history: Vec<ClipboardEntry>,
     /// Execution deadline in milliseconds (host chooses 100 ms dynamic vs
     /// 500 ms static); the isolate is killed if it misses it.
     #[serde(default = "default_deadline")]
@@ -74,6 +78,27 @@ struct CommandInvokeParams {
 struct ItemInvokeParams {
     isolate_id: IsolateId,
     item_id: String,
+    #[serde(default = "default_deadline")]
+    deadline_ms: u64,
+}
+
+/// Parameters of `action.invoke`.
+#[derive(Debug, Deserialize)]
+struct ActionInvokeParams {
+    isolate_id: IsolateId,
+    action_id: String,
+    #[serde(default)]
+    item_id: Option<String>,
+    #[serde(default = "default_deadline")]
+    deadline_ms: u64,
+}
+
+/// Parameters of `form.submit`.
+#[derive(Debug, Deserialize)]
+struct FormSubmitParams {
+    isolate_id: IsolateId,
+    #[serde(default)]
+    values: Value,
     #[serde(default = "default_deadline")]
     deadline_ms: u64,
 }
@@ -146,11 +171,12 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
                 Ok(params) => params,
                 Err(error) => return Response::error(request.id, error),
             };
-            match pool.invoke_command(
+            match pool.invoke_command_with_history(
                 params.isolate_id,
                 &params.command,
                 &params.input,
                 params.deadline_ms,
+                Some(params.clipboard_history),
             ) {
                 Ok(view) => Response::ok(request.id, json!({ "view": view })),
                 Err(error) => invoke_error(request.id, &params.command, error),
@@ -162,8 +188,39 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
                 Err(error) => return Response::error(request.id, error),
             };
             match pool.invoke_item(params.isolate_id, &params.item_id, params.deadline_ms) {
-                Ok(()) => Response::ok(request.id, json!({})),
+                Ok(view) => {
+                    let mut result = json!({});
+                    if let Some(view) = view {
+                        result["view"] = view;
+                    }
+                    Response::ok(request.id, result)
+                }
                 Err(error) => invoke_error(request.id, "select", error),
+            }
+        }
+        method::ACTION_INVOKE => {
+            let params = match parse_params::<ActionInvokeParams>(request) {
+                Ok(params) => params,
+                Err(error) => return Response::error(request.id, error),
+            };
+            match pool.invoke_action(
+                params.isolate_id,
+                &params.action_id,
+                params.item_id,
+                params.deadline_ms,
+            ) {
+                Ok(()) => Response::ok(request.id, json!({})),
+                Err(error) => invoke_error(request.id, "action", error),
+            }
+        }
+        method::FORM_SUBMIT => {
+            let params = match parse_params::<FormSubmitParams>(request) {
+                Ok(params) => params,
+                Err(error) => return Response::error(request.id, error),
+            };
+            match pool.invoke_submit(params.isolate_id, &params.values, params.deadline_ms) {
+                Ok(()) => Response::ok(request.id, json!({})),
+                Err(error) => invoke_error(request.id, "submit", error),
             }
         }
         method::PLUGIN_UNLOAD => {
