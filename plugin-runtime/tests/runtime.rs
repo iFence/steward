@@ -179,6 +179,180 @@ fn load_and_invoke_command_returns_view() {
 }
 
 #[test]
+fn async_command_resolves_promise_view() {
+    let mut proc = RuntimeProc::spawn(&[]);
+    let root = plugin_root("async-basic");
+    write_plugin(
+        &root,
+        "com.test.async-basic",
+        r#"
+        var __stewardPlugin = (() => {
+            async function command(name, input) {
+                await Promise.resolve();
+                await Promise.resolve().then((x) => x);
+                return { type: "list", items: [{ id: "a", title: "async " + input }] };
+            }
+            return { command: command };
+        })();
+        "#,
+    );
+
+    let (load_result, _) = proc.load(&root, "com.test.async-basic");
+    let isolate_id = load_result["isolate_id"].as_u64().unwrap();
+    let (result, error, _) = proc.request(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "run", "input": "ok", "deadline_ms": 1000 }),
+    );
+    assert!(error.is_none(), "async invoke failed: {error:?}");
+    let view = result.unwrap()["view"].clone();
+    assert_eq!(view["type"], "list");
+    assert_eq!(view["items"][0]["title"], "async ok");
+}
+
+#[test]
+fn async_command_never_settles_is_timeout() {
+    let mut proc = RuntimeProc::spawn(&[]);
+    let root = plugin_root("async-pending");
+    write_plugin(
+        &root,
+        "com.test.async-pending",
+        r#"
+        var __stewardPlugin = (() => {
+            async function command(name, input) {
+                // Awaits an event no host function will ever deliver: the job
+                // queue empties, leaving the promise pending forever.
+                return await new Promise(function (resolve) {});
+            }
+            return { command: command };
+        })();
+        "#,
+    );
+
+    let (load_result, _) = proc.load(&root, "com.test.async-pending");
+    let isolate_id = load_result["isolate_id"].as_u64().unwrap();
+    let (_, error, _) = proc.request(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "run", "input": "", "deadline_ms": 100 }),
+    );
+    assert_eq!(error.unwrap().code, code::TIMEOUT);
+
+    // The isolate was killed: a second invoke reports the plugin as gone.
+    let (_, error, _) = proc.request(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "calendar", "input": "", "deadline_ms": 1000 }),
+    );
+    assert_eq!(error.unwrap().code, code::PLUGIN_NOT_FOUND);
+}
+
+#[test]
+fn node_polyfill_path_and_buffer_resolve() {
+    let mut proc = RuntimeProc::spawn(&[]);
+    let root = plugin_root("node-polyfill");
+    write_plugin(
+        &root,
+        "com.test.node-polyfill",
+        r#"
+        var __stewardPlugin = (() => {
+            var path = require("path");
+            var b = Buffer.from("ab", "hex");
+            function command(name, input) {
+                return { type: "list", items: [
+                    { id: "p", title: path.join("a", "b") + ":" + b.toString("hex") }
+                ] };
+            }
+            return { command: command };
+        })();
+        "#,
+    );
+
+    let (load_result, load_error) = proc.load(&root, "com.test.node-polyfill");
+    assert!(load_error.is_none(), "load failed: {load_error:?}");
+    let isolate_id = load_result["isolate_id"].as_u64().unwrap();
+    let (result, error, _) = proc.request(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "run", "input": "", "deadline_ms": 1000 }),
+    );
+    assert!(error.is_none(), "invoke failed: {error:?}");
+    let view = result.unwrap()["view"].clone();
+    assert_eq!(view["type"], "list");
+    assert_eq!(view["items"][0]["title"], "a/b:ab");
+}
+
+#[test]
+fn node_polyfill_fs_throws_not_supported() {
+    let mut proc = RuntimeProc::spawn(&[]);
+    let root = plugin_root("node-polyfill-fs");
+    write_plugin(
+        &root,
+        "com.test.node-polyfill-fs",
+        r#"
+        var __stewardPlugin = (() => {
+            function command(name, input) {
+                var fs = require("fs");
+                fs.readFileSync("x");
+                return { type: "list", items: [] };
+            }
+            return { command: command };
+        })();
+        "#,
+    );
+
+    let (load_result, _) = proc.load(&root, "com.test.node-polyfill-fs");
+    let isolate_id = load_result["isolate_id"].as_u64().unwrap();
+    let (_, error, _) = proc.request(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "run", "input": "", "deadline_ms": 1000 }),
+    );
+    let error = error.unwrap();
+    assert_eq!(error.code, code::INTERNAL_ERROR);
+    assert!(
+        error.message.contains("not supported in M3"),
+        "unexpected message: {}",
+        error.message
+    );
+}
+
+#[test]
+fn search_query_streams_results() {
+    let mut proc = RuntimeProc::spawn(&[]);
+    let root = plugin_root("search");
+    write_plugin(
+        &root,
+        "com.test.search",
+        r#"
+        var __stewardPlugin = (() => {
+            function command(name, input) {
+                return { type: "search", placeholder: "Search…" };
+            }
+            function search(query) {
+                return { type: "list", items: [
+                    { id: "a", title: "result " + query }
+                ] };
+            }
+            return { command: command, search: search };
+        })();
+        "#,
+    );
+
+    let (load_result, _) = proc.load(&root, "com.test.search");
+    let isolate_id = load_result["isolate_id"].as_u64().unwrap();
+    let (_, error, _) = proc.request(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "run", "input": "", "deadline_ms": 1000 }),
+    );
+    assert!(error.is_none());
+
+    let (result, error, _) = proc.request(
+        method::SEARCH_QUERY,
+        json!({ "isolate_id": isolate_id, "query": "hello", "deadline_ms": 1000 }),
+    );
+    assert!(error.is_none(), "search failed: {error:?}");
+    let view = result.unwrap()["view"].clone();
+    assert_eq!(view["type"], "list");
+    assert_eq!(view["items"][0]["title"], "result hello");
+}
+
+#[test]
 fn infinite_loop_hits_timeout_and_isolate_is_killed() {
     let mut proc = RuntimeProc::spawn(&[]);
     let root = plugin_root("timeout");

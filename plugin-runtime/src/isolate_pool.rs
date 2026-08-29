@@ -149,6 +149,13 @@ impl IsolatePool {
                     &clipboard_history,
                     &storage,
                 )?;
+                ctx.globals().set(
+                    "__stewardHost",
+                    serde_json::to_string(&node_polyfill_host_info())
+                        .unwrap_or_else(|_| "{}".into()),
+                )?;
+                ctx.eval::<(), _>(include_str!("node_polyfill.js"))
+                    .map_err(|error| anyhow!("failed to evaluate node polyfill: {error}"))?;
                 ctx.eval_file::<JsValue, _>(entry)
                     .map_err(|error| anyhow!("failed to evaluate {}: {error}", entry.display()))?;
                 verify_module(&ctx).map_err(|error| {
@@ -214,6 +221,7 @@ impl IsolatePool {
             let module: Object = ctx.globals().get(PLUGIN_GLOBAL)?;
             let command_fn: Function = module.get("command")?;
             let result: JsValue = command_fn.call((command, input_text))?;
+            let result = await_view(result)?;
             js_value_to_json(&ctx, &result)
         })
     }
@@ -244,9 +252,11 @@ impl IsolatePool {
                 )
             })?;
             if let Some(item_id) = item_id {
-                run_fn.call::<_, ()>((action_id, item_id))?;
+                let result: JsValue = run_fn.call((action_id, item_id))?;
+                await_view(result)?;
             } else {
-                run_fn.call::<_, ()>((action_id,))?;
+                let result: JsValue = run_fn.call((action_id,))?;
+                await_view(result)?;
             }
             Ok(())
         })
@@ -281,7 +291,8 @@ impl IsolatePool {
             let json: Object = ctx.globals().get("JSON")?;
             let parse: Function = json.get("parse")?;
             let js_values: JsValue = parse.call((values_text,))?;
-            submit_fn.call::<_, ()>((js_values,))?;
+            let result: JsValue = submit_fn.call((js_values,))?;
+            await_view(result)?;
             Ok(())
         })
     }
@@ -311,6 +322,43 @@ impl IsolatePool {
                 )
             })?;
             let result: JsValue = select_fn.call((item_id,))?;
+            let result = await_view(result)?;
+            let json = js_value_to_json(&ctx, &result)?;
+            if json.is_null() {
+                Ok(None)
+            } else {
+                Ok(Some(json))
+            }
+        })
+    }
+
+    /// Stream a `search` view's results. Calls the plugin's exported
+    /// `search(query)` (awaited when it returns a Promise) and returns the
+    /// serialized view the host renders in the search view's results area.
+    /// `Ok(None)` when the plugin does not export a `search` handler (the host
+    /// renders an empty results area).
+    pub fn invoke_search(
+        &mut self,
+        id: IsolateId,
+        query: &str,
+        deadline_ms: u64,
+    ) -> Result<Option<Json>, InvokeError> {
+        let query = query.to_string();
+        self.run_in_isolate(id, deadline_ms, |ctx| {
+            let module: Object = ctx.globals().get(PLUGIN_GLOBAL)?;
+            let search: JsValue = module.get("search")?;
+            if !search.is_function() {
+                return Ok(None);
+            }
+            let search_fn: Function = search.into_function().ok_or_else(|| {
+                rquickjs::Error::new_from_js_message(
+                    "globalThis.__stewardPlugin.search",
+                    "function",
+                    "expected a callable search(query)",
+                )
+            })?;
+            let result: JsValue = search_fn.call((query,))?;
+            let result = await_view(result)?;
             let json = js_value_to_json(&ctx, &result)?;
             if json.is_null() {
                 Ok(None)
@@ -380,6 +428,13 @@ impl IsolatePool {
                     Err(InvokeError::Plugin(message))
                 }
             }
+            Err(rquickjs::Error::WouldBlock) => {
+                // A plugin handler returned a Promise that never settles: the
+                // job queue is empty and M3 has no cross-process await to
+                // resume it. Treat it as a timeout and recycle the isolate.
+                self.drop_isolate(id);
+                Err(InvokeError::Timeout)
+            }
             Err(error) => Err(InvokeError::Internal(error.to_string())),
         }
     }
@@ -437,6 +492,53 @@ impl IsolatePool {
             self.isolates[index] = None;
         }
     }
+}
+
+/// Await a JS value returned by a plugin handler: a plain value passes
+/// through, a Promise is driven to settlement by draining the QuickJS job
+/// queue. Microtask-only async works because every `await` in a plugin either
+/// resolves immediately or awaits a host function that resolves synchronously;
+/// there is no cross-process await in M3. If the job queue empties before the
+/// promise settles, `Error::WouldBlock` is returned (the plugin is stuck on an
+/// event M3 cannot deliver), and `run_in_isolate` maps that to a timeout.
+fn await_view<'js>(value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    if !value.is_promise() {
+        return Ok(value);
+    }
+    let promise = value.into_promise().ok_or_else(|| {
+        rquickjs::Error::new_from_js_message(
+            "plugin result",
+            "Promise",
+            "expected a promise object",
+        )
+    })?;
+    promise.finish::<JsValue>()
+}
+
+/// Build the `__stewardHost` object the Node polyfill reads for `process.env`,
+/// `process.argv`, `os.*` and the cwd. Everything is stringified lossily so a
+/// non-UTF-8 environment variable never aborts plugin load.
+fn node_polyfill_host_info() -> Json {
+    let mut env = serde_json::Map::new();
+    for (key, value) in std::env::vars_os() {
+        env.insert(
+            key.to_string_lossy().into_owned(),
+            Json::String(value.to_string_lossy().into_owned()),
+        );
+    }
+    serde_json::json!({
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "homedir": dirs::home_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        "tmpdir": std::env::temp_dir().to_string_lossy().into_owned(),
+        "cwd": std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        "env": Json::Object(env),
+        "argv": std::env::args().collect::<Vec<_>>(),
+    })
 }
 
 /// Install `globalThis.steward`: the M3 host bridge (`clipboard.read/write/

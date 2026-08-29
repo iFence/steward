@@ -95,6 +95,16 @@ pub enum HostEvent {
         command: String,
         result: Result<Value, RpcError>,
     },
+    /// A `search` view's results for a query. `gen` is the generation that
+    /// sent the request; the caller drops stale generations like a command
+    /// result. The launcher/panel replaces the search view's results area.
+    SearchResult {
+        gen: u64,
+        plugin_id: String,
+        command: String,
+        query: String,
+        result: Result<Value, RpcError>,
+    },
     /// A plugin asked the host to show a toast (`{ message, kind?,
     /// durationMs? }`).
     Toast { params: Value },
@@ -156,6 +166,12 @@ enum Pending {
         plugin_id: String,
         values: Value,
     },
+    Search {
+        gen: u64,
+        plugin_id: String,
+        command: String,
+        query: String,
+    },
 }
 
 /// A call that must wait for its plugin's isolate to be (re)loaded before it
@@ -180,6 +196,12 @@ enum QueuedCall {
     Submit {
         plugin_id: String,
         values: Value,
+    },
+    Search {
+        gen: u64,
+        plugin_id: String,
+        command: String,
+        query: String,
     },
 }
 
@@ -476,6 +498,53 @@ impl PluginHost {
         Some(0)
     }
 
+    /// Send `search.query` for a `search` view. Like [`invoke`], a not-yet-loaded
+    /// plugin is lazy-loaded here, with `Some(0)` returned as the sentinel for
+    /// a queued call; stale generations are dropped by the caller.
+    pub fn invoke_search(
+        &mut self,
+        gen: u64,
+        plugin_id: &str,
+        command: &str,
+        query: &str,
+    ) -> Option<u64> {
+        let conn_key = self.conn_key_for(plugin_id);
+        if !self.conns.contains_key(&conn_key) {
+            return None;
+        }
+        if self
+            .conns
+            .get(&conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(plugin_id))
+        {
+            let id = self.dispatch_search(&conn_key, plugin_id, query)?;
+            self.pending.insert(
+                id,
+                Pending::Search {
+                    gen,
+                    plugin_id: plugin_id.to_string(),
+                    command: command.to_string(),
+                    query: query.to_string(),
+                },
+            );
+            return Some(id);
+        }
+        if !self.loaded.contains_key(plugin_id) {
+            return None;
+        }
+        self.queued
+            .entry(plugin_id.to_string())
+            .or_default()
+            .push(QueuedCall::Search {
+                gen,
+                plugin_id: plugin_id.to_string(),
+                command: command.to_string(),
+                query: query.to_string(),
+            });
+        self.ensure_loaded(&conn_key, plugin_id);
+        Some(0)
+    }
+
     /// Process all pending runtime frames and due restarts; returns events
     /// for the caller (the app's foreground poll task).
     pub fn drain_events(&mut self) -> Vec<HostEvent> {
@@ -695,6 +764,25 @@ impl PluginHost {
         Some(id)
     }
 
+    /// Send a `search.query` for a loaded isolate.
+    fn dispatch_search(&mut self, conn_key: &str, plugin_id: &str, query: &str) -> Option<u64> {
+        let conn = self.conns.get_mut(conn_key)?;
+        let isolate_id = *conn.isolates.get(plugin_id)?;
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let request = Request::new(
+            id,
+            method::SEARCH_QUERY,
+            json!({
+                "isolate_id": isolate_id,
+                "query": query,
+                "deadline_ms": crate::route::STATIC_DEADLINE_MS,
+            }),
+        );
+        conn.send(&request).ok()?;
+        Some(id)
+    }
+
     /// Whether the plugin's manifest grants the `clipboard.history` permission.
     fn plugin_has_history(&self, plugin_id: &str) -> bool {
         self.loaded.get(plugin_id).is_some_and(|(_, meta)| {
@@ -766,6 +854,25 @@ impl PluginHost {
                         );
                     }
                 }
+                QueuedCall::Search {
+                    gen,
+                    plugin_id: pid,
+                    command,
+                    query,
+                } => {
+                    let id = self.dispatch_search(conn_key, &pid, &query);
+                    if let Some(id) = id {
+                        self.pending.insert(
+                            id,
+                            Pending::Search {
+                                gen,
+                                plugin_id: pid,
+                                command,
+                                query,
+                            },
+                        );
+                    }
+                }
             }
         }
     }
@@ -786,6 +893,7 @@ impl PluginHost {
             QueuedCall::Item { plugin_id, .. } => plugin_id.clone(),
             QueuedCall::Action { plugin_id, .. } => plugin_id.clone(),
             QueuedCall::Submit { plugin_id, .. } => plugin_id.clone(),
+            QueuedCall::Search { plugin_id, .. } => plugin_id.clone(),
         };
         if let Some(conn) = self.conns.get_mut(conn_key) {
             conn.isolates.remove(&plugin_id);
@@ -832,6 +940,21 @@ impl PluginHost {
                         "kind": "error",
                     }),
                 }),
+                QueuedCall::Search {
+                    gen,
+                    plugin_id,
+                    command,
+                    query,
+                } => events.push(HostEvent::SearchResult {
+                    gen,
+                    plugin_id,
+                    command,
+                    query,
+                    result: Err(RpcError::new(
+                        code::PLUGIN_NOT_FOUND,
+                        "plugin isolate is not loaded",
+                    )),
+                }),
             }
             return;
         }
@@ -859,7 +982,8 @@ impl PluginHost {
                 Pending::Load { plugin_id }
                 | Pending::Item { plugin_id, .. }
                 | Pending::Action { plugin_id, .. }
-                | Pending::Submit { plugin_id, .. } => plugin_id,
+                | Pending::Submit { plugin_id, .. }
+                | Pending::Search { plugin_id, .. } => plugin_id,
                 Pending::Invoke { hit, .. } => &hit.plugin_id,
             };
             !affected.contains(plugin_id)
@@ -1010,6 +1134,40 @@ impl PluginHost {
                     });
                 }
             }
+            Pending::Search {
+                gen,
+                plugin_id,
+                command,
+                query,
+            } => {
+                if let Some(error) = &response.error {
+                    if error.code == code::PLUGIN_NOT_FOUND {
+                        self.handle_stale_isolate(
+                            conn_key,
+                            QueuedCall::Search {
+                                gen,
+                                plugin_id: plugin_id.clone(),
+                                command: command.clone(),
+                                query: query.clone(),
+                            },
+                            events,
+                        );
+                        return;
+                    }
+                }
+                let result = match (response.result, response.error) {
+                    (Some(result), None) => Ok(result),
+                    (_, Some(error)) => Err(error),
+                    _ => Err(RpcError::new(code::INTERNAL_ERROR, "empty response")),
+                };
+                events.push(HostEvent::SearchResult {
+                    gen,
+                    plugin_id,
+                    command,
+                    query,
+                    result,
+                });
+            }
         }
     }
 
@@ -1050,6 +1208,18 @@ impl PluginHost {
                         "message": format!("{plugin_id}: {}", error.message),
                         "kind": "error",
                     }),
+                }),
+                QueuedCall::Search {
+                    gen,
+                    plugin_id,
+                    command,
+                    query,
+                } => events.push(HostEvent::SearchResult {
+                    gen,
+                    plugin_id,
+                    command,
+                    query,
+                    result: Err(error.clone()),
                 }),
             }
         }

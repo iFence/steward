@@ -103,6 +103,15 @@ struct FormSubmitParams {
     deadline_ms: u64,
 }
 
+/// Parameters of `search.query`.
+#[derive(Debug, Deserialize)]
+struct SearchQueryParams {
+    isolate_id: IsolateId,
+    query: String,
+    #[serde(default = "default_deadline")]
+    deadline_ms: u64,
+}
+
 /// Parameters of `plugin.unload`.
 #[derive(Debug, Deserialize)]
 struct UnloadParams {
@@ -221,6 +230,22 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
             match pool.invoke_submit(params.isolate_id, &params.values, params.deadline_ms) {
                 Ok(()) => Response::ok(request.id, json!({})),
                 Err(error) => invoke_error(request.id, "submit", error),
+            }
+        }
+        method::SEARCH_QUERY => {
+            let params = match parse_params::<SearchQueryParams>(request) {
+                Ok(params) => params,
+                Err(error) => return Response::error(request.id, error),
+            };
+            match pool.invoke_search(params.isolate_id, &params.query, params.deadline_ms) {
+                Ok(view) => {
+                    let mut result = json!({});
+                    if let Some(view) = view {
+                        result["view"] = view;
+                    }
+                    Response::ok(request.id, result)
+                }
+                Err(error) => invoke_error(request.id, "search", error),
             }
         }
         method::PLUGIN_UNLOAD => {

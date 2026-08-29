@@ -174,6 +174,11 @@ pub mod method {
     /// Submit a rendered `form` view. Params: `{ isolate_id, values }`;
     /// result: `{}`. The plugin's `submit(values)` handler runs.
     pub const FORM_SUBMIT: &str = "form.submit";
+    /// Stream results for a `search` view. Params: `{ isolate_id, query,
+    /// deadline_ms }`; result: `{ view }`. The plugin's `search(query)`
+    /// handler runs and returns a view (usually a `list` or `grid`) that
+    /// replaces the search view's results area.
+    pub const SEARCH_QUERY: &str = "search.query";
     /// Drop a plugin's isolate. Params: `{ isolate_id }`; result: `{}`.
     pub const PLUGIN_UNLOAD: &str = "plugin.unload";
     /// Liveness probe. Params: `{}`; result: `{ pong: true }`.
