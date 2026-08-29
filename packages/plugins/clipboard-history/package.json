@@ -4,7 +4,11 @@
   "private": true,
   "description": "Official example plugin: Clipboard History.",
   "main": "src/index.ts",
+  "dependencies": {
+    "@steward/extension-api": "workspace:*"
+  },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.js --sourcemap"
+    "build": "esbuild src/index.ts --bundle --format=iife --global-name=__stewardPlugin --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit"
   }
 }

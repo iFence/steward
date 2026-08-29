@@ -1,0 +1,15 @@
+{
+  "id": "com.example.clipboard-history",
+  "name": "Clipboard History",
+  "version": "0.1.0",
+  "commands": [
+    {
+      "name": "clipboard-history",
+      "title": "Clipboard History",
+      "keywords": ["剪贴板", "jtl"],
+      "trigger": { "type": "command" }
+    }
+  ],
+  "permissions": ["clipboard.read", "clipboard.write", "clipboard.history"],
+  "isolation": "shared-pool"
+}
