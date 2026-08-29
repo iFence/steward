@@ -6,17 +6,21 @@ pub mod action_bar;
 pub mod calendar;
 pub mod detail;
 pub mod form;
+pub mod grid;
 pub mod lunar;
 pub mod palette;
 pub mod results_list;
+pub mod search_bar;
 
 pub use action_bar::*;
 pub use calendar::*;
 pub use detail::*;
 pub use form::*;
+pub use grid::*;
 pub use lunar::*;
 pub use palette::*;
 pub use results_list::*;
+pub use search_bar::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

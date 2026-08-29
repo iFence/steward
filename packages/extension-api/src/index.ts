@@ -66,6 +66,17 @@ export interface FormField {
   required?: boolean;
 }
 
+/** One cell in a `grid` view. */
+export interface GridItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  /** Optional inline SVG icon document, rendered inside the cell. */
+  icon?: string;
+  /** A small label shown in the cell's corner (e.g. a count or shortcut). */
+  badge?: string;
+}
+
 /**
  * A serializable view returned by `command`. M3 supports:
  * - `list`: rows rendered in the launcher drop-down;
@@ -92,20 +103,47 @@ export type View =
       actionPanel?: ActionPanelSpec;
     }
   | { type: "form"; title?: string; fields: FormField[]; submitLabel?: string }
+  | {
+      type: "grid";
+      columns: number;
+      items: GridItem[];
+      selectedId?: string;
+      actionPanel?: ActionPanelSpec;
+    }
+  | {
+      type: "search";
+      placeholder?: string;
+      actionPanel?: ActionPanelSpec;
+    }
   | null;
 
-/** The module shape the host reads from `globalThis.__stewardPlugin`. */
+/**
+ * The module shape the host reads from `globalThis.__stewardPlugin`.
+ *
+ * Every handler may be `async`: the host drives the returned Promise to
+ * settlement by draining the QuickJS micro-task queue until it resolves or the
+ * command deadline fires. Micro-task-only async works (awaiting host functions
+ * like `Clipboard`/`LocalStorage` resolves synchronously); true cross-process
+ * await (sockets, disk) lands with the fs/network permissions in a later
+ * milestone.
+ */
 export interface PluginModule {
-  command(name: string, input: string): View;
+  command(name: string, input: string): View | Promise<View>;
   /**
    * Handle a list item's confirm. May return a new view (e.g. a `detail`
    * drill-down), which the host replaces the command's view slot with.
    */
-  select?(itemId: string): View;
+  select?(itemId: string): View | Promise<View>;
   /** Handle an `actionPanel` action invocation. */
   run?(actionId: string, itemId?: string): void | Promise<void>;
   /** Handle a `form` submit. */
   submit?(values: Record<string, string | boolean>): void | Promise<void>;
+  /**
+   * Stream a `search` view's results as the user types. The host invokes it
+   * with the current query text and renders the returned `View` (usually a
+   * `list` or `grid`) in the search view's results area.
+   */
+  search?(query: string): View | Promise<View>;
 }
 
 export interface ToastOptions {
