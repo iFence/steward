@@ -22,11 +22,10 @@ mod windows {
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
         UI::WindowsAndMessaging::{
-            GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow,
-            GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
-            SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE,
-            HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-            SW_HIDE, SW_SHOW, WS_THICKFRAME,
+            GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+            GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WS_THICKFRAME,
         },
     };
 
