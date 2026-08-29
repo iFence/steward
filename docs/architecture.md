@@ -350,3 +350,14 @@ steward/
 - 宿主新增 `loading_plugins`（在途 load）与 `queued`（等待加载完成后重放的 command/item 调用）。`handle_response` 对 `PLUGIN_NOT_FOUND` 走 `handle_stale_isolate`：清掉失效 isolate → 若未在加载则 `ensure_loaded` 一次并重入队（以 `loading_plugins` 防循环）；`plugin.load` 成功后 `flush_queued` 把积压调用转成真实请求；加载失败则把积压调用以错误事件上抛。连接崩溃（`handle_eof`）改用 `forget_conn_state` 清理该连接的 loading/queued/pending，重启后空连接由下一次调用懒加载。
 - 验收：新增宿主级规模化回归测试（`plugin-host/tests/scaling.rs`）：N=100 下 `cmd0/cmd50/cmd75/cmd99`（远超共享池容量）均能正确懒加载出 list view，证明任意索引插件可用、不存在失效 isolate；并宽松断言 `set_plugins(N=100)` 与单次冷查询耗时不随安装量显著增长。`cargo test` / `cargo clippy -D warnings` 全绿。
 - 测试稳定化：`isolate_pool` 单测在并行线程同时创建多个 QuickJS `Runtime` 时偶发失败（参数传入异常），生产服务循环单线程，故仅在本模块测试内加 `RUNTIME_TEST_LOCK` 串行化，属测试稳定化而非产物改动。
+
+### 2026-08-28（M3 首轮：插件核心 API + 类型化 View + clipboard-history）
+
+- 范围：按 roadmap 第一优先级落地「插件 API 覆盖面 + 声明式 UI 的最小类型化形态」，第二波再补 Node polyfill 与主题/动画打磨。
+- UI 模型定为**类型化可序列化 View 描述符**（延续 `list`/`calendar`）：新增 `detail`（`title/subtitle/content[]`，块为 `text/code/separator`）与 `form`（`fields[]/submitLabel`），并为 `list`/`calendar`/`detail` 增加可选 `actionPanel`（`actions[]`）。宿主用原生 GPUI 渲染；`detail`/`form` 落在独立插件窗口，启动器内页仍以 `list`/`calendar` 为主。
+- 插件回调通道：保留 `command`/`select(itemId)`；新增 `run(actionId, itemId?)`（`action.invoke`）与 `submit(values)`（`form.submit`）。`select` 可返回新视图（`item.invoke` 返回 `{ view? }`），宿主经 `HostEvent::ItemView` 弹出/替换独立窗口，实现列表→详情下钻。
+- 运行时 host bridge 扩展：`clipboard.history()`（读宿主注入的本次 `command.invoke` 快照，受新权限 `clipboard.history` 门控）与 `per-plugin storage.*`（`<data_dir>/plugin-storage/<plugin_id>.json` 免权限 KV）。剪贴板历史由宿主 `ClipboardWatcher` 线程（arboard ~300ms）采集落 SQLite `clipboard_history`，插件只读注入快照。
+- 权限：manifest 新增 `clipboard.history`；M3 放行集 = `clipboard.read`/`write`/`history`；`network`/`fs.*` 仍识别但扫描拒绝，文案改 `not supported in M3`。
+- 官方插件 `clipboard-history` 落地：列表（置顶 pin）→ 选择出 `Detail` → ActionBar `copy`/`pin`（copy 用 `Clipboard.write`，pin 用 `LocalStorage`）；`permissions` 申明三件套。
+- 决策：`LocalStorage` 走运行时文件型 KV、按插件 id 分文件、不新增权限；`detail`/`form` 的窗口内交互（表单文本输入、`set_view` 更新已有面板）与 `Grid`/`SearchBar`/Node polyfill/async `command()` 留待后续迭代；`ActionPanel` 为视图级共享动作条（作用于当前选中项）。
+- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` 全绿；`tsc --noEmit`（extension-api / calendar / clipboard-history）与两个插件 esbuild IIFE 构建通过。
