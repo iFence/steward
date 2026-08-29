@@ -23,7 +23,9 @@ steward-storage = { path = "../storage" }
 steward-ui-components = { path = "../ui-components" }
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-plugin-host = { path = "../plugin-host" }
+steward-ipc-protocol = { path = "../ipc-protocol" }
 serde_json.workspace = true
+arboard.workspace = true
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon.workspace = true

@@ -9,7 +9,7 @@
 //! hotkey and the launcher's blur/foreground hide logic never touch them, so
 //! the main panel keeps working while the widget stays put.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
     div, prelude::*, px, rgb, size, AnyWindowHandle, App, Bounds, Context, ElementId, FocusHandle,
@@ -17,8 +17,9 @@ use gpui::{
     WindowControlArea, WindowKind, WindowOptions,
 };
 use steward_ui_components::{
-    days_in_month, iso_date, palette, CalendarView, ResultItem, ResultList, ResultListDelegate,
-    CALENDAR_GRID_HEIGHT,
+    days_in_month, iso_date, palette, ActionBar, ActionRef, CalendarView, DetailBlock, DetailData,
+    DetailView, FieldKind, FormData, FormField, FormOption, FormValue, FormView, ResultItem,
+    ResultList, ResultListDelegate, CALENDAR_GRID_HEIGHT,
 };
 
 use crate::config::{
@@ -40,6 +41,9 @@ const PANEL_NAV_HEIGHT: f32 = 26.0;
 /// Storage key persisting the detached panel window's logical size
 /// (`"<width> <height>"`), so reopening keeps the user's chosen size.
 const PANEL_WINDOW_SIZE_KEY: &str = "panel_window_size";
+/// Default content height of a detached detail / form panel (the owner can
+/// resize; this is the nominal starting height).
+const DETAIL_FORM_PANEL_HEIGHT: f32 = 260.0;
 
 /// Height of a list panel window for `count` plugin rows, capped like the
 /// launcher's drop-down (`MAX_RESULT_ROWS`).
@@ -52,6 +56,8 @@ fn list_height(count: usize) -> f32 {
 enum PanelKind {
     Calendar(ActiveCalendar),
     List(Vec<ResultItem>),
+    Detail(DetailData),
+    Form(FormData),
 }
 
 /// A detached plugin-view window: one entity per open widget.
@@ -63,6 +69,12 @@ pub(crate) struct PluginPanelWindow {
     kind: PanelKind,
     calendar: Option<CalendarView>,
     list: Option<ResultList>,
+    detail: Option<DetailView>,
+    form: Option<FormView>,
+    action_bar: Option<ActionBar>,
+    /// Actions declared by the current view's `actionPanel`, rendered as a
+    /// footer bar. `None` when the view has no action panel.
+    actions: Vec<ActionRef>,
     /// Keyboard-selected ISO date for a calendar panel (`YYYY-MM-DD`).
     selection: String,
     focus: FocusHandle,
@@ -78,13 +90,72 @@ impl Render for PluginPanelWindow {
         // fixed, everything else fills the client area so resizing the window
         // (larger or smaller) scales the calendar/list rather than adding dead
         // space or clipping it.
-        let content_h = (window.viewport_size().height.as_f32() - PANEL_DRAG_HEIGHT - nav_h - padding * 2.0)
-            .max(120.0);
+        let content_h =
+            (window.viewport_size().height.as_f32() - PANEL_DRAG_HEIGHT - nav_h - padding * 2.0)
+                .max(120.0);
         let nav_toolbar = if has_nav {
             self.nav_toolbar(cx).into_any_element()
         } else {
             div().into_any_element()
         };
+        let has_actions = !self.actions.is_empty();
+        let content = div()
+            .flex_1()
+            .flex_col()
+            .p(px(padding))
+            .child(match &self.kind {
+                PanelKind::Calendar(_) => div()
+                    .id(ElementId::from("panel-calendar"))
+                    .h(px(content_h))
+                    .w_full()
+                    .child(
+                        self.calendar
+                            .as_ref()
+                            .expect("calendar panel has a CalendarView")
+                            .render(content_h, cx),
+                    ),
+                PanelKind::List(_) => {
+                    let height = content_h;
+                    div()
+                        .id(ElementId::from("panel-list"))
+                        .h(px(height))
+                        .w_full()
+                        .child(
+                            self.list
+                                .as_ref()
+                                .expect("list panel has a ResultList")
+                                .render(height, palette::SELECTION_WASH, cx),
+                        )
+                }
+                PanelKind::Detail(_) => div()
+                    .id(ElementId::from("panel-detail"))
+                    .h(px(content_h))
+                    .w_full()
+                    .child(
+                        self.detail
+                            .as_ref()
+                            .expect("detail panel has a DetailView")
+                            .render(content_h, cx),
+                    ),
+                PanelKind::Form(_) => div()
+                    .id(ElementId::from("panel-form"))
+                    .h(px(content_h))
+                    .w_full()
+                    .child(
+                        self.form
+                            .as_ref()
+                            .expect("form panel has a FormView")
+                            .render(content_h, cx),
+                    ),
+            })
+            .when(has_actions, |this| {
+                this.child(
+                    self.action_bar
+                        .as_ref()
+                        .expect("has_actions implies an action bar")
+                        .render(cx),
+                )
+            });
         let root = div()
             .id(ElementId::from("plugin-panel"))
             .track_focus(&self.focus)
@@ -107,66 +178,75 @@ impl Render for PluginPanelWindow {
                     .window_control_area(WindowControlArea::Drag),
             )
             .child(nav_toolbar)
-            .child(
-                div()
-                    .flex_1()
-                    .p(px(padding))
-                    .child(match &self.kind {
-                        PanelKind::Calendar(_) => div()
-                            .id(ElementId::from("panel-calendar"))
-                            .h(px(content_h))
-                            .w_full()
-                            .child(
-                                self.calendar
-                                    .as_ref()
-                                    .expect("calendar panel has a CalendarView")
-                                    .render(content_h, cx),
-                            ),
-                        PanelKind::List(_) => {
-                            let height = content_h;
-                            div()
-                                .id(ElementId::from("panel-list"))
-                                .h(px(height))
-                                .w_full()
-                                .child(
-                                    self.list
-                                        .as_ref()
-                                        .expect("list panel has a ResultList")
-                                        .render(height, palette::SELECTION_WASH, cx),
-                                )
-                        }
-                    }),
-            );
+            .child(content);
         root
     }
 }
 
 impl PluginPanelWindow {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         state: Rc<RefCell<LauncherState>>,
         i18n: Rc<Localization>,
         plugin_id: String,
         command: String,
         kind: PanelKind,
+        panel_actions: Vec<ActionRef>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus = cx.focus_handle();
-        let mut calendar = None;
-        let mut list = None;
-        let mut selection = String::new();
+        let mut this = Self {
+            plugin_id,
+            command,
+            state,
+            i18n,
+            kind: PanelKind::List(Vec::new()),
+            calendar: None,
+            list: None,
+            detail: None,
+            form: None,
+            action_bar: None,
+            actions: Vec::new(),
+            selection: String::new(),
+            focus,
+        };
+        this.init_views(kind, panel_actions, window, cx);
+        this.focus.focus(window, cx);
+        this
+    }
+
+    /// Rebuild the sub-views (calendar / list / detail / form) and the action
+    /// bar from a new `PanelKind` and its action refs. Shared by `new` and
+    /// [`Self::set_view`] so an already-open panel can be re-targeted to a new
+    /// view (e.g. a list item's `select` returning a `detail`).
+    fn init_views(
+        &mut self,
+        kind: PanelKind,
+        panel_actions: Vec<ActionRef>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.calendar = None;
+        self.list = None;
+        self.detail = None;
+        self.form = None;
+        self.action_bar = None;
+        self.actions = panel_actions.clone();
+        self.selection = String::new();
 
         match &kind {
             PanelKind::Calendar(active) => {
-                let select_state = state.clone();
+                let select_state = self.state.clone();
                 let select_plugin = active.plugin_id.clone();
+                let select_command = self.command.clone();
                 let on_select: steward_ui_components::CalendarSelectCallback =
                     Rc::new(move |date: String, _cx: &mut App| {
                         if select_state
                             .borrow()
                             .plugin_host
                             .borrow_mut()
-                            .invoke_item(&select_plugin, &date)
+                            .invoke_item(&select_plugin, &select_command, &date)
                             .is_none()
                         {
                             eprintln!(
@@ -175,19 +255,17 @@ impl PluginPanelWindow {
                             );
                         }
                     });
-                let dock_state = state.clone();
+                let dock_state = self.state.clone();
                 let dock_plugin = active.plugin_id.clone();
-                let dock_command = command.clone();
+                let dock_command = self.command.clone();
                 let on_toggle_pin: steward_ui_components::PinToggleCallback =
                     Rc::new(move |pinned: bool, cx: &mut App| {
-                        // In the detached window, unpinning means docking the
-                        // view back into the launcher.
                         if !pinned {
                             dock_panel_back(&dock_state, &dock_plugin, &dock_command, cx);
                         }
                     });
                 let view = CalendarView::new(Some(on_select), Some(on_toggle_pin), window, cx);
-                let language = i18n.language();
+                let language = self.i18n.language();
                 view.set_data(
                     active.data.clone(),
                     calendar_month_label(&language, active.data.year, active.data.month),
@@ -197,23 +275,32 @@ impl PluginPanelWindow {
                 );
                 view.set_detachable(true, cx);
                 view.set_pinned(true, cx);
-                selection = active.data.selected.clone();
-                calendar = Some(view);
+                self.selection = active.data.selected.clone();
+                self.calendar = Some(view);
             }
             PanelKind::List(items) => {
                 let items_rc = Rc::new(RefCell::new(items.clone()));
-                let host = state.borrow().plugin_host.clone();
-                let title = i18n.translate("command");
+                let host = self.state.borrow().plugin_host.clone();
+                let panel_command = self.command.clone();
+                let title = self.i18n.translate("command");
                 let delegate = ResultListDelegate::new().type_label(title).on_confirm(
                     move |index, _cx: &mut App| {
                         let item = items_rc.borrow().get(index).cloned();
                         if let Some(ResultItem::Plugin {
-                            plugin_id, item_id, ..
+                            plugin_id,
+                            item_id,
+                            command: item_command,
+                            ..
                         }) = item
                         {
+                            let cmd = if item_command.is_empty() {
+                                panel_command.as_str()
+                            } else {
+                                item_command.as_str()
+                            };
                             if host
                                 .borrow_mut()
-                                .invoke_item(&plugin_id, &item_id)
+                                .invoke_item(&plugin_id, cmd, &item_id)
                                 .is_none()
                             {
                                 eprintln!(
@@ -227,7 +314,7 @@ impl PluginPanelWindow {
                 );
                 let view = ResultList::new(delegate, window, cx);
                 let icons = {
-                    let state = state.borrow();
+                    let state = self.state.borrow();
                     items
                         .iter()
                         .map(|row| match row {
@@ -242,22 +329,55 @@ impl PluginPanelWindow {
                         .collect::<Vec<_>>()
                 };
                 view.set_results(items.clone(), icons, cx);
-                list = Some(view);
+                self.list = Some(view);
+            }
+            PanelKind::Detail(data) => {
+                let action_state = self.state.clone();
+                let action_plugin = self.plugin_id.clone();
+                let on_run: steward_ui_components::ActionRunCallback =
+                    Rc::new(move |id, item_id, _| {
+                        if action_state
+                            .borrow()
+                            .plugin_host
+                            .borrow_mut()
+                            .invoke_action(&action_plugin, &id, item_id.as_deref())
+                            .is_none()
+                        {
+                            eprintln!(
+                                "[steward] plugin {action_plugin} not ready for action.invoke"
+                            );
+                        }
+                    });
+                let view = DetailView::new(data.clone(), cx);
+                self.detail = Some(view);
+                if !self.actions.is_empty() {
+                    self.action_bar = Some(ActionBar::new(self.actions.clone(), Some(on_run), cx));
+                }
+            }
+            PanelKind::Form(data) => {
+                let form_state = self.state.clone();
+                let form_plugin = self.plugin_id.clone();
+                let on_submit: steward_ui_components::FormSubmitCallback =
+                    Rc::new(move |values, _| {
+                        let payload = form_values_to_json(&values);
+                        if form_state
+                            .borrow()
+                            .plugin_host
+                            .borrow_mut()
+                            .invoke_submit(&form_plugin, &payload)
+                            .is_none()
+                        {
+                            eprintln!("[steward] plugin {form_plugin} not ready for form.submit");
+                        }
+                    });
+                let view = FormView::new(data.clone(), Some(on_submit), cx);
+                self.form = Some(view);
+                if !self.actions.is_empty() {
+                    self.action_bar = Some(ActionBar::new(self.actions.clone(), None, cx));
+                }
             }
         }
-
-        focus.focus(window, cx);
-        Self {
-            plugin_id,
-            command,
-            state,
-            i18n,
-            kind,
-            calendar,
-            list,
-            selection,
-            focus,
-        }
+        self.kind = kind;
     }
 
     /// The month/year navigation toolbar shown above a detached calendar
@@ -453,6 +573,16 @@ impl PluginPanelWindow {
                 }
                 _ => {}
             },
+            PanelKind::Detail(_) | PanelKind::Form(_) => {
+                // Escape docks the detached detail / form panel back into the
+                // launcher; everything else is handled by the widgets.
+                if keystroke.key.as_str() == "escape" {
+                    let (plugin_id, command) = (self.plugin_id.clone(), self.command.clone());
+                    let state = self.state.clone();
+                    dock_panel_back(&state, &plugin_id, &command, cx);
+                    cx.stop_propagation();
+                }
+            }
         }
     }
 
@@ -480,7 +610,7 @@ impl PluginPanelWindow {
             .borrow()
             .plugin_host
             .borrow_mut()
-            .invoke_item(&plugin_id, &selected)
+            .invoke_item(&plugin_id, &self.command, &selected)
             .is_none()
         {
             eprintln!("[steward] plugin {plugin_id} not ready for item.invoke");
@@ -525,8 +655,13 @@ pub(crate) fn open_plugin_panel(
     detachable: bool,
     cx: &mut App,
 ) -> Option<AnyWindowHandle> {
-    // Already open: bring it forward.
+    let (kind, actions) = parse_panel_view(&view, &plugin_id, &command, detachable)?;
+
+    // Already open: re-target it to the new view and bring it forward.
     if let Some(handle) = state.borrow().plugin_window(&plugin_id, &command) {
+        // An already-open panel just comes to the front (the caller replaces a
+        // changed view by docking the old panel back first — see the
+        // `ItemView` path in `events.rs`).
         let _ = handle.update(cx, |_, window, cx| {
             cx.activate(true);
             window.refresh();
@@ -534,12 +669,6 @@ pub(crate) fn open_plugin_panel(
         return Some(handle);
     }
 
-    let kind = parse_calendar_view(&view, &plugin_id, &command, detachable)
-        .map(PanelKind::Calendar)
-        .or_else(|| {
-            plugin_view_items(&view)
-                .map(|_| PanelKind::List(list_items(&view, &plugin_id, &command)))
-        })?;
     let (width, height) =
         read_panel_size(state).unwrap_or_else(|| (panel_width(), panel_height(&kind)));
     let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
@@ -575,6 +704,7 @@ pub(crate) fn open_plugin_panel(
                     plugin_id.clone(),
                     command.clone(),
                     kind, // moved into the entity
+                    actions,
                     window,
                     cx,
                 )
@@ -621,14 +751,10 @@ pub(crate) fn dock_panel_back(
     if let Some(handle) = handle {
         // Remember the user's manual size so the next open reuses it.
         if let Ok(size) = handle.update(cx, |_, window, _| window.viewport_size()) {
-            let _ = state
-                .borrow()
-                .storage
-                .borrow()
-                .set_setting(
-                    PANEL_WINDOW_SIZE_KEY,
-                    &format!("{} {}", size.width.as_f32(), size.height.as_f32()),
-                );
+            let _ = state.borrow().storage.borrow().set_setting(
+                PANEL_WINDOW_SIZE_KEY,
+                &format!("{} {}", size.width.as_f32(), size.height.as_f32()),
+            );
         }
         cx.defer(move |cx| {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -682,13 +808,20 @@ fn panel_height(kind: &PanelKind) -> f32 {
     let content = match kind {
         PanelKind::Calendar(_) => CALENDAR_GRID_HEIGHT,
         PanelKind::List(items) => list_height(items.len()),
+        PanelKind::Detail(_) | PanelKind::Form(_) => DETAIL_FORM_PANEL_HEIGHT,
     };
     let nav = if matches!(kind, PanelKind::Calendar(_)) {
         PANEL_NAV_HEIGHT
     } else {
         0.0
     };
-    content + PLUGIN_WIDGET_PADDING * 2.0 + PANEL_DRAG_HEIGHT + nav
+    // A detail/form panel reserves room for its action bar (32) plus padding.
+    let action_reserve = if matches!(kind, PanelKind::Detail(_) | PanelKind::Form(_)) {
+        32.0
+    } else {
+        0.0
+    };
+    content + action_reserve + PLUGIN_WIDGET_PADDING * 2.0 + PANEL_DRAG_HEIGHT + nav
 }
 
 /// Read the persisted detached-panel window size (`"<width> <height>"`),
@@ -733,12 +866,221 @@ fn list_items(view: &serde_json::Value, plugin_id: &str, command: &str) -> Vec<R
                 .to_string();
             Some(ResultItem::Plugin {
                 plugin_id: plugin_id.to_string(),
+                command: command.to_string(),
                 item_id: item_id.to_string(),
                 title,
                 subtitle,
             })
         })
         .collect()
+}
+
+/// Parse a plugin view into a `PanelKind` plus the actions declared by its
+/// `actionPanel`. Returns `None` for a view type the panel cannot host.
+fn parse_panel_view(
+    view: &serde_json::Value,
+    plugin_id: &str,
+    command: &str,
+    detachable: bool,
+) -> Option<(PanelKind, Vec<ActionRef>)> {
+    if let Some(active) = parse_calendar_view(view, plugin_id, command, detachable) {
+        return Some((PanelKind::Calendar(active), extract_actions(view)));
+    }
+    if plugin_view_items(view).is_some() {
+        return Some((
+            PanelKind::List(list_items(view, plugin_id, command)),
+            extract_actions(view),
+        ));
+    }
+    if let Some(data) = parse_detail_view(view) {
+        return Some((PanelKind::Detail(data), extract_actions(view)));
+    }
+    if let Some(data) = parse_form_view(view) {
+        return Some((PanelKind::Form(data), extract_actions(view)));
+    }
+    None
+}
+
+/// The raw view payload, unwrapping the runtime's `{ "view": ... }` envelope.
+fn unwrap_view(view: &serde_json::Value) -> &serde_json::Value {
+    view.get("view").unwrap_or(view)
+}
+
+/// Parse a plugin `detail` view into its display data.
+fn parse_detail_view(view: &serde_json::Value) -> Option<DetailData> {
+    let view = unwrap_view(view);
+    if view.get("type").and_then(|kind| kind.as_str()) != Some("detail") {
+        return None;
+    }
+    let title = view.get("title")?.as_str()?.to_string();
+    let subtitle = view
+        .get("subtitle")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let blocks = view
+        .get("content")
+        .and_then(|content| content.as_array())
+        .map(|blocks| {
+            blocks
+                .iter()
+                .map(
+                    |block| match block.get("type").and_then(|kind| kind.as_str()) {
+                        Some("code") => DetailBlock::Code {
+                            value: block
+                                .get("value")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            language: block
+                                .get("language")
+                                .and_then(|value| value.as_str())
+                                .map(|value| value.to_string()),
+                        },
+                        Some("separator") => DetailBlock::Separator,
+                        _ => DetailBlock::Text(
+                            block
+                                .get("value")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        ),
+                    },
+                )
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(DetailData {
+        title,
+        subtitle,
+        blocks,
+    })
+}
+
+/// Parse a plugin `form` view into its display data.
+fn parse_form_view(view: &serde_json::Value) -> Option<FormData> {
+    let view = unwrap_view(view);
+    if view.get("type").and_then(|kind| kind.as_str()) != Some("form") {
+        return None;
+    }
+    let title = view
+        .get("title")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let submit_label = view
+        .get("submitLabel")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let fields = view
+        .get("fields")
+        .and_then(|fields| fields.as_array())
+        .map(|fields| fields.iter().filter_map(parse_form_field).collect())
+        .unwrap_or_default();
+    Some(FormData {
+        title,
+        fields,
+        submit_label,
+    })
+}
+
+fn parse_form_field(field: &serde_json::Value) -> Option<FormField> {
+    let id = field.get("id")?.as_str()?.to_string();
+    let label = field
+        .get("label")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let kind = FieldKind::from_wire(
+        field
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("text"),
+    )?;
+    let placeholder = field
+        .get("placeholder")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let options = field
+        .get("options")
+        .and_then(|value| value.as_array())
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| {
+                    Some(FormOption {
+                        id: option.get("id")?.as_str()?.to_string(),
+                        label: option
+                            .get("label")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let value = match kind {
+        FieldKind::Toggle => field
+            .get("value")
+            .and_then(|value| value.as_bool())
+            .map(FormValue::Bool),
+        _ => field
+            .get("value")
+            .and_then(|value| value.as_str())
+            .map(|value| FormValue::String(value.to_string())),
+    };
+    let required = field
+        .get("required")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    Some(FormField {
+        id,
+        label,
+        kind,
+        placeholder,
+        options,
+        value,
+        required,
+    })
+}
+
+/// Extract the `actionPanel.actions` array from a view's JSON payload.
+fn extract_actions(view: &serde_json::Value) -> Vec<ActionRef> {
+    let view = unwrap_view(view);
+    view.get("actionPanel")
+        .and_then(|panel| panel.get("actions"))
+        .and_then(|actions| actions.as_array())
+        .map(|actions| {
+            actions
+                .iter()
+                .filter_map(|action| {
+                    let id = action.get("id")?.as_str()?.to_string();
+                    let title = action
+                        .get("title")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let icon = action
+                        .get("icon")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string());
+                    Some(ActionRef { id, title, icon })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Serialize a form's collected values into a JSON object for `form.submit`.
+fn form_values_to_json(values: &HashMap<String, FormValue>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (key, value) in values {
+        let json = match value {
+            FormValue::String(text) => serde_json::Value::String(text.clone()),
+            FormValue::Bool(flag) => serde_json::Value::Bool(*flag),
+        };
+        map.insert(key.clone(), json);
+    }
+    serde_json::Value::Object(map)
 }
 
 #[cfg(test)]
@@ -760,7 +1102,7 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(matches!(
             &items[0],
-            ResultItem::Plugin { plugin_id, item_id, title, subtitle }
+            ResultItem::Plugin { plugin_id, item_id, title, subtitle, .. }
                 if plugin_id == "com.example.p"
                     && item_id == "a"
                     && title == "Alpha"
@@ -768,8 +1110,9 @@ mod tests {
         ));
         assert!(matches!(
             &items[1],
-            ResultItem::Plugin { item_id, title, subtitle, .. }
+            ResultItem::Plugin { item_id, title, subtitle, command, .. }
                 if item_id == "b" && title == "Beta" && subtitle == "cmd"
+                    && command == "cmd"
         ));
     }
 
@@ -788,6 +1131,7 @@ mod tests {
     fn panel_height_follows_view_content() {
         let items = vec![ResultItem::Plugin {
             plugin_id: "p".into(),
+            command: "cmd".into(),
             item_id: "a".into(),
             title: "A".into(),
             subtitle: "s".into(),

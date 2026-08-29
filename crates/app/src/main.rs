@@ -29,6 +29,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod autostart;
+mod clipboard_history;
 mod config;
 mod events;
 mod hotkeys;
@@ -121,6 +122,12 @@ fn main() {
     let data_dir = dirs::data_dir()
         .expect("no OS data directory available")
         .join("Steward");
+    // Host-side clipboard history: a background thread polls the system
+    // clipboard and pushes newest entries; the foreground poll task forwards
+    // them to the plugin host. The watcher runs for the app's lifetime.
+    let (clipboard_tx, clipboard_rx) = crossbeam_channel::unbounded();
+    let clipboard_watcher =
+        crate::clipboard_history::ClipboardWatcher::spawn(data_dir.clone(), clipboard_tx);
     let registry = Rc::new(RefCell::new(
         if let Some(root) = std::env::var("STEWARD_PLUGINS_DIR").ok().map(PathBuf::from) {
             Registry::open_with_root(&data_dir, &root)
@@ -165,6 +172,8 @@ fn main() {
         hotkey_manager: None,
         summon_hotkey: None,
         settings_hotkey: None,
+        clipboard_rx: RefCell::new(Some(clipboard_rx)),
+        _clipboard_watcher: Some(clipboard_watcher),
     }));
 
     // GPUI starts at boot and the launcher window is created hidden, so every

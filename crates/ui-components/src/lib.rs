@@ -2,12 +2,18 @@
 
 use gpui::App;
 
+pub mod action_bar;
 pub mod calendar;
+pub mod detail;
+pub mod form;
 pub mod lunar;
 pub mod palette;
 pub mod results_list;
 
+pub use action_bar::*;
 pub use calendar::*;
+pub use detail::*;
+pub use form::*;
 pub use lunar::*;
 pub use palette::*;
 pub use results_list::*;

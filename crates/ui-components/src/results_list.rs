@@ -51,6 +51,9 @@ pub enum ResultItem {
     },
     Plugin {
         plugin_id: String,
+        /// The command that produced this plugin row; the host uses it to
+        /// route an `item.invoke`-returned view back to the right command.
+        command: String,
         item_id: String,
         title: String,
         subtitle: String,

@@ -347,7 +347,10 @@ fn item_invoke_reaches_select_handler() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         host.drain_events();
-        if host.invoke_item("com.example.calendar", "today").is_some() {
+        if host
+            .invoke_item("com.example.calendar", "calendar", "today")
+            .is_some()
+        {
             break;
         }
         assert!(Instant::now() < deadline, "isolate never became ready");

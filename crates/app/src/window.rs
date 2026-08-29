@@ -147,7 +147,7 @@ pub(crate) fn open_launcher_window(
                         .borrow()
                         .plugin_host
                         .borrow_mut()
-                        .invoke_item(&active.plugin_id, &date)
+                        .invoke_item(&active.plugin_id, &active.command, &date)
                         .is_none()
                     {
                         eprintln!(
@@ -175,6 +175,7 @@ pub(crate) fn open_launcher_window(
                 }
             });
             let confirm_state = state.clone();
+            let confirm_i18n = i18n.clone();
             let on_confirm = move |index: usize, cx: &mut App| -> bool {
                 let item = results_for_cb.borrow().get(index).cloned();
                 match item {
@@ -203,11 +204,14 @@ pub(crate) fn open_launcher_window(
                     // A plugin row: dispatch `item.invoke` and keep the
                     // launcher open so the plugin's toast/result is visible.
                     Some(ResultItem::Plugin {
-                        plugin_id, item_id, ..
+                        plugin_id,
+                        item_id,
+                        command,
+                        ..
                     }) => {
                         if plugin_host
                             .borrow_mut()
-                            .invoke_item(&plugin_id, &item_id)
+                            .invoke_item(&plugin_id, &command, &item_id)
                             .is_none()
                         {
                             eprintln!("[steward] plugin {plugin_id} is not ready for item.invoke");
@@ -280,6 +284,20 @@ pub(crate) fn open_launcher_window(
                                     }
                                 }
                             });
+                        } else if crate::launcher::is_detail_or_form_view(&view) {
+                            // A detail / form view has no inline grid: open it
+                            // in the independent panel window.
+                            let panel_state = confirm_state.clone();
+                            let panel_i18n = confirm_i18n.clone();
+                            let _ = crate::plugin_panel_window::open_plugin_panel(
+                                &panel_state,
+                                panel_i18n,
+                                plugin_id,
+                                command,
+                                view,
+                                hit.detachable,
+                                cx,
+                            );
                         }
                         false
                     }

@@ -20,9 +20,10 @@ use anyhow::{anyhow, Context as _, Result};
 use crossbeam_channel::Receiver;
 use serde_json::{json, Value};
 use steward_ipc_protocol::{
-    code, decode_line, encode_line, method, Message, Notification, Request, Response, RpcError,
+    code, decode_line, encode_line, method, ClipboardEntry, Message, Notification, Request,
+    Response, RpcError,
 };
-use steward_plugin_registry::{Isolation, PluginMeta};
+use steward_plugin_registry::{Isolation, Permission, PluginMeta};
 
 use crate::route::{RouteHit, RouteIndex};
 
@@ -97,6 +98,14 @@ pub enum HostEvent {
     /// A plugin asked the host to show a toast (`{ message, kind?,
     /// durationMs? }`).
     Toast { params: Value },
+    /// A list item selection returned a new view (e.g. a `detail` drill-down).
+    /// The launcher replaces the command's current view slot with `view`.
+    ItemView {
+        plugin_id: String,
+        command: String,
+        item_id: String,
+        view: Value,
+    },
     /// A runtime process died; the host schedules a restart with backoff.
     RuntimeCrashed {
         /// `None` for the shared pool, `Some(plugin_id)` for a dedicated
@@ -126,9 +135,27 @@ struct RuntimeConn {
 
 /// What a pending request id is waiting for.
 enum Pending {
-    Load { plugin_id: String },
-    Invoke { gen: u64, hit: RouteHit },
-    Item { plugin_id: String, item_id: String },
+    Load {
+        plugin_id: String,
+    },
+    Invoke {
+        gen: u64,
+        hit: RouteHit,
+    },
+    Item {
+        plugin_id: String,
+        command: String,
+        item_id: String,
+    },
+    Action {
+        plugin_id: String,
+        action_id: String,
+        item_id: Option<String>,
+    },
+    Submit {
+        plugin_id: String,
+        values: Value,
+    },
 }
 
 /// A call that must wait for its plugin's isolate to be (re)loaded before it
@@ -136,8 +163,24 @@ enum Pending {
 /// before the isolate is materialized is replayed once the `plugin.load`
 /// response lands, instead of being dropped.
 enum QueuedCall {
-    Command { gen: u64, hit: RouteHit },
-    Item { plugin_id: String, item_id: String },
+    Command {
+        gen: u64,
+        hit: RouteHit,
+    },
+    Item {
+        plugin_id: String,
+        command: String,
+        item_id: String,
+    },
+    Action {
+        plugin_id: String,
+        action_id: String,
+        item_id: Option<String>,
+    },
+    Submit {
+        plugin_id: String,
+        values: Value,
+    },
 }
 
 /// Restart bookkeeping for one crashed connection.
@@ -165,6 +208,9 @@ pub struct PluginHost {
     /// detect whether a plugin-set change needs a process reload and to
     /// reload plugins after a runtime crash.
     loaded: HashMap<String, (Isolation, PluginMeta)>,
+    /// Recent clipboard history, handed to plugins that declare
+    /// `clipboard.history` on each `command.invoke`.
+    clipboard_history: Vec<ClipboardEntry>,
 }
 
 impl PluginHost {
@@ -179,7 +225,19 @@ impl PluginHost {
             loading_plugins: HashSet::new(),
             queued: HashMap::new(),
             loaded: HashMap::new(),
+            clipboard_history: Vec::new(),
         }
+    }
+
+    /// Replace the clipboard-history snapshot the host hands to plugins that
+    /// declare `clipboard.history`. Called by the app's clipboard watcher.
+    pub fn set_clipboard_history(&mut self, entries: Vec<ClipboardEntry>) {
+        self.clipboard_history = entries;
+    }
+
+    /// The last clipboard-history snapshot (informational / easy testing).
+    pub fn clipboard_history(&self) -> &[ClipboardEntry] {
+        &self.clipboard_history
     }
 
     /// Load the given plugin set: rebuild routing, spawn the shared pool (if
@@ -293,11 +351,14 @@ impl PluginHost {
         Some(0)
     }
 
-    /// Send `item.invoke` for a rendered list row (fire-and-forget; the
-    /// launcher stays open). Errors surface as toast events. Like [`invoke`],
-    /// a not-yet-loaded plugin is lazy-loaded here, with `Some(0)` returned as
-    /// the sentinel for a queued call.
-    pub fn invoke_item(&mut self, plugin_id: &str, item_id: &str) -> Option<u64> {
+    /// Send `item.invoke` for a rendered list row. When a plugin's `select`
+    /// returns a view (e.g. a `detail` drill-down), the host surfaces it as a
+    /// [`HostEvent::ItemView`] under `command` so the launcher can replace the
+    /// command's view slot; otherwise the launcher stays open (fire-and-forget).
+    /// Errors surface as toast events. Like [`invoke`], a not-yet-loaded plugin
+    /// is lazy-loaded here, with `Some(0)` returned as the sentinel for a
+    /// queued call.
+    pub fn invoke_item(&mut self, plugin_id: &str, command: &str, item_id: &str) -> Option<u64> {
         let conn_key = self.conn_key_for(plugin_id);
         if !self.conns.contains_key(&conn_key) {
             return None;
@@ -312,6 +373,7 @@ impl PluginHost {
                 id,
                 Pending::Item {
                     plugin_id: plugin_id.to_string(),
+                    command: command.to_string(),
                     item_id: item_id.to_string(),
                 },
             );
@@ -325,7 +387,90 @@ impl PluginHost {
             .or_default()
             .push(QueuedCall::Item {
                 plugin_id: plugin_id.to_string(),
+                command: command.to_string(),
                 item_id: item_id.to_string(),
+            });
+        self.ensure_loaded(&conn_key, plugin_id);
+        Some(0)
+    }
+
+    /// Send `action.invoke` for a view-level `ActionPanel` action. Errors
+    /// surface as toast events. Like [`invoke_item`], a not-yet-loaded plugin
+    /// is lazy-loaded here, with `Some(0)` returned as the sentinel for a
+    /// queued call.
+    pub fn invoke_action(
+        &mut self,
+        plugin_id: &str,
+        action_id: &str,
+        item_id: Option<&str>,
+    ) -> Option<u64> {
+        let conn_key = self.conn_key_for(plugin_id);
+        if !self.conns.contains_key(&conn_key) {
+            return None;
+        }
+        let item_id = item_id.map(ToString::to_string);
+        if self
+            .conns
+            .get(&conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(plugin_id))
+        {
+            let id = self.dispatch_action(&conn_key, plugin_id, action_id, item_id.clone())?;
+            self.pending.insert(
+                id,
+                Pending::Action {
+                    plugin_id: plugin_id.to_string(),
+                    action_id: action_id.to_string(),
+                    item_id,
+                },
+            );
+            return Some(id);
+        }
+        if !self.loaded.contains_key(plugin_id) {
+            return None;
+        }
+        self.queued
+            .entry(plugin_id.to_string())
+            .or_default()
+            .push(QueuedCall::Action {
+                plugin_id: plugin_id.to_string(),
+                action_id: action_id.to_string(),
+                item_id,
+            });
+        self.ensure_loaded(&conn_key, plugin_id);
+        Some(0)
+    }
+
+    /// Send `form.submit` for a rendered `form` view. Like [`invoke_action`],
+    /// a not-yet-loaded plugin is lazy-loaded here; errors surface as toasts.
+    pub fn invoke_submit(&mut self, plugin_id: &str, values: &Value) -> Option<u64> {
+        let conn_key = self.conn_key_for(plugin_id);
+        if !self.conns.contains_key(&conn_key) {
+            return None;
+        }
+        if self
+            .conns
+            .get(&conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(plugin_id))
+        {
+            let id = self.dispatch_submit(&conn_key, plugin_id, values)?;
+            self.pending.insert(
+                id,
+                Pending::Submit {
+                    plugin_id: plugin_id.to_string(),
+                    values: values.clone(),
+                },
+            );
+            return Some(id);
+        }
+        if !self.loaded.contains_key(plugin_id) {
+            return None;
+        }
+        self.queued
+            .entry(plugin_id.to_string())
+            .or_default()
+            .push(QueuedCall::Submit {
+                plugin_id: plugin_id.to_string(),
+                values: values.clone(),
             });
         self.ensure_loaded(&conn_key, plugin_id);
         Some(0)
@@ -467,20 +612,22 @@ impl PluginHost {
     /// Send a `command.invoke` for a hit whose isolate is already loaded,
     /// returning the new request id.
     fn dispatch_command(&mut self, conn_key: &str, hit: &RouteHit) -> Option<u64> {
+        let has_history = self.plugin_has_history(&hit.plugin_id);
         let conn = self.conns.get_mut(conn_key)?;
         let isolate_id = *conn.isolates.get(&hit.plugin_id)?;
         let id = self.next_request_id;
         self.next_request_id += 1;
-        let request = Request::new(
-            id,
-            method::COMMAND_INVOKE,
-            json!({
-                "isolate_id": isolate_id,
-                "command": hit.command,
-                "input": hit.input,
-                "deadline_ms": hit.deadline_ms,
-            }),
-        );
+        let mut params = json!({
+            "isolate_id": isolate_id,
+            "command": hit.command,
+            "input": hit.input,
+            "deadline_ms": hit.deadline_ms,
+        });
+        if has_history {
+            params["clipboard_history"] =
+                serde_json::to_value(&self.clipboard_history).unwrap_or(Value::Null);
+        }
+        let request = Request::new(id, method::COMMAND_INVOKE, params);
         conn.send(&request).ok()?;
         Some(id)
     }
@@ -504,6 +651,59 @@ impl PluginHost {
         Some(id)
     }
 
+    /// Send an `action.invoke` for a loaded isolate.
+    fn dispatch_action(
+        &mut self,
+        conn_key: &str,
+        plugin_id: &str,
+        action_id: &str,
+        item_id: Option<String>,
+    ) -> Option<u64> {
+        let conn = self.conns.get_mut(conn_key)?;
+        let isolate_id = *conn.isolates.get(plugin_id)?;
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let mut params = json!({
+            "isolate_id": isolate_id,
+            "action_id": action_id,
+            "deadline_ms": crate::route::STATIC_DEADLINE_MS,
+        });
+        if let Some(item_id) = item_id {
+            params["item_id"] = json!(item_id);
+        }
+        let request = Request::new(id, method::ACTION_INVOKE, params);
+        conn.send(&request).ok()?;
+        Some(id)
+    }
+
+    /// Send a `form.submit` for a loaded isolate.
+    fn dispatch_submit(&mut self, conn_key: &str, plugin_id: &str, values: &Value) -> Option<u64> {
+        let conn = self.conns.get_mut(conn_key)?;
+        let isolate_id = *conn.isolates.get(plugin_id)?;
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let request = Request::new(
+            id,
+            method::FORM_SUBMIT,
+            json!({
+                "isolate_id": isolate_id,
+                "values": values,
+                "deadline_ms": crate::route::STATIC_DEADLINE_MS,
+            }),
+        );
+        conn.send(&request).ok()?;
+        Some(id)
+    }
+
+    /// Whether the plugin's manifest grants the `clipboard.history` permission.
+    fn plugin_has_history(&self, plugin_id: &str) -> bool {
+        self.loaded.get(plugin_id).is_some_and(|(_, meta)| {
+            meta.manifest
+                .permissions
+                .contains(&Permission::ClipboardHistory)
+        })
+    }
+
     /// Replay a plugin's queued calls now that its isolate finished loading.
     fn flush_queued(&mut self, conn_key: &str, plugin_id: &str) {
         let Some(calls) = self.queued.remove(plugin_id) else {
@@ -519,6 +719,7 @@ impl PluginHost {
                 }
                 QueuedCall::Item {
                     plugin_id: pid,
+                    command,
                     item_id,
                 } => {
                     let id = self.dispatch_item(conn_key, &pid, &item_id);
@@ -527,7 +728,40 @@ impl PluginHost {
                             id,
                             Pending::Item {
                                 plugin_id: pid,
+                                command,
                                 item_id,
+                            },
+                        );
+                    }
+                }
+                QueuedCall::Action {
+                    plugin_id: pid,
+                    action_id,
+                    item_id,
+                } => {
+                    let id = self.dispatch_action(conn_key, &pid, &action_id, item_id.clone());
+                    if let Some(id) = id {
+                        self.pending.insert(
+                            id,
+                            Pending::Action {
+                                plugin_id: pid,
+                                action_id,
+                                item_id,
+                            },
+                        );
+                    }
+                }
+                QueuedCall::Submit {
+                    plugin_id: pid,
+                    values,
+                } => {
+                    let id = self.dispatch_submit(conn_key, &pid, &values);
+                    if let Some(id) = id {
+                        self.pending.insert(
+                            id,
+                            Pending::Submit {
+                                plugin_id: pid,
+                                values,
                             },
                         );
                     }
@@ -550,6 +784,8 @@ impl PluginHost {
         let plugin_id = match &call {
             QueuedCall::Command { hit, .. } => hit.plugin_id.clone(),
             QueuedCall::Item { plugin_id, .. } => plugin_id.clone(),
+            QueuedCall::Action { plugin_id, .. } => plugin_id.clone(),
+            QueuedCall::Submit { plugin_id, .. } => plugin_id.clone(),
         };
         if let Some(conn) = self.conns.get_mut(conn_key) {
             conn.isolates.remove(&plugin_id);
@@ -570,9 +806,29 @@ impl PluginHost {
                         "plugin isolate is not loaded",
                     )),
                 }),
-                QueuedCall::Item { plugin_id, item_id } => events.push(HostEvent::Toast {
+                QueuedCall::Item {
+                    plugin_id,
+                    item_id,
+                    ..
+                } => events.push(HostEvent::Toast {
                     params: json!({
                         "message": format!("{plugin_id} ({item_id}): plugin isolate is not loaded"),
+                        "kind": "error",
+                    }),
+                }),
+                QueuedCall::Action {
+                    plugin_id,
+                    action_id,
+                    ..
+                } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id} ({action_id}): plugin isolate is not loaded"),
+                        "kind": "error",
+                    }),
+                }),
+                QueuedCall::Submit { plugin_id, .. } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id}: plugin isolate is not loaded"),
                         "kind": "error",
                     }),
                 }),
@@ -600,7 +856,10 @@ impl PluginHost {
         self.queued.retain(|id, _| !affected.contains(id));
         self.pending.retain(|_, pending| {
             let plugin_id = match pending {
-                Pending::Load { plugin_id } | Pending::Item { plugin_id, .. } => plugin_id,
+                Pending::Load { plugin_id }
+                | Pending::Item { plugin_id, .. }
+                | Pending::Action { plugin_id, .. }
+                | Pending::Submit { plugin_id, .. } => plugin_id,
                 Pending::Invoke { hit, .. } => &hit.plugin_id,
             };
             !affected.contains(plugin_id)
@@ -657,13 +916,18 @@ impl PluginHost {
                     result,
                 });
             }
-            Pending::Item { plugin_id, item_id } => {
+            Pending::Item {
+                plugin_id,
+                command,
+                item_id,
+            } => {
                 if let Some(error) = &response.error {
                     if error.code == code::PLUGIN_NOT_FOUND {
                         self.handle_stale_isolate(
                             conn_key,
                             QueuedCall::Item {
                                 plugin_id: plugin_id.clone(),
+                                command,
                                 item_id: item_id.clone(),
                             },
                             events,
@@ -675,6 +939,72 @@ impl PluginHost {
                     events.push(HostEvent::Toast {
                         params: json!({
                             "message": format!("{plugin_id} ({item_id}): {}", error.message),
+                            "kind": "error",
+                        }),
+                    });
+                } else if let Some(view) = response
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("view"))
+                    .cloned()
+                {
+                    // The plugin's select returned a drill-down view (e.g. a
+                    // `detail`): surface it so the launcher replaces the
+                    // command's view slot.
+                    events.push(HostEvent::ItemView {
+                        plugin_id,
+                        command,
+                        item_id,
+                        view,
+                    });
+                }
+            }
+            Pending::Action {
+                plugin_id,
+                action_id,
+                item_id,
+            } => {
+                if let Some(error) = &response.error {
+                    if error.code == code::PLUGIN_NOT_FOUND {
+                        self.handle_stale_isolate(
+                            conn_key,
+                            QueuedCall::Action {
+                                plugin_id: plugin_id.clone(),
+                                action_id,
+                                item_id,
+                            },
+                            events,
+                        );
+                        return;
+                    }
+                }
+                if let Some(error) = response.error {
+                    events.push(HostEvent::Toast {
+                        params: json!({
+                            "message": format!("{plugin_id} ({action_id}): {}", error.message),
+                            "kind": "error",
+                        }),
+                    });
+                }
+            }
+            Pending::Submit { plugin_id, values } => {
+                if let Some(error) = &response.error {
+                    if error.code == code::PLUGIN_NOT_FOUND {
+                        self.handle_stale_isolate(
+                            conn_key,
+                            QueuedCall::Submit {
+                                plugin_id: plugin_id.clone(),
+                                values,
+                            },
+                            events,
+                        );
+                        return;
+                    }
+                }
+                if let Some(error) = response.error {
+                    events.push(HostEvent::Toast {
+                        params: json!({
+                            "message": format!("{plugin_id}: {}", error.message),
                             "kind": "error",
                         }),
                     });
@@ -697,9 +1027,27 @@ impl PluginHost {
                     command: hit.command,
                     result: Err(error.clone()),
                 }),
-                QueuedCall::Item { plugin_id, item_id } => events.push(HostEvent::Toast {
+                QueuedCall::Item {
+                    plugin_id, item_id, ..
+                } => events.push(HostEvent::Toast {
                     params: json!({
                         "message": format!("{plugin_id} ({item_id}): {}", error.message),
+                        "kind": "error",
+                    }),
+                }),
+                QueuedCall::Action {
+                    plugin_id,
+                    action_id,
+                    ..
+                } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id} ({action_id}): {}", error.message),
+                        "kind": "error",
+                    }),
+                }),
+                QueuedCall::Submit { plugin_id, .. } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id}: {}", error.message),
                         "kind": "error",
                     }),
                 }),

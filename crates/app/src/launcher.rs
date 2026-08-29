@@ -212,6 +212,13 @@ pub(crate) struct LauncherState {
     /// `Ctrl+,`). Unlike the summon hotkey it is never registered globally:
     /// the launcher's key handling matches it only while the bar is visible.
     pub(crate) settings_hotkey: Option<HotKey>,
+    /// Receiver for host-side clipboard history snapshots, drained by the
+    /// foreground poll task and forwarded to the plugin host.
+    pub(crate) clipboard_rx:
+        RefCell<Option<crossbeam_channel::Receiver<Vec<steward_ipc_protocol::ClipboardEntry>>>>,
+    /// Keeps the host-side clipboard watcher alive (its thread owns a private
+    /// SQLite connection and the arboard clipboard).
+    pub(crate) _clipboard_watcher: Option<crate::clipboard_history::ClipboardWatcher>,
 }
 
 impl LauncherState {
@@ -423,6 +430,15 @@ impl LauncherState {
                         title: hit.title.clone(),
                         subtitle: command_label.to_string(),
                     });
+                } else if is_detail_or_form_view(view) {
+                    // A detail / form view is a confirmable plugin view row that
+                    // opens in the independent panel window on confirm.
+                    calendars.push(ResultItem::Calendar {
+                        plugin_id: hit.plugin_id.clone(),
+                        command: hit.command.clone(),
+                        title: hit.title.clone(),
+                        subtitle: command_label.to_string(),
+                    });
                 }
                 continue;
             };
@@ -441,6 +457,7 @@ impl LauncherState {
                     .to_string();
                 rows.push(ResultItem::Plugin {
                     plugin_id: hit.plugin_id.clone(),
+                    command: hit.command.clone(),
                     item_id: item_id.to_string(),
                     title,
                     subtitle,
@@ -460,6 +477,16 @@ pub(crate) fn plugin_view_items(view: &serde_json::Value) -> Option<&Vec<serde_j
         return None;
     }
     view.get("items").and_then(|items| items.as_array())
+}
+
+/// Whether a plugin view is a `detail` / `form` (a panel-hosting view rather
+/// than a row-producing list or an inline calendar grid).
+pub(crate) fn is_detail_or_form_view(view: &serde_json::Value) -> bool {
+    let view = view.get("view").unwrap_or(view);
+    matches!(
+        view.get("type").and_then(|kind| kind.as_str()),
+        Some("detail") | Some("form")
+    )
 }
 
 /// Parse a plugin `calendar` view (wrapped or bare) into the display data.
@@ -1613,7 +1640,7 @@ impl StewardApp {
             .borrow()
             .plugin_host
             .borrow_mut()
-            .invoke_item(&active.plugin_id, &selected)
+            .invoke_item(&active.plugin_id, &active.command, &selected)
             .is_none()
         {
             eprintln!(

@@ -21,6 +21,17 @@ const SCAN_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Settings-table key storing the UNIX timestamp of the last full scan.
 const LAST_SCAN_SETTING: &str = "last_scan";
 
+/// A row in the clipboard-history cache: the copied text plus when it was
+/// captured (unix seconds). The host clipboard watcher inserts one per
+/// observed textual clipboard change; plugins read it only through the
+/// injected `Clipboard.history()` snapshot (never directly).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardHistoryRow {
+    pub id: i64,
+    pub text: String,
+    pub copied_at: i64,
+}
+
 /// Thin wrapper over a SQLite connection with a stable application schema.
 pub struct Storage {
     conn: Connection,
@@ -73,6 +84,11 @@ impl Storage {
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS clipboard_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    copied_at INTEGER NOT NULL
                 );",
             )
             .context("run schema migrations")
@@ -96,6 +112,65 @@ impl Storage {
                 (key, value),
             )
             .context("set setting")?;
+        Ok(())
+    }
+
+    /// Record that `text` was copied to the clipboard at `copied_at` (unix
+    /// seconds). The host clipboard watcher calls this on every observed
+    /// textual clipboard change; consecutive duplicates are collapsed by the
+    /// watcher, not here. The cache is capped later by `trim_clipboard`.
+    pub fn insert_clipboard(&self, text: &str, copied_at: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO clipboard_history(text, copied_at) VALUES (?1, ?2)",
+                (text, copied_at),
+            )
+            .context("insert clipboard history")?;
+        Ok(())
+    }
+
+    /// The most recent `limit` clipboard entries, newest first.
+    pub fn recent_clipboard(&self, limit: i64) -> Result<Vec<ClipboardHistoryRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, text, copied_at FROM clipboard_history
+                 ORDER BY copied_at DESC, id DESC LIMIT ?1",
+            )
+            .context("prepare recent clipboard query")?;
+        let rows = stmt
+            .query_map([limit], |row| {
+                Ok(ClipboardHistoryRow {
+                    id: row.get(0)?,
+                    text: row.get(1)?,
+                    copied_at: row.get(2)?,
+                })
+            })
+            .context("query recent clipboard")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("collect recent clipboard")
+    }
+
+    /// Drop clipboard history older than `keep` newest rows (compact for long
+    /// sessions). Called by the watcher when the cache grows past a cap.
+    pub fn trim_clipboard(&self, keep: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM clipboard_history WHERE id NOT IN (
+                    SELECT id FROM clipboard_history
+                    ORDER BY copied_at DESC, id DESC LIMIT ?1
+                )",
+                [keep],
+            )
+            .context("trim clipboard history")?;
+        Ok(())
+    }
+
+    /// Delete the clipboard history entry with the given row id.
+    pub fn delete_clipboard(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM clipboard_history WHERE id = ?1", (id,))
+            .context("delete clipboard history")?;
         Ok(())
     }
 
@@ -311,5 +386,34 @@ mod tests {
             storage.get_setting("theme_color").as_deref(),
             Some("#a6e3a1")
         );
+    }
+
+    #[test]
+    fn clipboard_history_insert_recent_trim_and_delete() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(storage.recent_clipboard(10).unwrap().is_empty());
+
+        storage.insert_clipboard("first", 100).unwrap();
+        storage.insert_clipboard("second", 200).unwrap();
+        storage.insert_clipboard("third", 300).unwrap();
+
+        let recent = storage.recent_clipboard(10).unwrap();
+        assert_eq!(recent.len(), 3);
+        // Newest first.
+        assert_eq!(recent[0].text, "third");
+        assert_eq!(recent[2].text, "first");
+
+        // Trim keeps the newest `keep` rows.
+        storage.trim_clipboard(2).unwrap();
+        let recent = storage.recent_clipboard(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].text, "third");
+        assert_eq!(recent[1].text, "second");
+
+        // Delete by id.
+        storage.delete_clipboard(recent[0].id).unwrap();
+        let recent = storage.recent_clipboard(10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].text, "second");
     }
 }

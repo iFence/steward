@@ -23,7 +23,11 @@ use crate::window::{hide_window, toggle_launcher};
 ///   slot and re-renders the merged list; stale generations are dropped;
 /// - toasts, crashes and restarts are logged (a real toast surface lands in
 ///   M3 with the UI framework).
-fn drain_plugin_events(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
+fn drain_plugin_events(
+    state: &Rc<RefCell<LauncherState>>,
+    i18n: Rc<Localization>,
+    cx: &mut AsyncApp,
+) {
     let events = state.borrow().plugin_host.borrow_mut().drain_events();
     let mut rerender = false;
     for event in events {
@@ -78,6 +82,58 @@ fn drain_plugin_events(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
                     plugin_id.as_deref().unwrap_or("(shared pool)")
                 );
             }
+            steward_plugin_host::HostEvent::ItemView {
+                plugin_id,
+                command,
+                item_id,
+                view,
+            } => {
+                // A list item selection returned a new view (e.g. `detail`):
+                // store it on the plugin slot and, for a panel-hosting view,
+                // pop it into the independent window so the drill-down is
+                // visible without a second confirm.
+                let state_ref = state.borrow();
+                let hits = state_ref.plugin_hits.borrow();
+                if let Some(index) = hits
+                    .iter()
+                    .position(|hit| hit.plugin_id == plugin_id && hit.command == command)
+                {
+                    let detachable = hits[index].detachable;
+                    let panel_view = crate::launcher::is_detail_or_form_view(&view);
+                    if panel_view {
+                        let state_clone = state.clone();
+                        let i18n_clone = i18n.clone();
+                        let plugin_id_clone = plugin_id.clone();
+                        let command_clone = command.clone();
+                        cx.update(|cx| {
+                            // Replace a previously-open panel (same command) so
+                            // the new drill-down view is shown instead of stale.
+                            crate::plugin_panel_window::dock_panel_back(
+                                &state_clone,
+                                &plugin_id_clone,
+                                &command_clone,
+                                cx,
+                            );
+                            let _ = crate::plugin_panel_window::open_plugin_panel(
+                                &state_clone,
+                                i18n_clone,
+                                plugin_id_clone,
+                                command_clone,
+                                view,
+                                detachable,
+                                cx,
+                            );
+                        });
+                    } else {
+                        state_ref.plugin_views.borrow_mut()[index] = Some(view);
+                        rerender = true;
+                    }
+                } else {
+                    eprintln!(
+                        "[steward] item {item_id} returned a view for an unknown command {plugin_id}/{command}"
+                    );
+                }
+            }
         }
     }
     if rerender {
@@ -88,6 +144,32 @@ fn drain_plugin_events(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
             return;
         };
         let _ = app.update(cx, |app, window, cx| app.apply_plugin_views(window, cx));
+    }
+}
+
+/// Drain host-side clipboard-history snapshots into the plugin host, so the
+/// latest entries are injected into `command.invoke` for permitted plugins.
+fn drain_clipboard_events(state: &Rc<RefCell<LauncherState>>) {
+    let Some(rx) = state.borrow().clipboard_rx.borrow().clone() else {
+        return;
+    };
+    let mut latest: Option<Vec<steward_ipc_protocol::ClipboardEntry>> = None;
+    loop {
+        match rx.try_recv() {
+            Ok(entries) => latest = Some(entries),
+            Err(crossbeam_channel::TryRecvError::Empty) => break,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                *state.borrow().clipboard_rx.borrow_mut() = None;
+                break;
+            }
+        }
+    }
+    if let Some(entries) = latest {
+        state
+            .borrow()
+            .plugin_host
+            .borrow_mut()
+            .set_clipboard_history(entries);
     }
 }
 
@@ -170,7 +252,9 @@ pub(crate) fn spawn_event_poll_task(
         // Plugin reconcile: apply newly scanned/version-changed plugins.
         state.borrow().apply_plugin_scan();
         // Plugin command responses, toasts and runtime crashes/restarts.
-        drain_plugin_events(&state, cx);
+        drain_plugin_events(&state, i18n.clone(), cx);
+        // Host-side clipboard history, forwarded to the plugin host.
+        drain_clipboard_events(&state);
         // Background icon extractions for below-the-fold results finish
         // asynchronously; apply them as they arrive.
         drain_icon_batches(&state, cx);
