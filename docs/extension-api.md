@@ -35,3 +35,31 @@
 - 默认零权限：需要的能力在 manifest `permissions` 中声明。
 - manifest 可选的 `icon` 字段是内联 SVG 文档；宿主会把它缓存并在启动器结果行中
   与应用图标一样渲染（未声明时插件行不显示图标）。
+
+## M3 二轮：async 命令、Node polyfill、Grid/Search、主题一致性
+
+### 全部 handler 可 `async`
+
+`command` / `select` / `run` / `submit`（以及新加的 `search`）都允许返回 `Promise`。宿主在执行
+deadline 内驱动 QuickJS 微任务队列直到 settled（`command`/`select`/`search` 取返回值，`run`/`submit`
+忽略返回值），因此插件可以写 `async function command() { await Clipboard.read(); ... }`。M3 暂无
+跨进程真正 await（fs/network 未放行），Promise 只靠微任务 + 同步宿主函数解析；若 promise 永不 settle
+则按 timeout 处理并回收 isolate。
+
+### `grid` 与 `search` 视图
+
+- `grid`：`{ type: "grid", columns, items: GridItem[], selectedId?, actionPanel? }`，`GridItem` 为
+  `{ id, title, subtitle?, icon?, badge? }`。宿主用 N 列卡片渲染，方向键移动选中、Enter 确认走
+  `select(itemId)`。
+- `search`：`{ type: "search", placeholder?, actionPanel? }`。宿主渲染一个搜索列（panel 内自带
+  `SearchBar`），输入变化发 `search.query`，插件导出的 `search(query)` 返回 `View`（通常 `list`/`grid`）
+  替换结果区；`gen` 丢弃旧结果。结果确认走 `select`。
+
+### Node 内置模块 polyfill（runtime 注入）
+
+插件 bundle 将 Node 内置模块标为 external（见 `scripts/build-plugin.mjs`），运行时在求值 bundle 前注入
+`require`/`module`/`exports`/`process`/`Buffer`/`global` 与模块注册表。纯 JS 模块 `path` / `buffer` /
+`process` / `events` / `util` / `url` / `querystring` / `string_decoder` / `assert` / `os` 全功能；
+`fs` / `http` / `https` / `net` / `dns` / `child_process` / `crypto` / `zlib` / `stream` 为 stub，
+调用即抛 "not supported in M3"（其权限仍在扫描时被拒绝）。`timers`、原生 binding、`worker_threads`
+明确不支持。plugin 内可直接 `require("path")` 或使用 `global.Buffer`。

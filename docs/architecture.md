@@ -361,3 +361,34 @@ steward/
 - 官方插件 `clipboard-history` 落地：列表（置顶 pin）→ 选择出 `Detail` → ActionBar `copy`/`pin`（copy 用 `Clipboard.write`，pin 用 `LocalStorage`）；`permissions` 申明三件套。
 - 决策：`LocalStorage` 走运行时文件型 KV、按插件 id 分文件、不新增权限；`detail`/`form` 的窗口内交互（表单文本输入、`set_view` 更新已有面板）与 `Grid`/`SearchBar`/Node polyfill/async `command()` 留待后续迭代；`ActionPanel` 为视图级共享动作条（作用于当前选中项）。
 - 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` 全绿；`tsc --noEmit`（extension-api / calendar / clipboard-history）与两个插件 esbuild IIFE 构建通过。
+
+### 2026-08-29（M3 二轮：async 命令 / Node polyfill / Grid·SearchBar / 主题动画打磨）
+
+- 范围：把第一波明确留待后续的四块补齐。全部 handler 支持 `Promise`；Node 内置模块 polyfill 采用
+  **runtime 注入 prelude**；新增 `grid`/`search` 声明式视图与复用组件；插件视图落到实时 accent 并加启动器入场动画。
+- async 命令：`command`/`select`/`run`/`submit` 与新增 `search` 均可返回 `Promise`。runtime 在 deadline
+  内循环 `execute_pending_job` 并用 `Promise::result`/`Promise::finish` 读到 settled 值；微任务队列排空仍
+  pending（`WouldBlock`）按 `InvokeError::Timeout` 处理并回收 isolate。M3 无跨进程 await（fs/network 未放行），
+  因此 Promise 只靠微任务 + 同步宿主函数解析。IPC 协议与 host 无需改动（仍在单请求同步服务循环内 drain）；launcher
+  在命令在途时于结果区顶部显示临时 loading 行（`plugin_pending` 集合 + `ResultItem::Loading`），`CommandResult`
+  落地即清除。
+- Node polyfill：新增 `plugin-runtime/src/node_polyfill.js`（`include_str!`），在 `globalThis.steward` 安装后、
+  bundle 求值前注入 `require`/`module`/`exports`/`process`/`Buffer`/`global` 与模块注册表；`__stewardHost` 由
+  runtime 以 JSON 字符串注入（`process.env`/`argv`/`os.*`/cwd）。纯 JS 模块 `path`/`buffer`/`process`/`events`/
+  `util`/`url`/`querystring`/`string_decoder`/`assert`/`os` 全功能；`fs`/`http`/`https`/`net`/`dns`/
+  `child_process`/`crypto`/`zlib`/`stream` 为 stub（调用抛 "not supported in M3"）。`timers`、原生 binding、
+  `worker_threads` 明确不支持。插件构建改用共享 `scripts/build-plugin.mjs`，将 Node 内置模块标为 external，
+  所以 bundle 里的 `require("fs")` 指向运行时的全局 `require`。权限零改动：`fs.read/write`、`network` 仍扫描拒绝。
+- Grid/SearchBar：`View` 新增 `grid`（columns/items/selectedId/actionPanel）与 `search`（placeholder/actionPanel）；
+  `PluginModule` 新增 `search(query)`。`ipc-protocol` 新增 `SEARCH_QUERY`（`search.query`）。`ui-components` 新增
+  `grid`（`GridView`/`GridData`，复用卡片铬与选中 wash，确认走 `item.invoke`）与 `search_bar`（轻量输入组件，
+  支持字符/回退/Enter）。`plugin_panel_window` 增加 `Grid`/`Search` 分发；search 视图在 panel 内自带 `SearchBar`，
+  输入递增 `search_gen` 并 `invoke_search`，`HostEvent::SearchResult` 按 `(plugin_id, command)` 回填
+  `plugin_search_results` 并投递给打开的 panel。detail/form/grid/search 均可通过 launcher 的 detach 控件弹出面板。
+- 主题一致性：calendar/grid/form 等插件视图改读 `cx.theme().primary`（gpui-component 实时 accent，由
+  `apply_steward_theme` 设置），使设置页所选主题色在插件视图同样生效，不再硬编码 `palette::ACCENT`。
+- 动画：launcher 根元素加单次入场淡入（`with_animation`，key 含 `show_epoch`，每次召唤重启），`show_window`
+  时递增 `show_epoch`；保留现有 caret blink。选填的结果列表/翻月过渡留待后续。
+- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`
+  全绿（本地以 `STEWARD_DATA_DIR` 指向可写目录避开沙箱不可写 AppData，CI 环境无需）；`tsc --noEmit` 与插件
+  esbuild IIFE 构建通过；runtime 端到端新增 async command、Node polyfill、`search.query` 用例。

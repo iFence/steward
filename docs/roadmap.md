@@ -63,6 +63,7 @@ Steward 不仅运行插件，而是管理：
 | M0 Core Foundation | DONE |
 | M1 Launcher MVP | DONE |
 | M2 Plugin System v1 | DONE |
+| M3 Plugin UI Framework & API Coverage | DONE |
 
 ## 总体架构
 
@@ -167,15 +168,15 @@ Raycast / Vicinae Extension
 
 **验收标准**：模拟安装 500–1000 个插件，冷启动时间与搜索响应延迟不随安装量线性劣化，只随"实际激活数"变化。
 
-### M3 - Plugin UI Framework & API Coverage（TODO）
+### M3 - Plugin UI Framework & API Coverage（DONE）
 
 目标：声明式 UI 框架 + 插件 API 覆盖面。
 
-- [ ] 声明式 UI：React Style DSL -> Virtual UI Tree -> GPUI Renderer；首批组件 `List` / `Detail` / `Form` / `Grid` / `ActionPanel` / `SearchBar`
-- [ ] API 覆盖：`Detail` / `Form` / `LocalStorage` / `Clipboard` 等
-- [ ] 覆盖 20–30 个常用 Node 内置模块 polyfill（fs / path / buffer / http 等），明确不支持 native binding
-- [ ] 第二个官方插件 `clipboard-history` 验证 API 可用性
-- [ ] 主题 / 深色模式 / 动画细节打磨
+- [x] 声明式 UI：React Style DSL -> Virtual UI Tree -> GPUI Renderer；首批组件 `List` / `Detail` / `Form` / `Grid` / `ActionPanel` / `SearchBar`
+- [x] API 覆盖：`Detail` / `Form` / `LocalStorage` / `Clipboard` 等
+- [x] 覆盖 20–30 个常用 Node 内置模块 polyfill（fs / path / buffer / http 等），明确不支持 native binding
+- [x] 第二个官方插件 `clipboard-history` 验证 API 可用性
+- [x] 主题 / 深色模式 / 动画细节打磨（深色优先 + accent 一致性 + 启动器入场动画；浅色主题与更多过渡动画后续补齐）
 
 ### M4 - Windows Support（TODO）
 
