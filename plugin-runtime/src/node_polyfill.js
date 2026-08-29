@@ -882,6 +882,78 @@
     exports.resolve = resolveUrl;
   });
 
-  /* stubs the runtime cannot back in M3 (host functions not granted yet). */
-  ["fs", "http", "https", "net", "dns", "child_process", "crypto", "zlib", "stream"].forEach(stub);
+  /* Async host bridge: a plugin's `await` can park on a cross-process host
+   * request (e.g. `host.fs.read`). The JS side owns the resolver registry
+   * (`__stewardAsync`) and the Rust runtime resumes the parked promise when the
+   * host replies (see `handle_host_response` in the runtime). */
+  var asyncResolvers = Object.create(null);
+  var asyncSeq = 0;
+  global.__stewardAsync = asyncResolvers;
+  function hostRequest(method, params) {
+    var pendingId = ++asyncSeq;
+    return new Promise(function (resolve, reject) {
+      asyncResolvers[String(pendingId)] = { resolve: resolve, reject: reject };
+      try {
+        global.steward.__hostSend(method, params, pendingId);
+      } catch (e) {
+        delete asyncResolvers[String(pendingId)];
+        reject(e);
+      }
+    });
+  }
+
+  /* `fs.readFile` is backed by a host `host.fs.read` round-trip; other Node
+   * fs methods remain unsupported in this phase. */
+  var fsModule = {
+    readFile: function (path, encoding) {
+      var enc = encoding === undefined || encoding === null ? "utf8" : String(encoding);
+      return hostRequest("host.fs.read", { path: String(path), encoding: enc }).then(function (res) {
+        if (res && res.base64) {
+          return Buffer.from(res.data, "base64");
+        }
+        return res ? res.data : "";
+      });
+    },
+    writeFile: function (path, data, encoding) {
+      var enc = encoding === undefined || encoding === null ? "utf8" : String(encoding);
+      var payload;
+      var base64 = false;
+      if (enc === "base64") {
+        base64 = true;
+        payload = data instanceof Uint8Array ? base64Encode(data) : String(data);
+      } else {
+        payload = String(data);
+      }
+      return hostRequest("host.fs.write", {
+        path: String(path),
+        data: payload,
+        base64: base64,
+      }).then(function () {
+        return undefined;
+      });
+    },
+  };
+  function fsUnsupported(name) {
+    throw new Error("Steward: 'fs." + name + "' is not supported in this phase");
+  }
+  ["readFileSync", "writeFileSync", "readdir", "readdirSync", "stat", "statSync",
+    "existsSync", "mkdir", "mkdirSync", "rm", "rmSync", "unlink", "appendFile"].forEach(function (name) {
+    fsModule[name] = function () {
+      fsUnsupported(name);
+    };
+  });
+  define("fs", function (exports) {
+    exports.readFile = fsModule.readFile;
+    exports.writeFile = fsModule.writeFile;
+    ["readFileSync", "writeFileSync", "readdir", "readdirSync", "stat", "statSync",
+      "existsSync", "mkdir", "mkdirSync", "rm", "rmSync", "unlink", "appendFile"].forEach(function (name) {
+      exports[name] = fsModule[name];
+    });
+  });
+  if (global.steward) {
+    global.steward.fs = { readFile: fsModule.readFile, writeFile: fsModule.writeFile };
+  }
+
+  /* Remaining network/native modules the runtime cannot back in this phase. */
+  ["http", "https", "net", "dns", "child_process", "crypto", "zlib", "stream"].forEach(stub);
 })(globalThis);

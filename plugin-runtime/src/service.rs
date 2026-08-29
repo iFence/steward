@@ -7,6 +7,7 @@
 //! stream stays clean.
 
 use std::io::{BufRead, Write};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
@@ -17,7 +18,7 @@ use steward_ipc_protocol::{
 use steward_plugin_registry::PluginManifest;
 
 use crate::isolate_pool::{
-    InvokeError, IsolateId, IsolatePool, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK,
+    InvokeError, IsolateId, IsolatePool, ResumeOutcome, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK,
     DEFAULT_POOL_CAPACITY,
 };
 
@@ -134,52 +135,129 @@ pub fn run_service(config: &ServiceConfig) -> Result<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
-    for line in stdin.lock().lines() {
-        let line = line.context("read request line")?;
-        let Some(message) = decode_line(&line).context("decode request line")? else {
-            continue;
-        };
-        let Message::Request(request) = message else {
-            // M2 is strictly request/response from the host's perspective; the
-            // runtime ignores inbound notifications and responses.
-            continue;
-        };
-
-        let response = dispatch(&mut pool, &request);
-        // Flush plugin-emitted notifications (toasts) before the response so
-        // the host applies side effects in causal order.
-        for notification in pool.drain_notifications() {
-            write_line(&mut out, &Message::Notification(notification))?;
+    // Read the NDJSON request stream on a background thread and deliver frames
+    // over a channel, so the main loop can also tick parked-invocation timeouts
+    // even while no host frame is arriving.
+    let (tx, rx) = crossbeam_channel::unbounded();
+    std::thread::spawn(move || {
+        for line in stdin.lock().lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => break,
+            };
+            if let Some(message) = decode_line(&line).ok().flatten() {
+                if tx.send(message).is_err() {
+                    break;
+                }
+            }
         }
-        write_line(&mut out, &Message::Response(response))?;
+    });
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(message) => handle_message(&mut pool, message, &mut out)?,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                for response in pool.expire_parked() {
+                    write_line(&mut out, &Message::Response(response))?;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
     }
     Ok(())
 }
 
-fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
+/// Handle one inbound protocol frame (a host request, a host reply to a
+/// runtime -> host request, or a notification) and write any outbound frames.
+fn handle_message(pool: &mut IsolatePool, message: Message, out: &mut impl Write) -> Result<()> {
+    match message {
+        Message::Request(request) => match dispatch(pool, &request) {
+            Dispatch::Reply(response) => {
+                // Flush plugin-emitted notifications (toasts/open) before the
+                // response so side effects apply in causal order.
+                for notification in pool.drain_notifications() {
+                    write_line(out, &Message::Notification(notification))?;
+                }
+                write_line(out, &Message::Response(response))?;
+            }
+            Dispatch::Parked {
+                isolate_id,
+                request,
+            } => {
+                // The command parked on a cross-process host request: send the
+                // queued runtime -> host requests and defer the reply until the
+                // host answers.
+                for request in pool.drain_outbound(isolate_id) {
+                    write_line(out, &Message::Request(request))?;
+                }
+                pool.park_invocation(isolate_id, request);
+            }
+        },
+        Message::Response(response) => match pool.handle_host_response(response) {
+            ResumeOutcome::Reply(response) => {
+                for notification in pool.drain_notifications() {
+                    write_line(out, &Message::Notification(notification))?;
+                }
+                write_line(out, &Message::Response(response))?;
+            }
+            ResumeOutcome::Parked(isolate_id) => {
+                for request in pool.drain_outbound(isolate_id) {
+                    write_line(out, &Message::Request(request))?;
+                }
+            }
+            ResumeOutcome::Dropped => {}
+        },
+        Message::Notification(_) => {}
+    }
+    Ok(())
+}
+
+/// The result of dispatching one host -> runtime request. A parked invocation
+/// defers its reply until the host answers the runtime -> host request(s).
+enum Dispatch {
+    Reply(Response),
+    Parked {
+        isolate_id: IsolateId,
+        request: Request,
+    },
+}
+
+fn dispatch(pool: &mut IsolatePool, request: &Request) -> Dispatch {
     match request.method.as_str() {
         method::PLUGIN_LOAD => {
             let params = match parse_params::<LoadParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
             eprintln!("[runtime] loading plugin '{}'", params.id);
             match pool.load(&params.entry_path, &params.manifest) {
-                Ok(isolate_id) => Response::ok(request.id, json!({ "isolate_id": isolate_id })),
-                Err(error) => Response::error(
+                Ok(isolate_id) => Dispatch::Reply(Response::ok(
+                    request.id,
+                    json!({ "isolate_id": isolate_id }),
+                )),
+                Err(error) => Dispatch::Reply(Response::error(
                     request.id,
                     RpcError::new(
                         code::INTERNAL_ERROR,
                         format!("failed to load plugin: {error:#}"),
                     ),
-                ),
+                )),
             }
         }
         method::COMMAND_INVOKE => {
             let params = match parse_params::<CommandInvokeParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
+            if pool.is_parked(params.isolate_id) {
+                return Dispatch::Reply(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin is busy; a prior invocation is pending",
+                    ),
+                ));
+            }
             match pool.invoke_command_with_history(
                 params.isolate_id,
                 &params.command,
@@ -187,83 +265,139 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Response {
                 params.deadline_ms,
                 Some(params.clipboard_history),
             ) {
-                Ok(view) => Response::ok(request.id, json!({ "view": view })),
-                Err(error) => invoke_error(request.id, &params.command, error),
+                Ok(view) => Dispatch::Reply(Response::ok(request.id, json!({ "view": view }))),
+                Err(InvokeError::Pending) => Dispatch::Parked {
+                    isolate_id: params.isolate_id,
+                    request: request.clone(),
+                },
+                Err(error) => Dispatch::Reply(invoke_error(request.id, &params.command, error)),
             }
         }
         method::ITEM_INVOKE => {
             let params = match parse_params::<ItemInvokeParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
+            if pool.is_parked(params.isolate_id) {
+                return Dispatch::Reply(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin is busy; a prior invocation is pending",
+                    ),
+                ));
+            }
             match pool.invoke_item(params.isolate_id, &params.item_id, params.deadline_ms) {
                 Ok(view) => {
                     let mut result = json!({});
                     if let Some(view) = view {
                         result["view"] = view;
                     }
-                    Response::ok(request.id, result)
+                    Dispatch::Reply(Response::ok(request.id, result))
                 }
-                Err(error) => invoke_error(request.id, "select", error),
+                Err(InvokeError::Pending) => Dispatch::Parked {
+                    isolate_id: params.isolate_id,
+                    request: request.clone(),
+                },
+                Err(error) => Dispatch::Reply(invoke_error(request.id, "select", error)),
             }
         }
         method::ACTION_INVOKE => {
             let params = match parse_params::<ActionInvokeParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
+            if pool.is_parked(params.isolate_id) {
+                return Dispatch::Reply(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin is busy; a prior invocation is pending",
+                    ),
+                ));
+            }
             match pool.invoke_action(
                 params.isolate_id,
                 &params.action_id,
                 params.item_id,
                 params.deadline_ms,
             ) {
-                Ok(()) => Response::ok(request.id, json!({})),
-                Err(error) => invoke_error(request.id, "action", error),
+                Ok(()) => Dispatch::Reply(Response::ok(request.id, json!({}))),
+                Err(InvokeError::Pending) => Dispatch::Parked {
+                    isolate_id: params.isolate_id,
+                    request: request.clone(),
+                },
+                Err(error) => Dispatch::Reply(invoke_error(request.id, "action", error)),
             }
         }
         method::FORM_SUBMIT => {
             let params = match parse_params::<FormSubmitParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
+            if pool.is_parked(params.isolate_id) {
+                return Dispatch::Reply(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin is busy; a prior invocation is pending",
+                    ),
+                ));
+            }
             match pool.invoke_submit(params.isolate_id, &params.values, params.deadline_ms) {
-                Ok(()) => Response::ok(request.id, json!({})),
-                Err(error) => invoke_error(request.id, "submit", error),
+                Ok(()) => Dispatch::Reply(Response::ok(request.id, json!({}))),
+                Err(InvokeError::Pending) => Dispatch::Parked {
+                    isolate_id: params.isolate_id,
+                    request: request.clone(),
+                },
+                Err(error) => Dispatch::Reply(invoke_error(request.id, "submit", error)),
             }
         }
         method::SEARCH_QUERY => {
             let params = match parse_params::<SearchQueryParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
+            if pool.is_parked(params.isolate_id) {
+                return Dispatch::Reply(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin is busy; a prior invocation is pending",
+                    ),
+                ));
+            }
             match pool.invoke_search(params.isolate_id, &params.query, params.deadline_ms) {
                 Ok(view) => {
                     let mut result = json!({});
                     if let Some(view) = view {
                         result["view"] = view;
                     }
-                    Response::ok(request.id, result)
+                    Dispatch::Reply(Response::ok(request.id, result))
                 }
-                Err(error) => invoke_error(request.id, "search", error),
+                Err(InvokeError::Pending) => Dispatch::Parked {
+                    isolate_id: params.isolate_id,
+                    request: request.clone(),
+                },
+                Err(error) => Dispatch::Reply(invoke_error(request.id, "search", error)),
             }
         }
         method::PLUGIN_UNLOAD => {
             let params = match parse_params::<UnloadParams>(request) {
                 Ok(params) => params,
-                Err(error) => return Response::error(request.id, error),
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
             };
             pool.unload(params.isolate_id);
-            Response::ok(request.id, json!({}))
+            Dispatch::Reply(Response::ok(request.id, json!({})))
         }
-        method::PING => Response::ok(request.id, json!({ "pong": true })),
-        _ => Response::error(
+        method::PING => Dispatch::Reply(Response::ok(request.id, json!({ "pong": true }))),
+        _ => Dispatch::Reply(Response::error(
             request.id,
             RpcError::new(
                 code::METHOD_NOT_FOUND,
                 format!("unknown method '{}'", request.method),
             ),
-        ),
+        )),
     }
 }
 
@@ -297,6 +431,10 @@ fn invoke_error(id: u64, command: &str, error: InvokeError) -> Response {
             "plugin exceeded its heap limit; isolate killed".to_string(),
         ),
         InvokeError::PermissionDenied(message) => (code::PERMISSION_DENIED, message),
+        InvokeError::Pending => (
+            code::INTERNAL_ERROR,
+            "plugin is parked on a cross-process host request".to_string(),
+        ),
         InvokeError::Plugin(message) => (code::INTERNAL_ERROR, message),
         InvokeError::Internal(message) => (code::INTERNAL_ERROR, message),
     };
@@ -344,10 +482,12 @@ mod tests {
     #[test]
     fn unknown_method_returns_method_not_found() {
         let request = Request::new(1, "bogus.method", Value::Null);
-        let response = dispatch(
+        let Dispatch::Reply(response) = dispatch(
             &mut IsolatePool::new(false, 1, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK),
             &request,
-        );
+        ) else {
+            panic!("expected a reply");
+        };
         assert_eq!(response.error.unwrap().code, code::METHOD_NOT_FOUND);
         assert_eq!(response.jsonrpc, JSONRPC_VERSION);
     }
@@ -355,10 +495,12 @@ mod tests {
     #[test]
     fn ping_responds() {
         let request = Request::new_empty(7, method::PING);
-        let response = dispatch(
+        let Dispatch::Reply(response) = dispatch(
             &mut IsolatePool::new(false, 1, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK),
             &request,
-        );
+        ) else {
+            panic!("expected a reply");
+        };
         assert_eq!(response.result, Some(json!({ "pong": true })));
     }
 }

@@ -120,6 +120,16 @@ fn drain_plugin_events(
                 eprintln!("[steward] plugin toast: {message}");
                 // TODO(M3): render a real toast in the launcher UI.
             }
+            steward_plugin_host::HostEvent::OpenUrl { url } => {
+                if let Err(error) = crate::launch::open_url(&url) {
+                    eprintln!("[steward] plugin open.url failed: {error:#}");
+                }
+            }
+            steward_plugin_host::HostEvent::OpenPath { path } => {
+                if let Err(error) = crate::launch::open_path(&path) {
+                    eprintln!("[steward] plugin open.path failed: {error:#}");
+                }
+            }
             steward_plugin_host::HostEvent::RuntimeCrashed { plugin_id } => {
                 eprintln!(
                     "[steward] plugin runtime {} crashed; restart scheduled",

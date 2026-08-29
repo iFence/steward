@@ -164,6 +164,19 @@ interface HostBridge {
     history(): ClipboardEntry[];
   };
   showToast(options: ToastOptions): void;
+  /** Open a URL in the user's default browser (granted by `open.url`). */
+  openUrl(url: string): void;
+  /** Open a file / folder / shell target with the OS default handler (`open.path`). */
+  openPath(path: string): void;
+  /**
+   * Read a file on the host (granted by `fs.read`, sandboxed to the plugin's
+   * `fs_roots`). Returns the text for `"utf8"` (default) or a base64-decoded
+   * `Uint8Array` for `"base64"`; resolves only after a cross-process round-trip.
+   */
+  fs: {
+    readFile(path: string, encoding?: "utf8" | "base64"): Promise<string | Uint8Array>;
+    writeFile(path: string, data: string | Uint8Array, encoding?: "utf8" | "base64"): Promise<void>;
+  };
   /** Per-plugin local key-value storage (file-backed, sandboxed). */
   storage: {
     get(key: string): string | null;
@@ -226,6 +239,34 @@ export const Clipboard = {
 export function showToast(options: ToastOptions): void {
   hostBridge().showToast(options);
 }
+
+/** Open `url` in the user's default browser (requires the `open.url` permission). */
+export function openUrl(url: string): void {
+  hostBridge().openUrl(url);
+}
+
+/** Open a file / folder / shell target with the OS default handler (requires `open.path`). */
+export function openPath(path: string): void {
+  hostBridge().openPath(path);
+}
+
+/**
+ * Read a file on the host. Requires the `fs.read` permission and a path that
+ * falls under one of the plugin's declared `fs_roots`. `encoding` may be
+ * `"utf8"` (default, returns a string) or `"base64"` (returns a `Uint8Array`).
+ */
+export const fs = {
+  readFile(path: string, encoding: "utf8" | "base64" = "utf8"): Promise<string | Uint8Array> {
+    return hostBridge().fs.readFile(path, encoding);
+  },
+  writeFile(
+    path: string,
+    data: string | Uint8Array,
+    encoding: "utf8" | "base64" = "utf8",
+  ): Promise<void> {
+    return hostBridge().fs.writeFile(path, data, encoding);
+  },
+};
 
 export interface Action {
   id: string;

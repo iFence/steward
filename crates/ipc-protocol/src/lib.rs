@@ -187,6 +187,32 @@ pub mod method {
     /// Runtime -> main process notification: show a toast. Params:
     /// `{ message, kind?, durationMs? }`.
     pub const TOAST_SHOW: &str = "toast.show";
+    /// Runtime -> main process notification: open a URL in the user's default
+    /// browser. Params: `{ url }`. Gated by the `open.url` permission.
+    pub const OPEN_URL: &str = "open.url";
+    /// Runtime -> main process notification: open a file path / shell target
+    /// with the OS default handler (Windows `open` verb). Params: `{ path }`.
+    /// Gated by the `open.path` permission.
+    pub const OPEN_PATH: &str = "open.path";
+
+    /// Runtime -> main process *request*: read a file on the host and return
+    /// its contents. Params: `{ pending_id, plugin_id, path, encoding }`;
+    /// result: `{ data, base64 }`. This is a runtime-initiated request that
+    /// parks the plugin's promise until the host replies (cross-process await).
+    pub const HOST_FS_READ: &str = "host.fs.read";
+    /// Runtime -> main process *request*: write a file on the host. Params:
+    /// `{ pending_id, plugin_id, path, data, base64 }`; result: `{}`. Sandboxed
+    /// to the plugin's `fs_roots`; `base64` decodes `data` from base64 before
+    /// writing (binary files).
+    pub const HOST_FS_WRITE: &str = "host.fs.write";
+}
+
+/// Whether a method is a runtime-initiated request to the host (as opposed to
+/// a host-initiated request to the runtime). Runtime->host requests use the
+/// `host.` prefix and are answered on the runtime's stdin with a
+/// [`Response`] carrying the same id.
+pub fn is_host_request(method: &str) -> bool {
+    method.starts_with("host.")
 }
 
 /// Encode one message as a single NDJSON line (including the trailing `\n`).

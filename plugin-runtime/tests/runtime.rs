@@ -10,7 +10,9 @@ use std::{
 
 use crossbeam_channel::Receiver;
 use serde_json::{json, Value};
-use steward_ipc_protocol::{code, decode_line, method, Message, Notification, Request, RpcError};
+use steward_ipc_protocol::{
+    code, decode_line, method, Message, Notification, Request, Response, RpcError,
+};
 
 struct RuntimeProc {
     child: Child,
@@ -93,6 +95,64 @@ impl RuntimeProc {
             }),
         );
         (result.expect("plugin.load failed"), error)
+    }
+
+    /// Load with an explicit manifest (e.g. one granting `fs.read`).
+    fn load_with_manifest(
+        &mut self,
+        root: &Path,
+        plugin_id: &str,
+        manifest: Value,
+    ) -> (Value, Option<RpcError>) {
+        let (result, error, _) = self.request(
+            method::PLUGIN_LOAD,
+            json!({
+                "id": plugin_id,
+                "entry_path": root.join(plugin_id).join("index.js"),
+                "manifest": manifest
+            }),
+        );
+        (result.expect("plugin.load failed"), error)
+    }
+
+    /// Like [`request`], but answers runtime -> host `host.fs.read` requests it
+    /// receives in-flight by reading the requested file and replying, then waits
+    /// for the original request's response (a full cross-process await round-trip).
+    fn request_fs_roundtrip(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> (Option<Value>, Option<RpcError>, Vec<Notification>) {
+        self.next_id += 1;
+        let id = self.next_id;
+        let request = Request::new(id, method, params);
+        writeln!(self.stdin, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+        self.stdin.flush().unwrap();
+        let mut notifications = Vec::new();
+        loop {
+            let line = self
+                .rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("timed out waiting for a runtime response");
+            let message = decode_line(&line)
+                .expect("runtime emitted a malformed line")
+                .expect("empty line");
+            match message {
+                Message::Response(response) if response.id == id => {
+                    return (response.result, response.error, notifications);
+                }
+                Message::Response(_) => panic!("runtime responded to an unknown request id"),
+                Message::Notification(notification) => notifications.push(notification),
+                Message::Request(host_req) => {
+                    assert_eq!(host_req.method, method::HOST_FS_READ);
+                    let path = host_req.params["path"].as_str().expect("host.fs.read path");
+                    let text = std::fs::read_to_string(path).unwrap();
+                    let reply = Response::ok(host_req.id, json!({ "data": text, "base64": false }));
+                    writeln!(self.stdin, "{}", serde_json::to_string(&reply).unwrap()).unwrap();
+                    self.stdin.flush().unwrap();
+                }
+            }
+        }
     }
 }
 
@@ -603,4 +663,49 @@ fn invalid_load_params_are_rejected() {
     let mut proc = RuntimeProc::spawn(&[]);
     let (_, error, _) = proc.request(method::PLUGIN_LOAD, json!({ "id": 42 }));
     assert_eq!(error.unwrap().code, code::INVALID_PARAMS);
+}
+
+#[test]
+fn fs_read_roundtrip_via_cross_process_await() {
+    let mut proc = RuntimeProc::spawn(&[]);
+    let root = plugin_root("fs-read");
+    let file = root.join("data.txt");
+    std::fs::write(&file, "hello-e2e").unwrap();
+    let file_js = file.to_string_lossy().replace('\\', "/");
+    write_plugin(
+        &root,
+        "com.test.fs-read",
+        &format!(
+            r#"
+            var __stewardPlugin = (() => {{
+                async function command(name, input) {{
+                    var text = await steward.fs.readFile("{file_js}", "utf8");
+                    return {{ type: "list", items: [{{ id: "1", title: text }}] }};
+                }}
+                return {{ command: command }};
+            }})();
+            "#
+        ),
+    );
+    let manifest = json!({
+        "id": "com.test.fs-read",
+        "name": "Test",
+        "version": "1.0.0",
+        "commands": [
+            { "name": "run", "title": "Run", "trigger": { "type": "command" } }
+        ],
+        "permissions": ["fs.read"],
+        "isolation": "shared-pool"
+    });
+    let (load_result, load_error) = proc.load_with_manifest(&root, "com.test.fs-read", manifest);
+    assert!(load_error.is_none(), "load failed: {load_error:?}");
+    let isolate_id = load_result["isolate_id"].as_u64().unwrap();
+
+    let (result, error, _) = proc.request_fs_roundtrip(
+        method::COMMAND_INVOKE,
+        json!({ "isolate_id": isolate_id, "command": "run", "input": "", "deadline_ms": 1000 }),
+    );
+    assert!(error.is_none(), "fs roundtrip failed: {error:?}");
+    let view = result.unwrap()["view"].clone();
+    assert_eq!(view["items"][0]["title"], "hello-e2e");
 }

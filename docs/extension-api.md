@@ -27,6 +27,9 @@
 | `Detail` | 详情视图 |
 | `Form` | 表单视图 |
 | `LocalStorage` | 插件本地键值存储 |
+| `openUrl` / `openPath` | 打开 URL（默认浏览器）/ 打开文件/文件夹/`shell:` 目标（OS `open` verb）；分别需 `open.url` / `open.path` 权限，调用未授权即抛 `permission denied` |
+| `fs.readFile` | 读取磁盘文件（`await`，跨进程往返）；需 `fs.read` 权限 + `fs_roots` 白名单；`encoding` 支持 `utf8`（返回 `string`）/ `base64`（返回 `Uint8Array`） |
+| `fs.writeFile` | 写入磁盘文件（`await`，跨进程往返）；需 `fs.write` 权限 + `fs_roots` 白名单；`encoding` 支持 `utf8`（`data: string`）/ `base64`（`data: Uint8Array`） |
 
 ## 约束
 

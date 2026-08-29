@@ -131,6 +131,7 @@ impl Registry {
                     dir TEXT NOT NULL,
                     entry TEXT NOT NULL,
                     icon TEXT,
+                    fs_roots TEXT NOT NULL DEFAULT '[]',
                     isolation TEXT NOT NULL,
                     permissions TEXT NOT NULL,
                     commands TEXT NOT NULL,
@@ -152,6 +153,21 @@ impl Registry {
                 .execute("ALTER TABLE plugins ADD COLUMN icon TEXT", [])
                 .context("add icon column to plugin cache")?;
         }
+        let has_fs_roots = self
+            .conn
+            .prepare("PRAGMA table_info(plugins)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|column| column == "fs_roots");
+        if !has_fs_roots {
+            self.conn
+                .execute(
+                    "ALTER TABLE plugins ADD COLUMN fs_roots TEXT NOT NULL DEFAULT '[]'",
+                    [],
+                )
+                .context("add fs_roots column to plugin cache")?;
+        }
         Ok(())
     }
 
@@ -171,7 +187,7 @@ impl Registry {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, name, version, dir, entry, icon, isolation, permissions, commands, scanned_at
+                "SELECT id, name, version, dir, entry, icon, fs_roots, isolation, permissions, commands, scanned_at
                  FROM plugins",
             )
             .context("prepare cached plugins query")?;
@@ -182,10 +198,11 @@ impl Registry {
                     name: row.get(1)?,
                     version: row.get(2)?,
                     icon: row.get(5)?,
-                    isolation: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
-                    permissions: serde_json::from_str(&row.get::<_, String>(7)?)
+                    fs_roots: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+                    isolation: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+                    permissions: serde_json::from_str(&row.get::<_, String>(8)?)
                         .unwrap_or_default(),
-                    commands: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
+                    commands: serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default(),
                 };
                 let icon = manifest.icon.clone();
                 Ok(PluginMeta {
@@ -193,7 +210,7 @@ impl Registry {
                     dir: PathBuf::from(row.get::<_, String>(3)?),
                     entry: PathBuf::from(row.get::<_, String>(4)?),
                     icon,
-                    scanned_at: row.get(9)?,
+                    scanned_at: row.get(10)?,
                 })
             })
             .context("query cached plugins")?;
@@ -280,14 +297,15 @@ impl Registry {
         let now = unix_seconds();
         self.conn
             .execute(
-                "INSERT INTO plugins (id, name, version, dir, entry, icon, isolation, permissions, commands, scanned_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "INSERT INTO plugins (id, name, version, dir, entry, icon, fs_roots, isolation, permissions, commands, scanned_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     version = excluded.version,
                     dir = excluded.dir,
                     entry = excluded.entry,
                     icon = excluded.icon,
+                    fs_roots = excluded.fs_roots,
                     isolation = excluded.isolation,
                     permissions = excluded.permissions,
                     commands = excluded.commands,
@@ -299,6 +317,7 @@ impl Registry {
                     &dir.to_string_lossy(),
                     &entry.to_string_lossy(),
                     &manifest.icon,
+                    &serde_json::to_string(&manifest.fs_roots).unwrap_or_default(),
                     &serde_json::to_string(&manifest.isolation).unwrap_or_default(),
                     &serde_json::to_string(&manifest.permissions).unwrap_or_default(),
                     &serde_json::to_string(&manifest.commands).unwrap_or_default(),

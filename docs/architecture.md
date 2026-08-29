@@ -392,3 +392,98 @@ steward/
 - 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`
   全绿（本地以 `STEWARD_DATA_DIR` 指向可写目录避开沙箱不可写 AppData，CI 环境无需）；`tsc --noEmit` 与插件
   esbuild IIFE 构建通过；runtime 端到端新增 async command、Node polyfill、`search.query` 用例。
+
+### 2026-08-29（插件 open.url / open.path 能力）
+
+- 补齐插件能力面：新增 `open.url` / `open.path` 两项权限及对应宿主函数
+  `steward.openUrl(url)` / `steward.openPath(path)`，解锁「插件打开 URL / 文件 /
+  shell 目标」这一启动器插件的核心动作；此前插件连「打开 URL/应用/文件」都无法触发。
+- 传输沿用 toast 的 notification 模式：插件调用 → runtime 在 `install_host_bridge`
+  按 manifest `permissions` 门控（未授权抛 `permission denied`，属 JS 异常、不 kill
+  isolate；空目标判为空串抛插件错误）；授权后 push `method::OPEN_URL` /
+  `method::OPEN_PATH` 通知 → `plugin-host::drain_events` 转成 `HostEvent::OpenUrl` /
+  `OpenPath` → app 前台任务调 `launch::open_url` / `launch::open_path`
+  （Windows `ShellExecuteW` `open` verb；非 Windows 继续 stub）。
+- 权限与 manifest 规范同步（`open.url` 默认浏览器、`open.path` 文件/文件夹/`shell:`/`.lnk`
+  目标，OS open verb），写入 `docs/plugin-manifest-spec.md` 权限枚举与 `extension-api` 的
+  `openUrl` / `openPath`。`network` / `fs.*` 仍识别但扫描拒绝（`not supported in M3`）。
+- 边界：`open.path` 复用 `shell_open`，`.lnk` 与 `shell:` 别名由 shell 解析；按已注册应用名
+  启动（`open.app`）依赖应用索引，留待后续；`open.url` 沿用 `open_url` 对裸 `host:port` 补
+  `http://` 的规范化。
+- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
+  `cargo test --workspace` 全绿；`tsc --noEmit`（extension-api / calendar / clipboard-history）
+  与两插件 esbuild IIFE 构建通过；runtime 新增 open.url/open.path 门控与通知用例。
+
+### 2026-08-29（P0-1 阶段 A：跨进程 await + fs.readFile）
+
+- 打通真正的跨进程 await：插件的 `Promise` 可挂在一次宿主往返上，宿主完成后 runtime
+  再恢复该 isolate。这是此前 `M3 无跨进程 await（fs/network 未放行）` 假设的突破，
+  为后续 network / 更多宿主能力铺路。
+- 协议：复用现有 `Request/Response` 封套，新增 runtime→host 请求方法 `host.fs.read`
+  （`is_host_request` 用 `host.` 前缀识别方向）；host 处理后把 `Response`（同 id）写回
+  runtime 的 stdin。runtime 主循环现在同时消费 `Request`（host→runtime）与 `Response`
+  （host 对 runtime 请求的回复）。
+- runtime 状态机：`install_host_bridge` 新增 `steward.__hostSend(method, params, pendingId)`
+  （按权限门控、把 `PendingHostRequest` 记入 isolate 的 `AsyncBridgeState.outbound`）；
+  `await_view` 在 `WouldBlock` 时把顶层 Promise 存到 `globalThis.__stewardTopPromise`；
+  `run_in_isolate` 对 `WouldBlock` 且 `in_flight`/`outbound` 非空返回 `InvokeError::Pending`
+  （不再当作超时 kill）；service 循环写出发往 host 的请求并记录 parked 调用；
+  `handle_host_response` 经 JS 侧 `__stewardAsync[id].resolve/reject` 恢复 Promise 并再度
+  drain 顶层 Promise，settle 后按原方法（command/item/search/action/form）回写响应。
+- JS 侧：`node_polyfill.js` 新增 `hostRequest`/`__stewardAsync` 与 `steward.fs.readFile`
+  （`host.fs.read`），`require("fs").readFile` 同源；其余 fs/network 模块仍 stub。
+- manifest/权限：`fs.read` 纳入 M3 支持；新增可选 `fs_roots: string[]`（`fs.read` 的
+  绝对路径白名单），registry 缓存新增 `fs_roots` 列（迁移 + 读写）。
+- host 侧：`RuntimeConn.stdin` 改为 `Arc<Mutex<ChildStdin>>`（并发写请求/回复），stdout
+  读取线程把 `host.*` 请求上抛为 `Frame::HostRequest`；`handle_host_request` 做
+  `fs.read` 权限校验 + `fs_roots` canonicalize 前缀沙箱（4 MiB 上限）+ base64/utf8 处理后
+  `send_reply` 写回 runtime。扩展-api 新增 `fs.readFile(path, encoding?)`。
+- 边界：async 宿主调用必须在 `command/select/run/submit/search` 中 `await` 才会真正发出
+  （fire-and-forget 请求不触发发送）；一个 isolate 同一时刻最多一个 parked 调用，busy 时
+  新请求回 `plugin is busy`；isolate 被 kill/驱逐后在途回复直接丢弃。
+- 验证：runtime 新增 `await_fs_read_parks_and_resumes`（Pending → drain_outbound →
+  handle_host_response → 结算 view）与 `fs_read_without_permission_rejects_immediately`
+  用例；`cargo fmt --check` / `cargo clippy -D warnings` / `cargo test --workspace`、
+  `tsc --noEmit`、esbuild 插件构建全绿。
+
+### 2026-08-29（P0-1 阶段 B1：fs.write + fsRoots 写沙箱）
+
+- 补齐 `fs.write`：新增 runtime→host `host.fs.write`（`{ pending_id, plugin_id, path,
+  data, base64 }` → `{}`），复用与 `fs.read` 相同的 park/resume 机制。
+- 权限：manifest 新增 `fs.write`（M3 支持），与 `fs.read` 共用 `fs_roots` 作为读写白名单；
+  `network` 仍未实现，继续扫描拒绝。
+- 宿主 `host_fs_write`：权限校验 → `canonicalize` 目标父目录判断是否落在某 `fs_roots`
+  根内（越界拒绝）→ `base64` 时 `base64_decode` 否则按 utf8 写 → 4 MiB 上限。父目录必须
+  已存在（写新文件到已存在目录），不自动越界建目录。
+- SDK `fs.writeFile(path, data, encoding?)`；polyfill `steward.fs.writeFile` /
+  `require("fs").writeFile` 同源（`base64` 传 `Uint8Array` 自动编码）。
+- 边界：`net.request` 因本机沙箱无法联网拉依赖（crates.io 镜像不可达）暂缓实现；
+  `network` 权限继续在扫描阶段拒绝。后续需引入 HTTP 客户端（建议 `ureq`，同步、体量小、
+  贴合"低内存/快启动"）后再放行。
+- 验证：runtime 新增 `await_fs_write_parks_and_resumes`、
+  `fs_write_without_permission_rejects_immediately`；`cargo fmt --check` /
+  `cargo clippy -D warnings` / `cargo test -p steward-plugin-registry`（含
+  `fs_write_permission_is_accepted`）、`cargo test -p steward-plugin-runtime --lib`；
+  `tsc --noEmit`、esbuild 构建全绿。
+
+### 2026-08-29（P0-1 阶段 C：并行 pending + kill/驱逐一致性 + parked 超时）
+
+- 并行 pending：`Promise.all` 多个宿主请求可同时在途——`AsyncBridgeState.outbound` 用
+  Vec 收集、`pending_owner` 按 `pending_id` 记录归属；每个回复各自 resolve 对应 promise，
+  顶层 Promise 未 settle 则继续 `Parked`，全部 settle 才回写响应。新增
+  `parallel_fs_read_parks_and_resumes`（两个 `fs.read` 的 `Promise.all`）。
+- kill/驱逐一致性：`drop_isolate` / `evict_lru` / dedicated 重载都会清理该 isolate 的
+  `parked` 与 `pending_owner` 记账（`cleanup_isolate_bookkeeping`）；晚到的 host 回复被
+  `handle_host_response` 丢弃（`Dropped`），不会恢复死 isolate。新增
+  `late_host_reply_after_isolate_killed_is_dropped`。
+- parked 超时：`ParkedInvocation` 记录原请求与 deadline（取请求 `deadline_ms`）；service
+  循环改为后台线程读 stdin + `recv_timeout`，每 tick `expire_parked` 杀掉超时挂起的
+  isolate 并回 `TIMEOUT`，避免宿主永不回复时插件永久悬挂。新增
+  `expired_parked_invocation_times_out`。
+- 依赖：`crossbeam-channel` 从 dev-dependency 上移到 plugin-runtime 正常依赖（已存在于
+  Cargo.lock，无需联网拉取）。
+- 边界：一个 isolate 同一时刻仍只允许一个 parked 调用（busy 时新请求回 `plugin is busy`）。
+- 验证：`cargo fmt --check` / `cargo clippy -D warnings` /
+  `cargo test -p steward-plugin-runtime --lib`（含新并行/一致性/超时用例，除既有
+  storage 沙箱路径测试）；`cargo test -p steward-plugin-registry --lib`、`tsc --noEmit`、
+  esbuild 构建全绿。

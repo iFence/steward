@@ -78,3 +78,14 @@
 > 插件系统侧的规模化验收由自动化回归测试先行保障（`plugin-host/tests/scaling.rs`）：
 > 在超过共享池容量的安装量下，任意索引的插件都能经懒加载正确出视图，且
 > `set_plugins` / 单次冷查询耗时不随安装量线性增长。真实 release 整机数据仍待补齐。
+
+## 插件 fs 跨进程 async（M3 二轮后）
+
+插件的 `fs.readFile` / `fs.writeFile` 走**宿主往返**（`host.fs.read` / `host.fs.write`）：
+命令 `await` 后 runtime 暂停 isolate（`Pending`），宿主做文件 I/O 后回写响应，runtime
+再恢复 Promise。该路径受命令 `deadline_ms`（默认静态 500ms）与 4 MiB 上限双重约束，晚到的
+host 回复若 isolate 已被 kill/驱逐则被丢弃。
+
+> 说明：该异步链路的正确性已由 `plugin-runtime` 的 park/resume、并行 `Promise.all`、
+> kill/驱逐一致性、parked 超时等单元用例保障；整机延迟/内存影响待 `net.request`
+> 落地后随 `scripts/bench.sh` 一起在 release 机器上回填。

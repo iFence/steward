@@ -31,6 +31,10 @@ pub struct PluginManifest {
     /// next to the plugin's rows, mirroring application icons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Absolute paths/roots this plugin may read from disk; the host sandboxes
+    /// `fs.read` to these. Empty by default: no filesystem access.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fs_roots: Vec<String>,
     #[serde(default)]
     pub commands: Vec<PluginCommand>,
     /// Capability whitelist; empty by default (zero permissions).
@@ -87,6 +91,14 @@ impl PluginManifest {
                 "plugin '{}': icon must not be empty when present",
                 self.id
             )));
+        }
+        for root in &self.fs_roots {
+            if root.trim().is_empty() {
+                return Err(ManifestError(format!(
+                    "plugin '{}': fs_roots must not contain empty paths",
+                    self.id
+                )));
+            }
         }
         if self.commands.is_empty() {
             return Err(ManifestError(format!(
@@ -256,6 +268,10 @@ pub enum Permission {
     ClipboardWrite,
     #[serde(rename = "clipboard.history")]
     ClipboardHistory,
+    #[serde(rename = "open.url")]
+    OpenUrl,
+    #[serde(rename = "open.path")]
+    OpenPath,
     #[serde(rename = "network")]
     Network,
     #[serde(rename = "fs.read")]
@@ -270,7 +286,13 @@ impl Permission {
     pub fn supported_in_m3(self) -> bool {
         matches!(
             self,
-            Self::ClipboardRead | Self::ClipboardWrite | Self::ClipboardHistory
+            Self::ClipboardRead
+                | Self::ClipboardWrite
+                | Self::ClipboardHistory
+                | Self::OpenUrl
+                | Self::OpenPath
+                | Self::FsRead
+                | Self::FsWrite
         )
     }
 }
@@ -281,6 +303,8 @@ impl fmt::Display for Permission {
             Self::ClipboardRead => "clipboard.read",
             Self::ClipboardWrite => "clipboard.write",
             Self::ClipboardHistory => "clipboard.history",
+            Self::OpenUrl => "open.url",
+            Self::OpenPath => "open.path",
             Self::Network => "network",
             Self::FsRead => "fs.read",
             Self::FsWrite => "fs.write",
@@ -505,15 +529,21 @@ mod tests {
 
     #[test]
     fn unimplemented_permissions_are_rejected() {
-        for permission in [Permission::Network, Permission::FsRead, Permission::FsWrite] {
-            let mut manifest = calendar();
-            manifest.permissions = vec![permission];
-            let error = manifest.validate().unwrap_err();
-            assert!(
-                error.0.contains("not supported in M3"),
-                "unexpected error: {error}"
-            );
-        }
+        let mut manifest = calendar();
+        manifest.permissions = vec![Permission::Network];
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.0.contains("not supported in M3"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn fs_write_permission_is_accepted() {
+        let mut manifest = calendar();
+        manifest.permissions = vec![Permission::FsWrite];
+        manifest.validate().unwrap();
+        assert!(manifest.permissions[0].supported_in_m3());
     }
 
     #[test]
@@ -521,6 +551,58 @@ mod tests {
         let mut manifest = calendar();
         manifest.permissions = vec![Permission::ClipboardHistory];
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn open_permissions_are_accepted() {
+        for permission in [Permission::OpenUrl, Permission::OpenPath] {
+            let mut manifest = calendar();
+            manifest.permissions = vec![permission];
+            manifest.validate().unwrap();
+            assert!(permission.supported_in_m3());
+        }
+    }
+
+    #[test]
+    fn fs_read_permission_and_roots_are_accepted() {
+        let mut manifest = calendar();
+        manifest.permissions = vec![Permission::FsRead];
+        manifest.fs_roots = vec!["C:\\data".into(), "D:\\docs".into()];
+        manifest.validate().unwrap();
+        assert!(manifest.permissions[0].supported_in_m3());
+        assert_eq!(
+            manifest.fs_roots,
+            vec!["C:\\data".to_string(), "D:\\docs".to_string()]
+        );
+
+        // An empty root string is rejected.
+        let mut bad = manifest;
+        bad.fs_roots = vec!["  ".into()];
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn fs_roots_roundtrip_through_json() {
+        let json = serde_json::json!({
+            "id": "com.example.reader",
+            "name": "Reader",
+            "version": "1.0.0",
+            "fs_roots": ["C:\\data"],
+            "commands": [
+                { "name": "read", "title": "Read", "trigger": { "type": "command" } }
+            ],
+            "permissions": ["fs.read"]
+        });
+        let manifest: PluginManifest = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(manifest.fs_roots, vec!["C:\\data".to_string()]);
+        assert_eq!(manifest.permissions, vec![Permission::FsRead]);
+        manifest.validate().unwrap();
+
+        // Serialization omits an empty fs_roots (cache stays compact).
+        let mut empty = manifest;
+        empty.fs_roots.clear();
+        let ser = serde_json::to_string(&empty).unwrap();
+        assert!(!ser.contains("fs_roots"));
     }
 
     #[test]

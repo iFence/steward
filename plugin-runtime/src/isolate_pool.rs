@@ -23,7 +23,9 @@ use std::{
 use anyhow::{anyhow, Context as _, Result};
 use rquickjs::{Ctx, Exception, Function, Object, Runtime, Value as JsValue};
 use serde_json::Value as Json;
-use steward_ipc_protocol::{method, ClipboardEntry, Notification};
+use steward_ipc_protocol::{
+    code, method, ClipboardEntry, Notification, Request, Response, RpcError,
+};
 use steward_plugin_registry::{Permission, PluginManifest};
 
 use crate::storage::PluginStorage;
@@ -57,6 +59,11 @@ pub enum InvokeError {
     Memory,
     /// The plugin called a host function its manifest did not grant.
     PermissionDenied(String),
+    /// The plugin's command parked on a cross-process host request (fs /
+    /// network). The runtime must send the queued host requests, wait for the
+    /// replies, and resume the isolate. Not an error: the service loop handles
+    /// it specially.
+    Pending,
     /// A JavaScript exception escaped the plugin.
     Plugin(String),
     /// A runtime/plumbing failure.
@@ -82,6 +89,9 @@ struct Isolate {
     /// Clipboard-history snapshot injected by the host for this invocation
     /// (read by `clipboard.history()`, gated by `clipboard.history`).
     clipboard_history: Rc<RefCell<Vec<ClipboardEntry>>>,
+    /// Cross-process async host-request bookkeeping (fs / network). A command
+    /// that awaits one of these parks the isolate until the host replies.
+    async_state: Rc<RefCell<AsyncBridgeState>>,
 }
 
 /// The shared isolate pool. Not `Send`: QuickJS runtimes are single-threaded
@@ -96,6 +106,12 @@ pub struct IsolatePool {
     dedicated: bool,
     /// Toasts emitted by plugins, drained by the service loop.
     notifications: Rc<RefCell<Vec<Notification>>>,
+    /// pending host request id -> isolate id (runtime -> host requests in
+    /// flight, waiting for a reply that resumes the parked isolate).
+    pending_owner: std::collections::HashMap<u64, IsolateId>,
+    /// isolate id -> parked invocation (the runtime sends the host reply only
+    /// once the invocation settles, or a timeout if the deadline passes).
+    parked: std::collections::HashMap<IsolateId, ParkedInvocation>,
 }
 
 impl IsolatePool {
@@ -109,6 +125,8 @@ impl IsolatePool {
             max_stack,
             dedicated,
             notifications: Rc::new(RefCell::new(Vec::new())),
+            pending_owner: std::collections::HashMap::new(),
+            parked: std::collections::HashMap::new(),
         }
     }
 
@@ -117,6 +135,8 @@ impl IsolatePool {
         if self.dedicated {
             // Dedicated process: one plugin at a time; loading replaces it.
             self.isolates.clear();
+            self.parked.clear();
+            self.pending_owner.clear();
         } else if self.active_count() >= self.capacity {
             self.evict_lru();
         }
@@ -140,6 +160,7 @@ impl IsolatePool {
         let notifications = self.notifications.clone();
         let clipboard_history = Rc::new(RefCell::new(Vec::new()));
         let storage = Rc::new(RefCell::new(PluginStorage::load(&manifest.id)?));
+        let async_state = Rc::new(RefCell::new(AsyncBridgeState::default()));
         context
             .with(|ctx| -> anyhow::Result<()> {
                 install_host_bridge(
@@ -148,6 +169,7 @@ impl IsolatePool {
                     &notifications,
                     &clipboard_history,
                     &storage,
+                    &async_state,
                 )?;
                 ctx.globals().set(
                     "__stewardHost",
@@ -176,6 +198,7 @@ impl IsolatePool {
             deadline,
             last_used: Cell::new(Instant::now()),
             clipboard_history,
+            async_state,
         }));
         Ok(id)
     }
@@ -221,7 +244,7 @@ impl IsolatePool {
             let module: Object = ctx.globals().get(PLUGIN_GLOBAL)?;
             let command_fn: Function = module.get("command")?;
             let result: JsValue = command_fn.call((command, input_text))?;
-            let result = await_view(result)?;
+            let result = await_view(&ctx, result)?;
             js_value_to_json(&ctx, &result)
         })
     }
@@ -253,10 +276,10 @@ impl IsolatePool {
             })?;
             if let Some(item_id) = item_id {
                 let result: JsValue = run_fn.call((action_id, item_id))?;
-                await_view(result)?;
+                await_view(&ctx, result)?;
             } else {
                 let result: JsValue = run_fn.call((action_id,))?;
-                await_view(result)?;
+                await_view(&ctx, result)?;
             }
             Ok(())
         })
@@ -292,7 +315,7 @@ impl IsolatePool {
             let parse: Function = json.get("parse")?;
             let js_values: JsValue = parse.call((values_text,))?;
             let result: JsValue = submit_fn.call((js_values,))?;
-            await_view(result)?;
+            await_view(&ctx, result)?;
             Ok(())
         })
     }
@@ -322,7 +345,7 @@ impl IsolatePool {
                 )
             })?;
             let result: JsValue = select_fn.call((item_id,))?;
-            let result = await_view(result)?;
+            let result = await_view(&ctx, result)?;
             let json = js_value_to_json(&ctx, &result)?;
             if json.is_null() {
                 Ok(None)
@@ -358,7 +381,7 @@ impl IsolatePool {
                 )
             })?;
             let result: JsValue = search_fn.call((query,))?;
-            let result = await_view(result)?;
+            let result = await_view(&ctx, result)?;
             let json = js_value_to_json(&ctx, &result)?;
             if json.is_null() {
                 Ok(None)
@@ -381,6 +404,162 @@ impl IsolatePool {
     /// Drain toast notifications emitted by plugins since the last drain.
     pub fn drain_notifications(&self) -> Vec<Notification> {
         std::mem::take(&mut *self.notifications.borrow_mut())
+    }
+
+    /// Take the queued runtime -> host requests for `id` and mark them in
+    /// flight. Called by the service loop after an invocation parks, so the
+    /// requests are sent to the host and later matched back to `id` by their
+    /// request id.
+    pub fn drain_outbound(&mut self, id: IsolateId) -> Vec<PendingHostRequest> {
+        let requests = {
+            let Some(isolate) = self.isolate_mut(id) else {
+                return Vec::new();
+            };
+            let mut state = isolate.async_state.borrow_mut();
+            let requests = std::mem::take(&mut state.outbound);
+            state.in_flight += requests.len();
+            requests
+        };
+        for request in &requests {
+            self.pending_owner.insert(request.id, id);
+        }
+        requests
+    }
+
+    /// Record that `id` is parked on the host request `request`; the runtime
+    /// will reply to it only when the invocation finally settles.
+    pub fn park_invocation(&mut self, id: IsolateId, request: Request) {
+        let deadline = Instant::now() + Duration::from_millis(request_deadline_ms(&request));
+        self.parked
+            .insert(id, ParkedInvocation { request, deadline });
+    }
+
+    /// Whether `id` is currently parked on a cross-process host request. A new
+    /// host request addressed to a parked isolate cannot re-enter its JS (it is
+    /// suspended mid-promise), so the caller rejects it as busy.
+    pub fn is_parked(&self, id: IsolateId) -> bool {
+        self.parked.contains_key(&id)
+    }
+
+    /// Kill any parked invocation whose deadline passed and return a `TIMEOUT`
+    /// response to answer its original host request. Called by the service loop
+    /// on each tick so a host that never replies cannot hang a plugin forever.
+    pub fn expire_parked(&mut self) -> Vec<Response> {
+        let now = Instant::now();
+        let expired: Vec<IsolateId> = self
+            .parked
+            .iter()
+            .filter(|(_, invocation)| invocation.deadline <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut responses = Vec::new();
+        for id in expired {
+            let request = self.parked.remove(&id).map(|invocation| invocation.request);
+            self.drop_isolate(id);
+            if let Some(request) = request {
+                responses.push(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::TIMEOUT,
+                        "plugin did not respond within its deadline; isolate killed",
+                    ),
+                ));
+            }
+        }
+        responses
+    }
+
+    /// Handle a reply from the host to a runtime -> host request (e.g. the
+    /// result of `host.fs.read`). Resolves the plugin's pending promise and
+    /// resumes the parked isolate; returns how the service loop should proceed.
+    pub fn handle_host_response(&mut self, response: Response) -> ResumeOutcome {
+        let pending_id = response.id;
+        let Some(isolate_id) = self.pending_owner.remove(&pending_id) else {
+            return ResumeOutcome::Dropped;
+        };
+        let Some(parked) = self.parked.get(&isolate_id).cloned() else {
+            return ResumeOutcome::Dropped;
+        };
+        // Drop the in-flight marker for this host request.
+        {
+            let Some(isolate) = self.isolate_mut(isolate_id) else {
+                return ResumeOutcome::Dropped;
+            };
+            let mut state = isolate.async_state.borrow_mut();
+            state.in_flight = state.in_flight.saturating_sub(1);
+        }
+        let host_result: Result<Json, String> = match (response.result, response.error) {
+            (Some(value), _) => Ok(value),
+            (None, Some(error)) => Err(error.message),
+            (None, None) => Err("empty host response".into()),
+        };
+        let resume = self.isolate(isolate_id).map(|isolate| {
+            isolate
+                .context
+                .with(|ctx| resolve_and_drain(&ctx, pending_id, host_result.as_ref()))
+        });
+        let Some(resume) = resume else {
+            return ResumeOutcome::Dropped;
+        };
+        match resume {
+            Ok(view) => {
+                self.parked.remove(&isolate_id);
+                ResumeOutcome::Reply(build_response(parked.request, view))
+            }
+            Err(rquickjs::Error::WouldBlock) => {
+                // Still parked: the continuation may have queued more host
+                // requests (or is waiting on one already in flight). The
+                // service loop drains `drain_outbound` again.
+                ResumeOutcome::Parked(isolate_id)
+            }
+            Err(rquickjs::Error::Exception) => {
+                let message = self
+                    .exception_message(isolate_id)
+                    .unwrap_or_else(|| "JavaScript exception".into());
+                self.drop_isolate(isolate_id);
+                self.parked.remove(&isolate_id);
+                let err_code = if message.contains("permission denied") {
+                    code::PERMISSION_DENIED
+                } else {
+                    code::INTERNAL_ERROR
+                };
+                ResumeOutcome::Reply(Response::error(
+                    parked.request.id,
+                    RpcError::new(err_code, message),
+                ))
+            }
+            Err(rquickjs::Error::Allocation) => {
+                self.drop_isolate(isolate_id);
+                self.parked.remove(&isolate_id);
+                ResumeOutcome::Reply(Response::error(
+                    parked.request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin exceeded its heap limit; isolate killed",
+                    ),
+                ))
+            }
+            Err(error) => {
+                self.drop_isolate(isolate_id);
+                self.parked.remove(&isolate_id);
+                ResumeOutcome::Reply(Response::error(
+                    parked.request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        format!("plugin resume failed: {error}"),
+                    ),
+                ))
+            }
+        }
+    }
+
+    /// Whether `id` has a cross-process host request in flight or queued (so a
+    /// `WouldBlock` is a legitimate park, not a genuine infinite loop).
+    fn isolate_is_async_parked(&self, id: IsolateId) -> bool {
+        self.isolate(id).is_some_and(|isolate| {
+            let state = isolate.async_state.borrow();
+            state.in_flight > 0 || !state.outbound.is_empty()
+        })
     }
 
     /// Run `f` inside the isolate's context under `deadline_ms`, killing the
@@ -429,11 +608,17 @@ impl IsolatePool {
                 }
             }
             Err(rquickjs::Error::WouldBlock) => {
-                // A plugin handler returned a Promise that never settles: the
-                // job queue is empty and M3 has no cross-process await to
-                // resume it. Treat it as a timeout and recycle the isolate.
-                self.drop_isolate(id);
-                Err(InvokeError::Timeout)
+                // A plugin handler returned a Promise that never settles. If a
+                // cross-process host request is in flight (fs / network), park
+                // the isolate so the service loop can wait for the host reply
+                // and resume it; otherwise it is genuinely stuck (no event will
+                // ever arrive) and the isolate is recycled as a timeout.
+                if self.isolate_is_async_parked(id) {
+                    Err(InvokeError::Pending)
+                } else {
+                    self.drop_isolate(id);
+                    Err(InvokeError::Timeout)
+                }
             }
             Err(error) => Err(InvokeError::Internal(error.to_string())),
         }
@@ -471,9 +656,18 @@ impl IsolatePool {
     }
 
     fn drop_isolate(&mut self, id: IsolateId) {
+        self.cleanup_isolate_bookkeeping(id);
         if let Some(index) = self.slot(id) {
             self.isolates[index] = None;
         }
+    }
+
+    /// Drop parked / in-flight bookkeeping for an isolate that is being
+    /// killed or evicted, so a late host reply is dropped instead of resuming a
+    /// dead isolate.
+    fn cleanup_isolate_bookkeeping(&mut self, id: IsolateId) {
+        self.parked.remove(&id);
+        self.pending_owner.retain(|_, owner| *owner != id);
     }
 
     /// Drop the least-recently-used idle isolate to make room for a new load.
@@ -489,22 +683,68 @@ impl IsolatePool {
             }
         }
         if let Some(index) = lru_index {
+            let id = self.isolates[index].as_ref().map(|isolate| isolate.id);
             self.isolates[index] = None;
+            if let Some(id) = id {
+                self.cleanup_isolate_bookkeeping(id);
+            }
         }
     }
 }
 
+/// A runtime-initiated request to the host (e.g. `host.fs.read`), parked the
+/// plugin's promise until the host replies. `id` is the request id the reply
+/// will carry so the runtime can resume the parked isolate.
+pub type PendingHostRequest = Request;
+
+/// Per-isolate bookkeeping for cross-process async host requests.
+#[derive(Default)]
+struct AsyncBridgeState {
+    /// Host requests queued by the plugin (in `__hostSend`) but not yet sent.
+    /// Drained by the service loop after an invocation parks.
+    outbound: Vec<PendingHostRequest>,
+    /// Number of requests already sent to the host but not yet answered.
+    in_flight: usize,
+}
+
+/// A parked invocation: the isolate suspended on a cross-process host request
+/// and the original host request it must answer once it settles.
+#[derive(Debug, Clone)]
+struct ParkedInvocation {
+    /// The original host request (command/item/search/action/submit) the
+    /// runtime must reply to once the invocation settles.
+    request: Request,
+    /// Absolute deadline; the isolate is killed and the request answered with
+    /// `TIMEOUT` if the host has not replied by then.
+    deadline: Instant,
+}
+
+/// How the service loop should proceed after handling a host reply to a
+/// runtime -> host request.
+#[derive(Debug)]
+pub enum ResumeOutcome {
+    /// The parked invocation settled; write `Response` back to the host.
+    Reply(Response),
+    /// Still parked; drain `drain_outbound(isolate_id)` to send any newly
+    /// queued host requests.
+    Parked(IsolateId),
+    /// The isolate is gone (evicted / killed); nothing to do.
+    Dropped,
+}
+
 /// Await a JS value returned by a plugin handler: a plain value passes
 /// through, a Promise is driven to settlement by draining the QuickJS job
-/// queue. Microtask-only async works because every `await` in a plugin either
-/// resolves immediately or awaits a host function that resolves synchronously;
-/// there is no cross-process await in M3. If the job queue empties before the
-/// promise settles, `Error::WouldBlock` is returned (the plugin is stuck on an
-/// event M3 cannot deliver), and `run_in_isolate` maps that to a timeout.
-fn await_view<'js>(value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+/// queue. Microtask-only async works because every `await` either resolves
+/// immediately or awaits a host function that resolves synchronously. When a
+/// plugin awaits a *cross-process* host request (fs / network), the job queue
+/// empties before the promise settles and `Error::WouldBlock` is returned; the
+/// pending promise is stashed on `globalThis.__stewardTopPromise` so the
+/// service loop can resume it once the host replies (see `handle_host_response`).
+fn await_view<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     if !value.is_promise() {
         return Ok(value);
     }
+    let stash = value.clone();
     let promise = value.into_promise().ok_or_else(|| {
         rquickjs::Error::new_from_js_message(
             "plugin result",
@@ -512,7 +752,86 @@ fn await_view<'js>(value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
             "expected a promise object",
         )
     })?;
-    promise.finish::<JsValue>()
+    match promise.finish::<JsValue>() {
+        Ok(value) => Ok(value),
+        Err(rquickjs::Error::WouldBlock) => {
+            // Keep the top-level promise alive and reachable so a later host
+            // reply can resume it (it is re-finished in `resolve_and_drain`).
+            ctx.globals().set("__stewardTopPromise", stash)?;
+            Err(rquickjs::Error::WouldBlock)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Resolve (or reject) a plugin's pending host request and re-drain the parked
+/// top-level promise. Returns the settled view as JSON, or `WouldBlock` when
+/// the invocation is still parked.
+fn resolve_and_drain<'js>(
+    ctx: &Ctx<'js>,
+    pending_id: u64,
+    host_result: Result<&Json, &String>,
+) -> rquickjs::Result<Json> {
+    let globals = ctx.globals();
+    let resolver_map: Object = globals.get("__stewardAsync")?;
+    let key = pending_id.to_string();
+    let resolver: JsValue = resolver_map.get(key.as_str())?;
+    let resolver_obj: Object = resolver.into_object().ok_or_else(|| {
+        rquickjs::Error::new_from_js_message(
+            "__stewardAsync[id]",
+            "object",
+            "expected a resolver object",
+        )
+    })?;
+    match host_result {
+        Ok(value) => {
+            let resolve: Function = resolver_obj.get("resolve")?;
+            let js_value = json_to_js(ctx, value)?;
+            resolve.call::<_, ()>((js_value,))?;
+        }
+        Err(message) => {
+            let reject: Function = resolver_obj.get("reject")?;
+            let error_ctor: Function = globals.get("Error")?;
+            let err: JsValue = error_ctor.call((message.as_str(),))?;
+            reject.call::<_, ()>((err,))?;
+        }
+    }
+    resolver_map.remove(key.as_str())?;
+    let top: JsValue = globals.get("__stewardTopPromise")?;
+    let promise = top.into_promise().ok_or_else(|| {
+        rquickjs::Error::new_from_js_message("__stewardTopPromise", "Promise", "expected a promise")
+    })?;
+    match promise.finish::<JsValue>() {
+        Ok(value) => js_value_to_json(ctx, &value),
+        Err(error) => Err(error),
+    }
+}
+
+/// Shape the reply to a host request whose parked invocation just settled,
+/// based on the original request method (command/item/search/action/submit).
+fn build_response(parked: Request, view: Json) -> Response {
+    match parked.method.as_str() {
+        method::COMMAND_INVOKE => Response::ok(parked.id, serde_json::json!({ "view": view })),
+        method::ITEM_INVOKE if !view.is_null() => {
+            Response::ok(parked.id, serde_json::json!({ "view": view }))
+        }
+        method::ITEM_INVOKE => Response::ok(parked.id, serde_json::json!({})),
+        method::SEARCH_QUERY if !view.is_null() => {
+            Response::ok(parked.id, serde_json::json!({ "view": view }))
+        }
+        method::SEARCH_QUERY => Response::ok(parked.id, serde_json::json!({})),
+        _ => Response::ok(parked.id, serde_json::json!({})),
+    }
+}
+
+/// The execution deadline (ms) carried by a plugin request, used as the parked
+/// invocation's deadline so a host that never replies cannot hang forever.
+fn request_deadline_ms(request: &Request) -> u64 {
+    request
+        .params
+        .get("deadline_ms")
+        .and_then(Json::as_u64)
+        .unwrap_or(500)
 }
 
 /// Build the `__stewardHost` object the Node polyfill reads for `process.env`,
@@ -551,10 +870,15 @@ fn install_host_bridge<'js>(
     notifications: &Rc<RefCell<Vec<Notification>>>,
     clipboard_history: &Rc<RefCell<Vec<ClipboardEntry>>>,
     storage: &Rc<RefCell<PluginStorage>>,
+    async_state: &Rc<RefCell<AsyncBridgeState>>,
 ) -> rquickjs::Result<()> {
     let can_read = permissions.contains(&Permission::ClipboardRead);
     let can_write = permissions.contains(&Permission::ClipboardWrite);
     let can_history = permissions.contains(&Permission::ClipboardHistory);
+    let can_open_url = permissions.contains(&Permission::OpenUrl);
+    let can_open_path = permissions.contains(&Permission::OpenPath);
+    let can_fs_read = permissions.contains(&Permission::FsRead);
+    let can_fs_write = permissions.contains(&Permission::FsWrite);
 
     let clipboard = Object::new(ctx.clone())?;
     clipboard.set(
@@ -683,6 +1007,89 @@ fn install_host_bridge<'js>(
                     .borrow_mut()
                     .push(Notification::new(method::TOAST_SHOW, params));
                 Ok(())
+            },
+        ),
+    )?;
+    let notifications_open_url = notifications.clone();
+    steward.set(
+        "openUrl",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, url: String| -> rquickjs::Result<()> {
+                if !can_open_url {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "Steward permission denied: open.url",
+                    ));
+                }
+                if url.trim().is_empty() {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "open.url: url must not be empty",
+                    ));
+                }
+                notifications_open_url.borrow_mut().push(Notification::new(
+                    method::OPEN_URL,
+                    serde_json::json!({ "url": url }),
+                ));
+                Ok(())
+            },
+        ),
+    )?;
+    let notifications_open_path = notifications.clone();
+    steward.set(
+        "openPath",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, path: String| -> rquickjs::Result<()> {
+                if !can_open_path {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "Steward permission denied: open.path",
+                    ));
+                }
+                if path.trim().is_empty() {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "open.path: path must not be empty",
+                    ));
+                }
+                notifications_open_path.borrow_mut().push(Notification::new(
+                    method::OPEN_PATH,
+                    serde_json::json!({ "path": path }),
+                ));
+                Ok(())
+            },
+        ),
+    )?;
+    let async_state_request = async_state.clone();
+    steward.set(
+        "__hostSend",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>,
+                  method: String,
+                  params: JsValue<'js>,
+                  pending_id: u64|
+                  -> rquickjs::Result<u64> {
+                if method == method::HOST_FS_READ && !can_fs_read {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "Steward permission denied: fs.read",
+                    ));
+                }
+                if method == method::HOST_FS_WRITE && !can_fs_write {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "Steward permission denied: fs.write",
+                    ));
+                }
+                let params = js_value_to_json(&ctx, &params).unwrap_or(Json::Null);
+                async_state_request
+                    .borrow_mut()
+                    .outbound
+                    .push(Request::new(pending_id, method, params));
+                Ok(pending_id)
             },
         ),
     )?;
@@ -1179,5 +1586,433 @@ mod tests {
         let notifications = pool.drain_notifications();
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].params["message"], "name=Ada");
+    }
+
+    #[test]
+    fn open_url_emits_notification_when_granted() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    steward.openUrl("https://github.com");
+                    return null;
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["open.url"])).unwrap();
+        pool.invoke_command(id, "echo", &Json::Null, 1000).unwrap();
+        let notifications = pool.drain_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].method, method::OPEN_URL);
+        assert_eq!(notifications[0].params["url"], "https://github.com");
+    }
+
+    #[test]
+    fn open_url_is_gated_by_permission() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    steward.openUrl("https://github.com");
+                    return null;
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::PermissionDenied(message) if message.contains("open.url")),
+            "unexpected error: {error:?}"
+        );
+        // A denial is not a kill; the isolate stays alive.
+        assert_eq!(pool.active_count(), 1);
+        assert_eq!(pool.drain_notifications(), Vec::new());
+    }
+
+    #[test]
+    fn open_path_emits_notification_when_granted() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    steward.openPath("C:/notes/file.txt");
+                    return null;
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["open.path"])).unwrap();
+        pool.invoke_command(id, "echo", &Json::Null, 1000).unwrap();
+        let notifications = pool.drain_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].method, method::OPEN_PATH);
+        assert_eq!(notifications[0].params["path"], "C:/notes/file.txt");
+    }
+
+    #[test]
+    fn open_path_is_gated_by_permission() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    steward.openPath("C:/notes/file.txt");
+                    return null;
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::PermissionDenied(message) if message.contains("open.path")),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(pool.drain_notifications(), Vec::new());
+    }
+
+    #[test]
+    fn open_url_rejects_empty_target() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                function command(name, input) {
+                    steward.openUrl("  ");
+                    return null;
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["open.url"])).unwrap();
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::Plugin(message) if message.contains("must not be empty")),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(pool.drain_notifications(), Vec::new());
+    }
+
+    #[test]
+    fn await_fs_read_parks_and_resumes() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    var data = await steward.fs.readFile("C:/tmp/test.txt", "utf8");
+                    return { type: "list", items: [{ id: "1", title: data }] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["fs.read"])).unwrap();
+
+        // The command parks on the cross-process host request instead of
+        // timing out (an isolate that stays alive, not one that is killed).
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert_eq!(error, InvokeError::Pending);
+        assert_eq!(pool.active_count(), 1, "parked isolate must not be killed");
+
+        // The runtime queued a single `host.fs.read` request to send to the host.
+        let requests = pool.drain_outbound(id);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, method::HOST_FS_READ);
+        assert_eq!(requests[0].params["path"], "C:/tmp/test.txt");
+        assert_eq!(requests[0].params["encoding"], "utf8");
+
+        // The service loop would park the original command request before the
+        // host replies; mirror that so the reply knows which request to answer.
+        let original = Request::new(42, method::COMMAND_INVOKE, Json::Null);
+        pool.park_invocation(id, original);
+
+        // Simulate the host's reply with the file contents.
+        let reply = Response::ok(
+            requests[0].id,
+            serde_json::json!({ "data": "hello", "base64": false }),
+        );
+        let outcome = pool.handle_host_response(reply);
+        let ResumeOutcome::Reply(response) = outcome else {
+            panic!("expected the parked command to settle, got {outcome:?}");
+        };
+        assert_eq!(
+            response.id, 42,
+            "reply must answer the original command request"
+        );
+        assert_eq!(
+            response.result.as_ref().unwrap()["view"]["items"][0]["title"],
+            "hello"
+        );
+        // The isolate is free again and can be re-used (no lingering parking).
+        assert!(!pool.is_parked(id));
+    }
+
+    #[test]
+    fn fs_read_without_permission_rejects_immediately() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    await steward.fs.readFile("C:/tmp/test.txt", "utf8");
+                    return { type: "list", items: [] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::PermissionDenied(message) if message.contains("fs.read")),
+            "unexpected error: {error:?}"
+        );
+        // A denial is not a kill; the isolate stays alive.
+        assert_eq!(pool.active_count(), 1);
+    }
+
+    #[test]
+    fn await_fs_write_parks_and_resumes() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    await steward.fs.writeFile("C:/tmp/out.txt", "written", "utf8");
+                    return { type: "list", items: [{ id: "1", title: "done" }] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["fs.write"])).unwrap();
+
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert_eq!(error, InvokeError::Pending);
+        assert_eq!(pool.active_count(), 1);
+
+        let requests = pool.drain_outbound(id);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, method::HOST_FS_WRITE);
+        assert_eq!(requests[0].params["path"], "C:/tmp/out.txt");
+        assert_eq!(requests[0].params["data"], "written");
+        assert_eq!(requests[0].params["base64"], false);
+
+        let original = Request::new(7, method::COMMAND_INVOKE, Json::Null);
+        pool.park_invocation(id, original);
+        let outcome =
+            pool.handle_host_response(Response::ok(requests[0].id, serde_json::json!({})));
+        let ResumeOutcome::Reply(response) = outcome else {
+            panic!("expected the parked command to settle, got {outcome:?}");
+        };
+        assert_eq!(response.id, 7);
+        assert_eq!(
+            response.result.as_ref().unwrap()["view"]["items"][0]["title"],
+            "done"
+        );
+        assert!(!pool.is_parked(id));
+    }
+
+    #[test]
+    fn fs_write_without_permission_rejects_immediately() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    await steward.fs.writeFile("C:/tmp/out.txt", "written", "utf8");
+                    return { type: "list", items: [] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::PermissionDenied(message) if message.contains("fs.write")),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(pool.active_count(), 1);
+    }
+
+    #[test]
+    fn parallel_fs_read_parks_and_resumes() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    var r = await Promise.all([
+                        steward.fs.readFile("a", "utf8"),
+                        steward.fs.readFile("b", "utf8")
+                    ]);
+                    return { type: "list", items: [{ id: "1", title: r[0] + r[1] }] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["fs.read"])).unwrap();
+
+        assert_eq!(
+            pool.invoke_command(id, "echo", &Json::Null, 1000)
+                .unwrap_err(),
+            InvokeError::Pending
+        );
+        // Both reads are queued together (Promise.all -> two in-flight requests).
+        let requests = pool.drain_outbound(id);
+        assert_eq!(requests.len(), 2);
+        let first = requests.iter().find(|r| r.params["path"] == "a").unwrap();
+        let second = requests.iter().find(|r| r.params["path"] == "b").unwrap();
+
+        let original = Request::new(3, method::COMMAND_INVOKE, Json::Null);
+        pool.park_invocation(id, original);
+
+        // Resolving only one read keeps the invocation parked (Promise.all is
+        // still waiting on the other).
+        let outcome = pool.handle_host_response(Response::ok(
+            first.id,
+            serde_json::json!({ "data": "A", "base64": false }),
+        ));
+        assert!(
+            matches!(outcome, ResumeOutcome::Parked(_)),
+            "still waiting on the second read"
+        );
+        assert!(pool.is_parked(id));
+
+        // Resolving the second read settles the command.
+        let outcome = pool.handle_host_response(Response::ok(
+            second.id,
+            serde_json::json!({ "data": "B", "base64": false }),
+        ));
+        let ResumeOutcome::Reply(response) = outcome else {
+            panic!("expected the parked command to settle, got {outcome:?}");
+        };
+        assert_eq!(response.id, 3);
+        assert_eq!(
+            response.result.as_ref().unwrap()["view"]["items"][0]["title"],
+            "AB"
+        );
+        assert!(!pool.is_parked(id));
+    }
+
+    #[test]
+    fn late_host_reply_after_isolate_killed_is_dropped() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    await steward.fs.readFile("x", "utf8");
+                    return { type: "list", items: [] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["fs.read"])).unwrap();
+        assert_eq!(
+            pool.invoke_command(id, "echo", &Json::Null, 1000)
+                .unwrap_err(),
+            InvokeError::Pending
+        );
+        let requests = pool.drain_outbound(id);
+        let request_id = requests[0].id;
+        let original = Request::new(5, method::COMMAND_INVOKE, Json::Null);
+        pool.park_invocation(id, original);
+
+        // Kill / evict the parked isolate (e.g. LRU eviction, unload, deadline).
+        pool.unload(id);
+        assert_eq!(pool.active_count(), 0);
+        assert!(!pool.is_parked(id));
+
+        // A late host reply for the dead isolate must be dropped, not resume it.
+        let outcome = pool.handle_host_response(Response::ok(
+            request_id,
+            serde_json::json!({ "data": "late", "base64": false }),
+        ));
+        assert!(matches!(outcome, ResumeOutcome::Dropped));
+        // The same isolate id is gone: further invocations report it as not found.
+        assert_eq!(
+            pool.invoke_command(id, "echo", &Json::Null, 1000),
+            Err(InvokeError::NotFound)
+        );
+    }
+
+    #[test]
+    fn expired_parked_invocation_times_out() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    await steward.fs.readFile("x", "utf8");
+                    return { type: "list", items: [] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["fs.read"])).unwrap();
+        assert_eq!(
+            pool.invoke_command(id, "echo", &Json::Null, 1000)
+                .unwrap_err(),
+            InvokeError::Pending
+        );
+        pool.drain_outbound(id);
+        // Park with a deadline that has already elapsed (deadline_ms = 0).
+        let original = Request::new(
+            9,
+            method::COMMAND_INVOKE,
+            serde_json::json!({ "deadline_ms": 0 }),
+        );
+        pool.park_invocation(id, original);
+
+        let responses = pool.expire_parked();
+        assert_eq!(responses.len(), 1);
+        let response = &responses[0];
+        assert_eq!(response.id, 9);
+        assert_eq!(response.error.as_ref().unwrap().code, code::TIMEOUT);
+        // The isolate was killed and its bookkeeping cleared.
+        assert_eq!(pool.active_count(), 0);
+        assert!(!pool.is_parked(id));
     }
 }

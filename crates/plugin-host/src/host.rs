@@ -11,8 +11,9 @@
 use std::{
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -20,8 +21,8 @@ use anyhow::{anyhow, Context as _, Result};
 use crossbeam_channel::Receiver;
 use serde_json::{json, Value};
 use steward_ipc_protocol::{
-    code, decode_line, encode_line, method, ClipboardEntry, Message, Notification, Request,
-    Response, RpcError,
+    code, decode_line, encode_line, is_host_request, method, ClipboardEntry, Message, Notification,
+    Request, Response, RpcError,
 };
 use steward_plugin_registry::{Isolation, Permission, PluginMeta};
 
@@ -108,6 +109,12 @@ pub enum HostEvent {
     /// A plugin asked the host to show a toast (`{ message, kind?,
     /// durationMs? }`).
     Toast { params: Value },
+    /// A plugin asked the host to open a URL in the default browser
+    /// (`{ url }`, granted by `open.url`).
+    OpenUrl { url: String },
+    /// A plugin asked the host to open a file path / shell target with the OS
+    /// default handler (`{ path }`, granted by `open.path`).
+    OpenPath { path: String },
     /// A list item selection returned a new view (e.g. a `detail` drill-down).
     /// The launcher replaces the command's current view slot with `view`.
     ItemView {
@@ -132,12 +139,15 @@ enum Frame {
     Notification(Notification),
     /// The process exited / its stdout closed.
     Eof,
+    /// A runtime-initiated request to the host (e.g. `host.fs.read`); the host
+    /// performs it and writes a `Response` back to the runtime's stdin.
+    HostRequest(Request),
 }
 
 /// A live connection to one runtime process.
 struct RuntimeConn {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Arc<Mutex<ChildStdin>>,
     frames: Receiver<Frame>,
     /// plugin_id -> isolate_id handed out by `plugin.load`.
     isolates: HashMap<String, u64>,
@@ -565,9 +575,26 @@ impl PluginHost {
                             events.push(HostEvent::Toast {
                                 params: notification.params,
                             });
+                        } else if notification.method == method::OPEN_URL {
+                            let url = notification
+                                .params
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            events.push(HostEvent::OpenUrl { url });
+                        } else if notification.method == method::OPEN_PATH {
+                            let path = notification
+                                .params
+                                .get("path")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            events.push(HostEvent::OpenPath { path });
                         }
                     }
                     Frame::Eof => self.handle_eof(&key, &mut events),
+                    Frame::HostRequest(request) => self.handle_host_request(&key, request),
                 }
             }
         }
@@ -585,6 +612,231 @@ impl PluginHost {
             }
         }
         events
+    }
+
+    /// Perform a runtime-initiated host request (e.g. `host.fs.read`) and write
+    /// the reply back to the runtime's stdin so it can resume the parked
+    /// plugin. Permission and path-sandbox checks happen here, on the host.
+    fn handle_host_request(&mut self, conn_key: &str, request: Request) {
+        let response = match request.method.as_str() {
+            method::HOST_FS_READ => self.host_fs_read(&request),
+            method::HOST_FS_WRITE => self.host_fs_write(&request),
+            _ => Response::error(
+                request.id,
+                RpcError::new(
+                    code::METHOD_NOT_FOUND,
+                    format!("unknown host request '{}'", request.method),
+                ),
+            ),
+        };
+        if let Some(conn) = self.conns.get_mut(conn_key) {
+            if let Err(error) = conn.send_reply(&response) {
+                eprintln!("[plugin-host] failed to reply to host request: {error:#}");
+            }
+        }
+    }
+
+    /// Read a file on behalf of a plugin with the `fs.read` permission,
+    /// sandboxed to the plugin's declared `fs_roots`.
+    fn host_fs_read(&mut self, request: &Request) -> Response {
+        const MAX_BYTES: u64 = 4 * 1024 * 1024;
+        let params = &request.params;
+        let Some(plugin_id) = params.get("plugin_id").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INVALID_PARAMS, "host.fs.read: plugin_id is required"),
+            );
+        };
+        let Some(path) = params.get("path").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INVALID_PARAMS, "host.fs.read: path is required"),
+            );
+        };
+        if !self.plugin_has_permission(plugin_id, Permission::FsRead) {
+            return Response::error(
+                request.id,
+                RpcError::new(code::PERMISSION_DENIED, "permission denied: fs.read"),
+            );
+        }
+        let Some(roots) = self.plugin_fs_roots(plugin_id) else {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::PERMISSION_DENIED,
+                    "permission denied: fs.read (plugin declares no fs_roots)",
+                ),
+            );
+        };
+        let target = PathBuf::from(path);
+        let Ok(canonical) = std::fs::canonicalize(&target) else {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INTERNAL_ERROR,
+                    format!("fs.read: cannot resolve path '{}'", target.display()),
+                ),
+            );
+        };
+        let allowed = roots.iter().any(|root| {
+            std::fs::canonicalize(PathBuf::from(root))
+                .map(|root| canonical.starts_with(&root))
+                .unwrap_or(false)
+        });
+        if !allowed {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::PERMISSION_DENIED,
+                    "permission denied: fs.read path outside fs_roots",
+                ),
+            );
+        }
+        let Ok(meta) = std::fs::metadata(&canonical) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INTERNAL_ERROR, "fs.read: cannot stat file"),
+            );
+        };
+        if meta.len() > MAX_BYTES {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INTERNAL_ERROR,
+                    "fs.read: file exceeds the 4 MiB limit",
+                ),
+            );
+        }
+        let encoding = params
+            .get("encoding")
+            .and_then(Value::as_str)
+            .unwrap_or("utf8");
+        if encoding == "base64" {
+            match std::fs::read(&canonical) {
+                Ok(bytes) => Response::ok(
+                    request.id,
+                    json!({ "data": base64_encode(&bytes), "base64": true }),
+                ),
+                Err(error) => Response::error(
+                    request.id,
+                    RpcError::new(code::INTERNAL_ERROR, format!("fs.read failed: {error}")),
+                ),
+            }
+        } else {
+            match std::fs::read_to_string(&canonical) {
+                Ok(text) => Response::ok(request.id, json!({ "data": text, "base64": false })),
+                Err(error) => Response::error(
+                    request.id,
+                    RpcError::new(code::INTERNAL_ERROR, format!("fs.read failed: {error}")),
+                ),
+            }
+        }
+    }
+
+    /// Write a file on behalf of a plugin with the `fs.write` permission,
+    /// sandboxed to the plugin's declared `fs_roots`. The target's parent
+    /// directory must already exist (the file is created inside it).
+    fn host_fs_write(&mut self, request: &Request) -> Response {
+        const MAX_BYTES: u64 = 4 * 1024 * 1024;
+        let params = &request.params;
+        let Some(plugin_id) = params.get("plugin_id").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INVALID_PARAMS, "host.fs.write: plugin_id is required"),
+            );
+        };
+        let Some(path) = params.get("path").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INVALID_PARAMS, "host.fs.write: path is required"),
+            );
+        };
+        let Some(data) = params.get("data").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INVALID_PARAMS, "host.fs.write: data is required"),
+            );
+        };
+        if !self.plugin_has_permission(plugin_id, Permission::FsWrite) {
+            return Response::error(
+                request.id,
+                RpcError::new(code::PERMISSION_DENIED, "permission denied: fs.write"),
+            );
+        }
+        let Some(roots) = self.plugin_fs_roots(plugin_id) else {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::PERMISSION_DENIED,
+                    "permission denied: fs.write (plugin declares no fs_roots)",
+                ),
+            );
+        };
+        let base64 = params
+            .get("base64")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let bytes = if base64 {
+            base64_decode(data)
+        } else {
+            data.as_bytes().to_vec()
+        };
+        if bytes.len() as u64 > MAX_BYTES {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INTERNAL_ERROR,
+                    "fs.write: data exceeds the 4 MiB limit",
+                ),
+            );
+        }
+        let target = PathBuf::from(path);
+        let parent = target.parent().map(Path::to_path_buf).unwrap_or_default();
+        let Ok(canonical_dir) = std::fs::canonicalize(&parent) else {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INTERNAL_ERROR,
+                    "fs.write: parent directory does not exist",
+                ),
+            );
+        };
+        let allowed = roots.iter().any(|root| {
+            std::fs::canonicalize(PathBuf::from(root))
+                .map(|root_canonical| canonical_dir.starts_with(&root_canonical))
+                .unwrap_or(false)
+        });
+        if !allowed {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::PERMISSION_DENIED,
+                    "permission denied: fs.write path outside fs_roots",
+                ),
+            );
+        }
+        let file_name = target.file_name().unwrap_or_default();
+        let final_target = canonical_dir.join(file_name);
+        match std::fs::write(&final_target, &bytes) {
+            Ok(()) => Response::ok(request.id, json!({})),
+            Err(error) => Response::error(
+                request.id,
+                RpcError::new(code::INTERNAL_ERROR, format!("fs.write failed: {error}")),
+            ),
+        }
+    }
+
+    fn plugin_has_permission(&self, plugin_id: &str, permission: Permission) -> bool {
+        self.loaded
+            .get(plugin_id)
+            .is_some_and(|(_, meta)| meta.manifest.permissions.contains(&permission))
+    }
+
+    fn plugin_fs_roots(&self, plugin_id: &str) -> Option<Vec<String>> {
+        self.loaded
+            .get(plugin_id)
+            .map(|(_, meta)| meta.manifest.fs_roots.clone())
+            .filter(|roots| !roots.is_empty())
     }
 
     /// Stop every runtime process and drop all state.
@@ -1301,7 +1553,9 @@ impl PluginHost {
                 self.config.runtime_bin.display()
             )
         })?;
-        let stdin = child.stdin.take().context("take runtime stdin")?;
+        let stdin = Arc::new(Mutex::new(
+            child.stdin.take().context("take runtime stdin")?,
+        ));
         let stdout = child.stdout.take().context("take runtime stdout")?;
         let (tx, rx) = crossbeam_channel::unbounded();
         std::thread::spawn(move || {
@@ -1318,6 +1572,9 @@ impl PluginHost {
                 let frame = match message {
                     Message::Response(response) => Frame::Response(response),
                     Message::Notification(notification) => Frame::Notification(notification),
+                    Message::Request(request) if is_host_request(&request.method) => {
+                        Frame::HostRequest(request)
+                    }
                     Message::Request(_) => continue,
                 };
                 if tx.send(frame).is_err() {
@@ -1360,11 +1617,80 @@ fn backoff(attempts: u32, base: Duration, max: Duration) -> Duration {
     delay.min(max)
 }
 
+/// Encode bytes as standard base64 (used by `host.fs.read` for binary files).
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Decode a standard base64 string into bytes (used by `host.fs.write`).
+fn base64_decode(input: &str) -> Vec<u8> {
+    const TABLE: [i8; 256] = {
+        let mut table = [-1i8; 256];
+        let mut i = 0u8;
+        while i < 64 {
+            table[b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[i as usize]
+                as usize] = i as i8;
+            i += 1;
+        }
+        table
+    };
+    let mut out = Vec::with_capacity(input.len().div_ceil(4) * 3);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for c in input.bytes() {
+        if c == b'=' {
+            break;
+        }
+        let value = TABLE[c as usize];
+        if value < 0 {
+            continue;
+        }
+        buffer = (buffer << 6) | value as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    out
+}
+
 impl RuntimeConn {
     fn send(&mut self, request: &Request) -> Result<()> {
         let line = encode_line(&Message::Request(request.clone()))?;
-        self.stdin.write_all(line.as_bytes())?;
-        self.stdin.flush()?;
+        let mut stdin = self.stdin.lock().unwrap();
+        stdin.write_all(line.as_bytes())?;
+        stdin.flush()?;
+        Ok(())
+    }
+
+    /// Write a reply to a runtime-initiated host request back on the runtime's
+    /// stdin, so the runtime can resume the parked plugin.
+    fn send_reply(&mut self, response: &Response) -> Result<()> {
+        let line = encode_line(&Message::Response(response.clone()))?;
+        let mut stdin = self.stdin.lock().unwrap();
+        stdin.write_all(line.as_bytes())?;
+        stdin.flush()?;
         Ok(())
     }
 }

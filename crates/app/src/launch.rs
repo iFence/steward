@@ -89,3 +89,17 @@ pub(crate) fn open_url(url: &str) -> Result<()> {
     let _ = url;
     anyhow::bail!("opening URLs is not yet implemented on this platform")
 }
+
+/// Open `path` (a file, folder, or `shell:`/`.lnk` alias) with the OS default
+/// handler — the `open` verb, the same way Explorer resolves the target. Used
+/// by plugins granted the `open.path` permission.
+#[cfg(target_os = "windows")]
+pub(crate) fn open_path(path: &str) -> Result<()> {
+    shell_open(std::path::Path::new(path))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn open_path(path: &str) -> Result<()> {
+    let _ = path;
+    anyhow::bail!("opening paths is not yet implemented on this platform")
+}
