@@ -4,8 +4,8 @@
   "private": true,
   "description": "Steward monorepo — Rust + GPUI native host with a TypeScript plugin system.",
   "scripts": {
-    "build": "pnpm --filter @steward/extension-api build && pnpm --filter @steward/plugin-calendar build",
-    "typecheck": "pnpm --filter @steward/extension-api typecheck && pnpm --filter @steward/plugin-calendar typecheck",
+    "build": "pnpm --filter @steward/extension-api build && pnpm --filter @steward/plugin-calendar build && pnpm --filter @steward/plugin-clipboard-history build",
+    "typecheck": "pnpm --filter @steward/extension-api typecheck && pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck",
     "lint": "eslint \"packages/**/*.{ts,js}\"",
     "format:check": "prettier --check \"packages/**/*.{ts,js,json,md}\""
   },

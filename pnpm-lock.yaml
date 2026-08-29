@@ -35,7 +35,11 @@ importers:
         specifier: workspace:*
         version: link:../../extension-api
 
-  packages/plugins/clipboard-history: {}
+  packages/plugins/clipboard-history:
+    dependencies:
+      '@steward/extension-api':
+        specifier: workspace:*
+        version: link:../../extension-api
 
 packages:
 
