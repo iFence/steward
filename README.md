@@ -81,8 +81,8 @@ Hotkeys / interactions:
 
 - [x] M0: Skeleton runs (GPUI launcher bar + global hotkey + system tray)
 - [x] M1: Application-launcher MVP (app scanning + nucleo fuzzy matching + SQLite index)
-- [ ] M2: Plugin system v1 (JSON-RPC IPC + QuickJS runtime + scaling strategies)
-- [ ] M3: Plugin API coverage + Node polyfill + UI polish
+- [x] M2: Plugin system v1 (JSON-RPC IPC + QuickJS runtime + scaling strategies)
+- [x] M3: Plugin API coverage + Node polyfill + UI polish
 - [ ] M4: Windows support polish
 - [ ] M5: Plugin ecosystem infrastructure (scaffolding, signature verification, plugin marketplace)
 

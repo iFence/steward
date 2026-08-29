@@ -81,8 +81,8 @@ pnpm build
 
 - [x] M0：骨架能跑起来（GPUI 快速启动栏 + 全局热键 + 系统托盘）
 - [x] M1：应用启动器 MVP（应用扫描 + nucleo 模糊匹配 + SQLite 索引）
-- [ ] M2：插件系统 v1（JSON-RPC IPC + QuickJS 运行时 + 规模化对策）
-- [ ] M3：插件 API 覆盖面 + Node polyfill + UI 打磨
+- [x] M2：插件系统 v1（JSON-RPC IPC + QuickJS 运行时 + 规模化对策）
+- [x] M3：插件 API 覆盖面 + Node polyfill + UI 打磨
 - [ ] M4：Windows 支持完善
 - [ ] M5：插件生态基础设施（脚手架、签名校验、插件市场）
 

@@ -79,6 +79,19 @@
 > 在超过共享池容量的安装量下，任意索引的插件都能经懒加载正确出视图，且
 > `set_plugins` / 单次冷查询耗时不随安装量线性增长。真实 release 整机数据仍待补齐。
 
+## M3 基线（插件 API / Node polyfill / UI 打磨，待积累）
+
+环境：Windows 开发机、release 构建（沿用 `scripts/bench-resident.ps1` 测量方式）。
+
+| 指标 | 数值 | 备注 |
+|---|---|---|
+| 冷启动 | 待回填 | M3 在 M2 基线上叠加插件 API / Node polyfill / 声明式视图；冷启动仍走「缓存优先 + 静态/动态路由」 |
+| 常驻 RSS | 待回填 | 插件宿主进程（`plugin-runtime`）独立于主进程，主进程 RSS 参照 M2 基线 |
+| 呼出延迟 | 待回填 | 命令在途时结果区顶部显示 loading 行；动态插件受 100ms 熔断 |
+
+> M3 尚无整机基准数据：真实数值随 `scripts/bench.sh` 与 `bench-resident.ps1` 在 release
+> 机器积累后回填，本表当前仅作占位。
+
 ## 插件 fs 跨进程 async（M3 二轮后）
 
 插件的 `fs.readFile` / `fs.writeFile` 走**宿主往返**（`host.fs.read` / `host.fs.write`）：

@@ -43,7 +43,8 @@ steward/
 │   ├── create-plugin-cli/          # 脚手架 CLI（可选，后期做）
 │   └── plugins/
 │       ├── calendar/                # 官方示例插件 1
-│       └── clipboard-history/       # 官方示例插件 2
+│       ├── clipboard-history/       # 官方示例插件 2
+│       └── calculator/              # 官方示例插件 3
 ├── docs/
 │   ├── architecture.md             # 架构说明（把讨论结论固化进去）
 │   ├── extension-api.md            # 插件 API 文档
@@ -66,6 +67,8 @@ steward/
 | 数据库 | `rusqlite`（bundled feature） | 同步足够快，避免引入 async ORM |
 | 插件运行时 | `rquickjs`（QuickJS 绑定） | 内存优先，不追求 Node 全兼容 |
 | 插件 IPC | 自定义 JSON-RPC，走 Unix Domain Socket / Windows Named Pipe | 协议定义放 `ipc-protocol` crate |
+| 插件网络请求 | `ureq` | 同步、轻量、rustls；`plugin-host` 承载 `net.request` |
+| 插件并发 | `crossbeam-channel` | `plugin-runtime` 内部 park/resume（Promise 跨进程 await） |
 | 插件打包 | `esbuild` | TS -> 单文件 JS，产物不依赖 Node API |
 | TS 包管理 | `pnpm` workspace | 单仓多插件场景省心 |
 | CI | GitHub Actions | 先跑 fmt/clippy/test |
@@ -108,10 +111,14 @@ steward/
 **验收标准**：模拟安装 500-1000 个插件（可脚本批量生成测试 manifest），验证冷启动时间、搜索响应延迟不随安装量线性劣化，只随“实际激活数”变化
 
 ### M3：插件 API 覆盖面 + Node 兼容 polyfill + UI 打磨
-- [ ] 补齐 `Detail`、`Form`、`LocalStorage`、`Clipboard` 等 API
-- [ ] 覆盖最常用的 20-30 个 Node 内置模块 polyfill（fs、path、buffer、http 等），明确写文档说明不支持 native binding
-- [ ] 做第二个官方插件（`clipboard-history`）验证 API 够不够用
-- [ ] 主题/深色模式、动画细节打磨
+- [x] 补齐 `Detail`、`Form`、`LocalStorage`、`Clipboard` 等 API
+- [x] 覆盖最常用的 20-30 个 Node 内置模块 polyfill（fs、path、buffer、http 等），明确写文档说明不支持 native binding
+- [x] 做第二个官方插件（`clipboard-history`）验证 API 够不够用
+- [x] 主题/深色模式、动画细节打磨
+
+> M3 二轮（2026-08-29）已在首轮基础上补齐：全部 handler 支持 async、Node polyfill 改为 runtime 注入、
+> 新增 `Grid`/`SearchBar` 声明式视图、主题一致性 + 启动器入场动画，并将 `fs.read`/`fs.write`、`network`、
+> `open.url`/`open.path`、`detachable` 视图弹出与跨进程 await 落地（详见文末决策记录）。
 
 ### M4：Windows 支持
 - [ ] 视 GPUI/gpui-component 在 Windows 上的成熟度决定方案
@@ -132,11 +139,11 @@ steward/
 
 ## 5. 待验证风险清单（建仓后前两周优先去趟一遍）
 
-1. GPUI 在目标平台（先 macOS，再 Linux）上的窗口置顶/失焦隐藏/多显示器行为是否符合预期
-2. `rquickjs` 沙箱内 host function 回调（Rust 侧）的性能开销，是否拖慢插件响应
-3. `gpui-component` 的组件覆盖面是否够用，哪些控件需要自己补
-4. 插件崩溃/死循环时的隔离和超时熔断机制的具体实现方式（`isolate_pool.rs` 的核心）
-5. QuickJS 堆内存上限设置的合理默认值（过小影响正常插件，过大失去熔断意义）
+1. GPUI 在目标平台（先 macOS，再 Linux）上的窗口置顶/失焦隐藏/多显示器行为是否符合预期 —— *仍待*：Windows 已作为当前开发/发布平台，macOS/Linux 行为未验证。
+2. `rquickjs` 沙箱内 host function 回调（Rust 侧）的性能开销，是否拖慢插件响应 —— *仍待*：已采用 async/跨进程方案，宿主往返开销尚无整机实测。
+3. `gpui-component` 的组件覆盖面是否够用，哪些控件需要自己补 —— *仍待*：grid/search/form/detail 等已由项目自补，覆盖面视后续插件需求而定。
+4. 插件崩溃/死循环时的隔离和超时熔断机制的具体实现方式（`isolate_pool.rs` 的核心） —— *已收敛*：执行超时 + 64 MiB 堆上限 kill + parked 超时，见 M2 决策。
+5. QuickJS 堆内存上限设置的合理默认值（过小影响正常插件，过大失去熔断意义） —— *已收敛*：默认 64 MiB；静态 500ms / dynamic 100ms 熔断。
 
 ## 决策记录
 

@@ -1,8 +1,9 @@
 # 插件 API 草案
 
-> 状态：M2 已落地。`packages/extension-api` 提供类型声明 + 运行时 polyfill：
+> 状态：M3 已落地（含 M3 二轮 async / Grid·Search / Node polyfill / 跨进程 fs·net）。
+> `packages/extension-api` 提供类型声明 + 运行时 polyfill：
 > esbuild 把插件源码与 SDK 打成单文件 IIFE，运行时代码全部路由到宿主注入的
-> `globalThis.steward` 桥（剪贴板 / toast），按 manifest `permissions` 授权。
+> `globalThis.steward` 桥（剪贴板 / toast / storage / open / fs / net），按 manifest `permissions` 授权。
 
 ## 最小 API 集（M2）
 | API | 说明 |
@@ -35,7 +36,9 @@
 ## 约束
 
 - 插件产物是 esbuild 打包的单文件 JS（IIFE + `--global-name=__stewardPlugin`），不依赖 Node API。
-- M3 起提供 20-30 个常用 Node 内置模块 polyfill（fs、path、buffer、http 等），不支持 native binding。
+- M3 起提供 20-30 个常用 Node 内置模块 polyfill：`path` / `buffer` / `process` / `events` / `util` /
+  `url` / `querystring` / `string_decoder` / `assert` / `os` 为纯 JS 全功能；`fs` 提供
+  `readFile` / `writeFile`（宿主往返），其余 `fs` 接口与 `http` / `net` 等为 stub。不支持 native binding。
 - 默认零权限：需要的能力在 manifest `permissions` 中声明。
 - manifest 可选的 `icon` 字段是内联 SVG 文档；宿主会把它缓存并在启动器结果行中
   与应用图标一样渲染（未声明时插件行不显示图标）。
@@ -46,9 +49,11 @@
 
 `command` / `select` / `run` / `submit`（以及新加的 `search`）都允许返回 `Promise`。宿主在执行
 deadline 内驱动 QuickJS 微任务队列直到 settled（`command`/`select`/`search` 取返回值，`run`/`submit`
-忽略返回值），因此插件可以写 `async function command() { await Clipboard.read(); ... }`。M3 暂无
-跨进程真正 await（fs/network 未放行），Promise 只靠微任务 + 同步宿主函数解析；若 promise 永不 settle
-则按 timeout 处理并回收 isolate。
+忽略返回值），因此插件可以写 `async function command() { await Clipboard.read(); ... }`。M3 支持真正的
+跨进程 await：`fs.readFile` / `fs.writeFile`（`host.fs.read` / `host.fs.write`）与 `net.request`
+（`host.net.request`）会 park isolate，宿主完成后恢复 Promise；微任务 + 同步宿主函数（`Clipboard` /
+`LocalStorage`）立即 resolved。若 promise 永不 settle 则按 timeout 处理并回收 isolate；同一 isolate
+一次仅一个 parked 调用，busy 时新请求返回 `plugin is busy`，isolate 被 kill/驱逐后在途回复直接丢弃。
 
 ### `grid` 与 `search` 视图
 
@@ -64,6 +69,8 @@ deadline 内驱动 QuickJS 微任务队列直到 settled（`command`/`select`/`s
 插件 bundle 将 Node 内置模块标为 external（见 `scripts/build-plugin.mjs`），运行时在求值 bundle 前注入
 `require`/`module`/`exports`/`process`/`Buffer`/`global` 与模块注册表。纯 JS 模块 `path` / `buffer` /
 `process` / `events` / `util` / `url` / `querystring` / `string_decoder` / `assert` / `os` 全功能；
-`fs` / `http` / `https` / `net` / `dns` / `child_process` / `crypto` / `zlib` / `stream` 为 stub，
-调用即抛 "not supported in M3"（其权限仍在扫描时被拒绝）。`timers`、原生 binding、`worker_threads`
+`require("fs").readFile` / `writeFile` 走宿主往返（需 `fs.read`/`fs.write` 权限 + `fs_roots`）；其余
+`fs` 接口（`readFileSync`/`writeFileSync`/`readdir`/`stat` 等）抛 "not supported in this phase"。
+`http` / `https` / `net` / `dns` / `child_process` / `crypto` / `zlib` / `stream` 为 stub，调用即抛
+"not supported in M3"；`network` 权限已支持（`net.request`）。`timers`、原生 binding、`worker_threads`
 明确不支持。plugin 内可直接 `require("path")` 或使用 `global.Buffer`。

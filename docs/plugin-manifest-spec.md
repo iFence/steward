@@ -1,6 +1,6 @@
 # 插件 Manifest 规范（草案）
 
-> 状态：M2 草案，先定字段，随 `plugin-registry`/`plugin-host` 实现迭代。
+> 状态：M3 已落地，字段与权限枚举随 `plugin-registry`/`plugin-host` 实现迭代。
 
 ## 示例
 
