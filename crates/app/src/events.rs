@@ -51,6 +51,10 @@ fn drain_plugin_events(
                     else {
                         continue;
                     };
+                    state_ref
+                        .plugin_pending
+                        .borrow_mut()
+                        .remove(&(plugin_id.clone(), command.clone()));
                     match result {
                         Ok(view) => {
                             state_ref.plugin_views.borrow_mut()[index] = Some(view);
@@ -63,6 +67,52 @@ fn drain_plugin_events(
                         }
                     }
                 }
+                rerender = true;
+            }
+            steward_plugin_host::HostEvent::SearchResult {
+                gen,
+                plugin_id,
+                command,
+                query: _query,
+                result,
+            } => {
+                let current_gen = state.borrow().search_gen.get();
+                if gen != current_gen {
+                    continue;
+                }
+                let view = match result {
+                    Ok(view) => view,
+                    Err(error) => {
+                        eprintln!(
+                            "[steward] plugin {plugin_id} search failed: {} ({})",
+                            error.message, error.code
+                        );
+                        continue;
+                    }
+                };
+                let state_clone = state.clone();
+                let plugin_id_clone = plugin_id.clone();
+                let command_clone = command.clone();
+                {
+                    let state_ref = state.borrow();
+                    state_ref
+                        .plugin_search_results
+                        .borrow_mut()
+                        .insert((plugin_id.clone(), command.clone()), view.clone());
+                }
+                // If the search view is open in a detached panel, feed the
+                // result there (it owns the SearchBar); otherwise the launcher
+                // re-renders the inline results.
+                cx.update(|cx| {
+                    crate::plugin_panel_window::apply_search_result_to_panel(
+                        &state_clone,
+                        &plugin_id_clone,
+                        &command_clone,
+                        gen,
+                        &view,
+                        cx,
+                    );
+                });
                 rerender = true;
             }
             steward_plugin_host::HostEvent::Toast { params } => {

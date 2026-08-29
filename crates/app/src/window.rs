@@ -201,6 +201,32 @@ pub(crate) fn open_launcher_window(
                         }
                         true
                     }
+                    // A transient "command running" placeholder: nothing to
+                    // confirm, and the launcher must stay open.
+                    Some(ResultItem::Loading { .. }) => false,
+                    // A plugin command entry row: open the plugin's view in its
+                    // own independent application window, then hide the launcher
+                    // (each plugin behaves like a launched app).
+                    Some(ResultItem::Command {
+                        plugin_id,
+                        command,
+                        ..
+                    }) => {
+                        let view = confirm_state.borrow().plugin_view(&plugin_id, &command);
+                        if let Some(view) = view {
+                            let (state, i18n) = (confirm_state.clone(), confirm_i18n.clone());
+                            let _ = crate::plugin_panel_window::open_plugin_panel(
+                                &state,
+                                i18n,
+                                plugin_id.clone(),
+                                command.clone(),
+                                view,
+                                true,
+                                cx,
+                            );
+                        }
+                        true
+                    }
                     // A plugin row: dispatch `item.invoke` and keep the
                     // launcher open so the plugin's toast/result is visible.
                     Some(ResultItem::Plugin {
@@ -455,5 +481,9 @@ fn show_window(window: &mut Window, _cx: &mut App, state: &Rc<RefCell<LauncherSt
     if let Some(brightness) = platform::show(window, height) {
         state.borrow_mut().scrim_alpha = adaptive_scrim_alpha(brightness);
     }
+    // Restart the launcher's entrance animation (fade + slight scale) so each
+    // summon begins from an off/compact state instead of snapping open.
+    let next_epoch = state.borrow().show_epoch.get() + 1;
+    state.borrow_mut().show_epoch.set(next_epoch);
     window.refresh();
 }

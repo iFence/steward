@@ -3,7 +3,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     rc::Rc,
     sync::Arc,
@@ -189,6 +189,23 @@ pub(crate) struct LauncherState {
     /// Views received for each hit; `None` until the response (or an error)
     /// lands for this query.
     pub(crate) plugin_views: RefCell<Vec<Option<serde_json::Value>>>,
+    /// Plugin commands still running for the current query generation, keyed
+    /// by `(plugin_id, command)`. Populated by `search` when it dispatches a
+    /// command and cleared by the poll task when its `CommandResult` lands
+    /// (success or error), so the launcher can show a transient "running"
+    /// placeholder instead of leaving a gap while a cold plugin lazy-loads or
+    /// an async `command()` drains its micro-tasks.
+    pub(crate) plugin_pending: RefCell<HashSet<(String, String)>>,
+    /// Generation for `search.query` invocations: bumped on every keystroke so
+    /// a stale search response is dropped instead of overwriting newer results.
+    pub(crate) search_gen: Cell<u64>,
+    /// Latest `search.query` result per `(plugin_id, command)`, so a `search`
+    /// view renders its results in the launcher's drop-down (or a detached
+    /// panel reads it on open). Cleared when the command's view resets.
+    pub(crate) plugin_search_results: RefCell<HashMap<(String, String), serde_json::Value>>,
+    /// Bumped every time the launcher window is shown, so the root's entrance
+    /// animation restarts (the `with_animation` key is derived from it).
+    pub(crate) show_epoch: Cell<u64>,
     /// The active calendar view (from the first calendar-typed plugin view of
     /// the current query), if any.
     pub(crate) plugin_calendar: RefCell<Option<ActiveCalendar>>,
@@ -402,11 +419,14 @@ impl LauncherState {
         *self.plugin_icons.borrow_mut() = icons;
     }
 
-    /// Build the rows for the current query's plugin views: a `Plugin` row per
-    /// list item, plus one `Calendar` row per calendar-typed view (the grid is
-    /// only revealed after the user confirms that row, mirroring how apps are
-    /// launched). Views arrive asynchronously; this is called on every merge.
-    /// `command_label` is the localized "Command" tag shown on calendar rows.
+    /// Build the rows for the current query's plugin views: one `Command` entry
+    /// row per plugin hit. Confirming a row opens the plugin's view in its own
+    /// independent application window, so every plugin behaves like a launched
+    /// app (no list-item flattening and no inline calendar grid). Views arrive
+    /// asynchronously; this is called on every merge. `command_label` is the
+    /// localized "Command" tag shown on those rows. `calendars` is kept as an
+    /// empty vec for call-site compatibility (inline calendar is retired by
+    /// the application-window model).
     pub(crate) fn plugin_rows_and_calendar_rows(
         &self,
         command_label: &str,
@@ -414,55 +434,20 @@ impl LauncherState {
         let hits = self.plugin_hits.borrow();
         let views = self.plugin_views.borrow();
         let mut rows = Vec::new();
-        let mut calendars = Vec::new();
+        let calendars = Vec::new();
         for (hit, view) in hits.iter().zip(views.iter()) {
-            let Some(view) = view else {
+            if view.is_none() {
                 continue;
-            };
-            let Some(items) = plugin_view_items(view) else {
-                // Not a list view: a calendar view contributes a confirmable
-                // row instead of auto-replacing the results list.
-                if parse_calendar_view(view, &hit.plugin_id, &hit.command, hit.detachable).is_some()
-                {
-                    calendars.push(ResultItem::Calendar {
-                        plugin_id: hit.plugin_id.clone(),
-                        command: hit.command.clone(),
-                        title: hit.title.clone(),
-                        subtitle: command_label.to_string(),
-                    });
-                } else if is_detail_or_form_view(view) {
-                    // A detail / form view is a confirmable plugin view row that
-                    // opens in the independent panel window on confirm.
-                    calendars.push(ResultItem::Calendar {
-                        plugin_id: hit.plugin_id.clone(),
-                        command: hit.command.clone(),
-                        title: hit.title.clone(),
-                        subtitle: command_label.to_string(),
-                    });
-                }
-                continue;
-            };
-            for item in items {
-                if rows.len() >= MAX_PLUGIN_ROWS {
-                    return (rows, calendars);
-                }
-                let Some(item_id) = item["id"].as_str() else {
-                    continue;
-                };
-                let title = item["title"].as_str().unwrap_or("").to_string();
-                let subtitle = item
-                    .get("subtitle")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(&hit.title)
-                    .to_string();
-                rows.push(ResultItem::Plugin {
-                    plugin_id: hit.plugin_id.clone(),
-                    command: hit.command.clone(),
-                    item_id: item_id.to_string(),
-                    title,
-                    subtitle,
-                });
             }
+            if rows.len() >= MAX_PLUGIN_ROWS {
+                return (rows, calendars);
+            }
+            rows.push(ResultItem::Command {
+                plugin_id: hit.plugin_id.clone(),
+                command: hit.command.clone(),
+                title: hit.title.clone(),
+                subtitle: command_label.to_string(),
+            });
         }
         (rows, calendars)
     }
@@ -486,6 +471,16 @@ pub(crate) fn is_detail_or_form_view(view: &serde_json::Value) -> bool {
     matches!(
         view.get("type").and_then(|kind| kind.as_str()),
         Some("detail") | Some("form")
+    )
+}
+
+/// Whether a plugin view is hostable in a detached panel window: the panel
+/// dispatches on `list` / `grid` / `search` / `detail` / `form`.
+pub(crate) fn is_panel_view(view: &serde_json::Value) -> bool {
+    let view = view.get("view").unwrap_or(view);
+    matches!(
+        view.get("type").and_then(|kind| kind.as_str()),
+        Some("list" | "grid" | "search" | "detail" | "form")
     )
 }
 
@@ -993,6 +988,20 @@ impl gpui::Render for StewardApp {
             })
             .child(drag_strip().h(px(LAUNCHER_MARGIN)));
 
+        // One-shot entrance fade: the launcher eases from transparent to its
+        // frosted-glass scrim on every summon (the key includes the show epoch,
+        // so a fresh animation starts each time the bar appears). At the end
+        // the element holds at its normal opacity; the caret blink below stays
+        // independent.
+        let root = root.with_animation(
+            ElementId::from(format!(
+                "launcher-entry-{}",
+                self.state.borrow().show_epoch.get()
+            )),
+            Animation::new(std::time::Duration::from_millis(140)),
+            |this, delta| this.opacity(delta),
+        );
+
         LauncherInputElement {
             child: root.into_any_element(),
             focus_handle: self.focus_handle.clone(),
@@ -1445,9 +1454,18 @@ impl StewardApp {
             .collect::<Vec<_>>();
         *self.state.borrow().plugin_hits.borrow_mut() = hits.clone();
         *self.state.borrow().plugin_views.borrow_mut() = vec![None; hits.len()];
+        // Reset the in-flight set: pending is scoped to the fresh generation.
+        self.state.borrow().plugin_pending.borrow_mut().clear();
         let host = self.state.borrow().plugin_host.clone();
         for hit in &hits {
-            host.borrow_mut().invoke(plugin_gen, hit);
+            let dispatched = host.borrow_mut().invoke(plugin_gen, hit);
+            if dispatched.is_some() {
+                self.state
+                    .borrow()
+                    .plugin_pending
+                    .borrow_mut()
+                    .insert((hit.plugin_id.clone(), hit.command.clone()));
+            }
         }
 
         self.render_merged(window, cx);
@@ -1513,11 +1531,7 @@ impl StewardApp {
             let views = state.plugin_views.borrow();
             let mut target = None;
             for (hit, view) in hits.iter().zip(views.iter()) {
-                if hit.detachable
-                    && view
-                        .as_ref()
-                        .is_some_and(|view| plugin_view_items(view).is_some())
-                {
+                if hit.detachable && view.as_ref().is_some_and(is_panel_view) {
                     if target.is_some() {
                         target = None;
                         break;
@@ -1549,6 +1563,20 @@ impl StewardApp {
         }
         let plugin_count = plugin_rows.len() + calendar_rows.len();
         let builtin_count = self.builtin_count;
+        // A transient "running" row while a plugin command is still in flight
+        // (lazy-loading a cold plugin, or draining an async `command()`'s job
+        // queue). Cleared the moment its `CommandResult` lands, so it never
+        // lingers on an error or a completed view.
+        let pending_command = {
+            let state = self.state.borrow();
+            let pending = state
+                .plugin_pending
+                .borrow()
+                .iter()
+                .next()
+                .map(|(_, command)| command.clone());
+            pending
+        };
         // Icons for the plugin / calendar rows, resolved by plugin id from the
         // manifest cache, so they look like app rows.
         let plugin_icons = {
@@ -1558,7 +1586,8 @@ impl StewardApp {
                 .chain(calendar_rows.iter())
                 .map(|row| match row {
                     ResultItem::Plugin { plugin_id, .. }
-                    | ResultItem::Calendar { plugin_id, .. } => state
+                    | ResultItem::Calendar { plugin_id, .. }
+                    | ResultItem::Command { plugin_id, .. } => state
                         .plugin_icons
                         .borrow()
                         .get(plugin_id)
@@ -1570,11 +1599,18 @@ impl StewardApp {
         };
         let mut items = Vec::with_capacity(self.base_items.len() + plugin_count);
         items.extend_from_slice(&self.base_items[..builtin_count]);
+        let has_loading = pending_command.is_some();
+        if let Some(command) = pending_command {
+            items.push(ResultItem::Loading { command });
+        }
         items.extend(plugin_rows);
         items.extend(calendar_rows);
         items.extend_from_slice(&self.base_items[builtin_count..]);
         let mut icons = Vec::with_capacity(self.base_icons.len() + plugin_count);
         icons.extend_from_slice(&self.base_icons[..builtin_count]);
+        if has_loading {
+            icons.push(None);
+        }
         icons.extend(plugin_icons);
         icons.extend_from_slice(&self.base_icons[builtin_count..]);
 

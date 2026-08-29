@@ -11,9 +11,10 @@ use std::rc::Rc;
 
 use gpui::{
     div, prelude::FluentBuilder as _, px, rgb, svg, App, AppContext, Context, ElementId, Entity,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _,
 };
+use gpui_component::ActiveTheme;
 
 use crate::lunar::lunar_info;
 
@@ -238,6 +239,7 @@ impl Render for CalendarViewState {
         // size so a larger widget spreads out instead of rendering giant text.
         let day_font = 14.0;
         let lunar_font = 10.0;
+        let accent = cx.theme().primary;
 
         let header = div()
             .id(ElementId::from("cal-header"))
@@ -307,9 +309,9 @@ impl Render for CalendarViewState {
                             .rounded_full()
                             .mx(px(2.0))
                             .text_color(if is_today {
-                                rgb(crate::palette::ACCENT)
+                                accent
                             } else {
-                                rgb(crate::palette::FOREGROUND)
+                                Hsla::from(rgb(crate::palette::FOREGROUND))
                             })
                             .text_size(px(day_font))
                             .cursor_pointer()
@@ -317,7 +319,7 @@ impl Render for CalendarViewState {
                                 this.bg(rgb(crate::palette::SELECTION).opacity(0.14))
                             })
                             .when(!is_selected && is_today, |this| {
-                                this.bg(rgb(crate::palette::ACCENT).opacity(0.18))
+                                this.bg(accent.opacity(0.18))
                             })
                             .when(!is_selected, |this| {
                                 this.hover(|style| {
@@ -337,9 +339,9 @@ impl Render for CalendarViewState {
                                     div()
                                         .text_size(px(lunar_font))
                                         .text_color(if info.highlighted() {
-                                            rgb(crate::palette::ACCENT)
+                                            accent
                                         } else {
-                                            rgb(crate::palette::MUTED_FOREGROUND)
+                                            Hsla::from(rgb(crate::palette::MUTED_FOREGROUND))
                                         })
                                         .child(info.label().to_string()),
                                 )
@@ -405,6 +407,7 @@ fn week_rail_cell(week: Option<(String, usize)>) -> impl IntoElement {
 /// (pinned) / "dock back" (unpinned). Pinned and unpinned share the Lucide
 /// pushpin glyph; the accent tint marks the pinned state.
 fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoElement {
+    let accent = cx.theme().primary;
     div()
         .id(ElementId::from("cal-pin-toggle"))
         .flex()
@@ -416,13 +419,11 @@ fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoEle
         .cursor_pointer()
         .border_1()
         .border_color(if pinned {
-            rgb(crate::palette::ACCENT).opacity(0.55)
+            accent.opacity(0.55)
         } else {
-            rgb(0xffffff).opacity(0.08)
+            Hsla::from(rgb(0xffffff)).opacity(0.08)
         })
-        .when(pinned, |this| {
-            this.bg(rgb(crate::palette::ACCENT).opacity(0.16))
-        })
+        .when(pinned, |this| this.bg(accent.opacity(0.16)))
         .when(!pinned, |this| {
             this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
         })
@@ -440,9 +441,9 @@ fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoEle
                 .w(px(14.0))
                 .h(px(14.0))
                 .text_color(if pinned {
-                    rgb(crate::palette::ACCENT)
+                    accent
                 } else {
-                    rgb(crate::palette::MUTED_FOREGROUND)
+                    Hsla::from(rgb(crate::palette::MUTED_FOREGROUND))
                 }),
         )
 }

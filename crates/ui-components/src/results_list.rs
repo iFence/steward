@@ -67,6 +67,22 @@ pub enum ResultItem {
         title: String,
         subtitle: String,
     },
+    /// A plugin command's entry row: confirming it opens the plugin's view in
+    /// its own independent application window (instead of flattening the view
+    /// into the launcher drop-down). Applies to every plugin command, so each
+    /// plugin behaves like a launched app.
+    Command {
+        plugin_id: String,
+        command: String,
+        title: String,
+        subtitle: String,
+    },
+    /// A transient placeholder shown while a plugin command is still running
+    /// (lazy-loading a cold plugin, or draining an async `command()`'s
+    /// micro-tasks). Not confirmable: it only signals that a row is coming.
+    Loading {
+        command: String,
+    },
 }
 
 /// Design (96-DPI) geometry of a result row, in logical pixels. GPUI scales
@@ -166,6 +182,8 @@ fn render_row(
         ResultItem::Link { .. } => ElementId::from(format!("result-link-{index}")),
         ResultItem::Plugin { .. } => ElementId::from(format!("result-plugin-{index}")),
         ResultItem::Calendar { .. } => ElementId::from(format!("result-calendar-{index}")),
+        ResultItem::Command { .. } => ElementId::from(format!("result-command-{index}")),
+        ResultItem::Loading { .. } => ElementId::from(format!("result-loading-{index}")),
     };
     let row = div()
         .id(id)
@@ -185,11 +203,15 @@ fn render_row(
         })
         .when(!selected, |this| {
             this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
-        })
-        .on_click(cx.listener(move |this, _, _, cx| {
-            if let Some(cb) = this.on_confirm.clone() {
-                let _ = cb(index, cx);
-            }
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // A click both selects the row and confirms it, so a
+                            // subsequent Enter (via the owner's list) always has a
+                            // selection to act on.
+                            this.selected = Some(index);
+                            if let Some(cb) = this.on_confirm.clone() {
+                                let _ = cb(index, cx);
+                            }
             cx.notify();
         }));
 
@@ -317,6 +339,53 @@ fn render_row(
                     .text_color(rgb(crate::palette::MUTED_FOREGROUND))
                     .text_size(px(11.0))
                     .child(subtitle.to_owned()),
+            ),
+        // A plugin command entry row mirrors the calendar row: the plugin's
+        // icon, the command title on the left and the "Command" tag on the
+        // right. Confirming opens the plugin's independent application window.
+        ResultItem::Command {
+            title, subtitle, ..
+        } => row
+            .when_some(icon, |this, icon| {
+                this.child(
+                    img(ImageSource::Image(icon))
+                        .w(px(DESIGN_ICON_SIZE))
+                        .h(px(DESIGN_ICON_SIZE)),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::FOREGROUND))
+                    .text_sm()
+                    .child(title.to_owned()),
+            )
+            .child(
+                div()
+                    .truncate()
+                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_size(px(11.0))
+                    .child(subtitle.to_owned()),
+            ),
+        // A loading placeholder: muted title on the left, a pulse on the
+        // right. It is intentionally not confirmable (see the app's confirm
+        // handler) and disappears as soon as the command's view lands.
+        ResultItem::Loading { command } => row
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_sm()
+                    .child(command.to_owned()),
+            )
+            .child(
+                div()
+                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_size(px(14.0))
+                    .child("…"),
             ),
     }
 }
@@ -465,6 +534,31 @@ impl ResultList {
             cx.notify();
         });
         should_hide
+    }
+
+    /// The currently selected row, cloned (or `None` when nothing is selected).
+    /// Used by panel action bars to know which item a view-level action targets.
+    pub fn selected_item(&self, cx: &App) -> Option<ResultItem> {
+        let state = self.state.read(cx);
+        state.selected.and_then(|index| state.items.get(index).cloned())
+    }
+
+    /// Guarantee a selection exists: if nothing is selected but rows are
+    /// present, select the first and return whether there is a selectable row.
+    /// Used by the panel's Enter handler so confirming never silently no-ops.
+    pub fn ensure_selected<C>(&self, cx: &mut C) -> bool
+    where
+        C: gpui::AppContext,
+    {
+        let mut ok = false;
+        self.state.update(cx, |this, cx| {
+            if this.selected.is_none() && !this.items.is_empty() {
+                this.selected = Some(0);
+            }
+            ok = this.selected.is_some() && !this.items.is_empty();
+            cx.notify();
+        });
+        ok
     }
 
     /// Render the scrollable list element, capped at `max_height` so rows

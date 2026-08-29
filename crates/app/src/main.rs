@@ -60,7 +60,7 @@ mod tray;
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
 };
@@ -167,6 +167,10 @@ fn main() {
         plugin_gen: Cell::new(0),
         plugin_hits: RefCell::new(Vec::new()),
         plugin_views: RefCell::new(Vec::new()),
+        plugin_pending: RefCell::new(HashSet::new()),
+        search_gen: Cell::new(0),
+        plugin_search_results: RefCell::new(HashMap::new()),
+        show_epoch: Cell::new(0),
         plugin_calendar: RefCell::new(None),
         panel_view_windows: RefCell::new(HashMap::new()),
         hotkey_manager: None,

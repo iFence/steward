@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, rgb, App, AppContext, Context, ElementId, Entity, IntoElement,
+    div, prelude::*, px, rgb, svg, App, AppContext, Context, ElementId, Entity, IntoElement,
     StatefulInteractiveElement,
 };
 
@@ -38,16 +38,16 @@ impl Render for ActionBarState {
             .id(ElementId::from("action-bar"))
             .flex()
             .flex_row()
-            .gap_2()
-            .w_full()
+            .gap_1()
             .children(actions.iter().map(|action| {
                 let id = action.id.clone();
                 let title = action.title.clone();
+                let icon = action.icon.clone();
                 let selected = selected.clone();
                 div()
                     .id(ElementId::from(format!("action-{id}")))
                     .h(px(28.0))
-                    .px_3()
+                    .w(px(28.0))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -63,7 +63,15 @@ impl Render for ActionBarState {
                             cb(id.clone(), selected.clone(), cx);
                         }
                     }))
-                    .child(title)
+                    .child(if let Some(icon) = icon {
+                        svg()
+                            .data(icon.as_bytes())
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .into_any_element()
+                    } else {
+                        div().text_sm().child(title).into_any_element()
+                    })
             }))
     }
 }
@@ -114,8 +122,7 @@ impl ActionBar {
     pub fn render<C>(&self, _cx: &mut Context<C>) -> impl IntoElement {
         div()
             .id(ElementId::from("action-bar-container"))
-            .h(px(32.0))
-            .w_full()
+            .h(px(28.0))
             .child(self.state.clone())
     }
 }

@@ -13,13 +13,14 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
     div, prelude::*, px, rgb, size, AnyWindowHandle, App, Bounds, Context, ElementId, FocusHandle,
-    KeyDownEvent, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
+    KeyDownEvent, svg, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowKind, WindowOptions,
 };
 use steward_ui_components::{
     days_in_month, iso_date, palette, ActionBar, ActionRef, CalendarView, DetailBlock, DetailData,
-    DetailView, FieldKind, FormData, FormField, FormOption, FormValue, FormView, ResultItem,
-    ResultList, ResultListDelegate, CALENDAR_GRID_HEIGHT,
+    DetailView, FieldKind, FormData, FormField, FormOption, FormValue, FormView, GridData,
+    GridItem, GridView, ResultItem, ResultList, ResultListDelegate, SearchBar,
+    CALENDAR_GRID_HEIGHT,
 };
 
 use crate::config::{
@@ -32,9 +33,10 @@ use crate::launcher::{
 };
 use crate::platform;
 
-/// Height of the invisible drag handle along the top of a detached plugin
-/// window (logical px). The rest of the window stays interactive.
-const PANEL_DRAG_HEIGHT: f32 = 12.0;
+/// Height of the visible title bar above a detached plugin window: the drag
+/// strip, the icon action bar (when the view declares an `actionPanel`) and
+/// the close button.
+const PANEL_TITLEBAR_HEIGHT: f32 = 32.0;
 /// Height of the month/year navigation toolbar shown above a detached calendar
 /// panel (logical px).
 const PANEL_NAV_HEIGHT: f32 = 26.0;
@@ -44,6 +46,9 @@ const PANEL_WINDOW_SIZE_KEY: &str = "panel_window_size";
 /// Default content height of a detached detail / form panel (the owner can
 /// resize; this is the nominal starting height).
 const DETAIL_FORM_PANEL_HEIGHT: f32 = 260.0;
+/// Lucide `x` icon (24x24, stroke 2, `currentColor`), used by the title bar's
+/// close button.
+const CLOSE_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>"#;
 
 /// Height of a list panel window for `count` plugin rows, capped like the
 /// launcher's drop-down (`MAX_RESULT_ROWS`).
@@ -58,6 +63,8 @@ enum PanelKind {
     List(Vec<ResultItem>),
     Detail(DetailData),
     Form(FormData),
+    Grid(GridData),
+    Search,
 }
 
 /// A detached plugin-view window: one entity per open widget.
@@ -71,6 +78,14 @@ pub(crate) struct PluginPanelWindow {
     list: Option<ResultList>,
     detail: Option<DetailView>,
     form: Option<FormView>,
+    grid: Option<GridView>,
+    search_bar: Option<SearchBar>,
+    search_list: Option<ResultList>,
+    /// The latest `search.query` result view (a `list`/`grid`) rendered below
+    /// the search bar. `None` until the first result lands.
+    search_results: Option<serde_json::Value>,
+    /// Generation for `search.query` invocations; a stale response is dropped.
+    search_gen: u64,
     action_bar: Option<ActionBar>,
     /// Actions declared by the current view's `actionPanel`, rendered as a
     /// footer bar. `None` when the view has no action panel.
@@ -90,15 +105,16 @@ impl Render for PluginPanelWindow {
         // fixed, everything else fills the client area so resizing the window
         // (larger or smaller) scales the calendar/list rather than adding dead
         // space or clipping it.
-        let content_h =
-            (window.viewport_size().height.as_f32() - PANEL_DRAG_HEIGHT - nav_h - padding * 2.0)
-                .max(120.0);
+        let content_h = (window.viewport_size().height.as_f32()
+            - PANEL_TITLEBAR_HEIGHT
+            - nav_h
+            - padding * 2.0)
+            .max(120.0);
         let nav_toolbar = if has_nav {
             self.nav_toolbar(cx).into_any_element()
         } else {
             div().into_any_element()
         };
-        let has_actions = !self.actions.is_empty();
         let content = div()
             .flex_1()
             .flex_col()
@@ -147,14 +163,41 @@ impl Render for PluginPanelWindow {
                             .expect("form panel has a FormView")
                             .render(content_h, cx),
                     ),
-            })
-            .when(has_actions, |this| {
-                this.child(
-                    self.action_bar
-                        .as_ref()
-                        .expect("has_actions implies an action bar")
-                        .render(cx),
-                )
+                PanelKind::Grid(_) => div()
+                    .id(ElementId::from("panel-grid"))
+                    .h(px(content_h))
+                    .w_full()
+                    .child(
+                        self.grid
+                            .as_ref()
+                            .expect("grid panel has a GridView")
+                            .render(content_h, cx),
+                    ),
+                PanelKind::Search => {
+                    let mut col = div()
+                        .id(ElementId::from("panel-search"))
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_3();
+                    if let Some(bar) = self.search_bar.as_ref() {
+                        col = col.child(bar.render(cx));
+                    }
+                    let result_height = (content_h - 48.0).max(80.0);
+                    col = col.child(
+                        div()
+                            .id(ElementId::from("panel-search-results"))
+                            .h(px(result_height))
+                            .w_full()
+                            .child(
+                                self.search_list
+                                    .as_ref()
+                                    .expect("search panel has a ResultList")
+                                    .render(result_height, palette::SELECTION_WASH, cx),
+                            ),
+                    );
+                    col
+                }
             });
         let root = div()
             .id(ElementId::from("plugin-panel"))
@@ -168,14 +211,30 @@ impl Render for PluginPanelWindow {
             .bg(rgb(palette::BACKGROUND).opacity(scrim))
             .text_lg()
             .text_color(rgb(palette::FOREGROUND))
-            // Invisible drag handle along the top edge: the only region that
-            // moves the window, so day/pin clicks below stay interactive.
+            // A visible title bar: most of it is a drag handle (move the
+            // window), with the icon action bar (if any) and a close button on
+            // the right. Interactive children sit above the drag surface.
             .child(
                 div()
-                    .id(ElementId::from("panel-drag"))
-                    .h(px(PANEL_DRAG_HEIGHT))
+                    .id(ElementId::from("panel-titlebar"))
+                    .h(px(PANEL_TITLEBAR_HEIGHT))
                     .w_full()
-                    .window_control_area(WindowControlArea::Drag),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px_1()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id(ElementId::from("panel-drag"))
+                            .flex_1()
+                            .h_full()
+                            .window_control_area(WindowControlArea::Drag),
+                    )
+                    .when_some(self.action_bar.as_ref(), |this, bar| {
+                        this.child(bar.render(cx))
+                    })
+                    .child(self.close_button(cx)),
             )
             .child(nav_toolbar)
             .child(content);
@@ -206,6 +265,11 @@ impl PluginPanelWindow {
             list: None,
             detail: None,
             form: None,
+            grid: None,
+            search_bar: None,
+            search_list: None,
+            search_results: None,
+            search_gen: 0,
             action_bar: None,
             actions: Vec::new(),
             selection: String::new(),
@@ -231,6 +295,11 @@ impl PluginPanelWindow {
         self.list = None;
         self.detail = None;
         self.form = None;
+        self.grid = None;
+        self.search_bar = None;
+        self.search_list = None;
+        self.search_results = None;
+        self.search_gen = 0;
         self.action_bar = None;
         self.actions = panel_actions.clone();
         self.selection = String::new();
@@ -330,6 +399,32 @@ impl PluginPanelWindow {
                 };
                 view.set_results(items.clone(), icons, cx);
                 self.list = Some(view);
+                if !self.actions.is_empty() {
+                    let list = self.list.as_ref().expect("list set").clone();
+                    let list_state = self.state.clone();
+                    let list_plugin = self.plugin_id.clone();
+                    // A list view's action bar targets the currently selected
+                    // row: on run, read the live selection and forward its
+                    // item id (if any) to `action.invoke`.
+                    let on_run: steward_ui_components::ActionRunCallback =
+                        Rc::new(move |action_id, _item_id, cx: &mut App| {
+                            let item_id = list.selected_item(cx).and_then(|item| match item {
+                                ResultItem::Plugin { item_id, .. } => Some(item_id),
+                                _ => None,
+                            });
+                            if list_state
+                                .borrow()
+                                .plugin_host
+                                .borrow_mut()
+                                .invoke_action(&list_plugin, &action_id, item_id.as_deref())
+                                .is_none()
+                            {
+                                eprintln!("[steward] plugin {list_plugin} not ready for action.invoke");
+                            }
+                        });
+                    self.action_bar =
+                        Some(ActionBar::new(self.actions.clone(), Some(on_run), cx));
+                }
             }
             PanelKind::Detail(data) => {
                 let action_state = self.state.clone();
@@ -375,6 +470,90 @@ impl PluginPanelWindow {
                 if !self.actions.is_empty() {
                     self.action_bar = Some(ActionBar::new(self.actions.clone(), None, cx));
                 }
+            }
+            PanelKind::Grid(data) => {
+                let grid_state = self.state.clone();
+                let grid_plugin = self.plugin_id.clone();
+                let grid_command = self.command.clone();
+                let on_select: steward_ui_components::GridSelectCallback =
+                    Rc::new(move |id: String, _cx: &mut App| {
+                        if grid_state
+                            .borrow()
+                            .plugin_host
+                            .borrow_mut()
+                            .invoke_item(&grid_plugin, &grid_command, &id)
+                            .is_none()
+                        {
+                            eprintln!("[steward] plugin {grid_plugin} not ready for item.invoke");
+                        }
+                    });
+                let view = GridView::new(data.clone(), Some(on_select), cx);
+                self.grid = Some(view);
+                if !self.actions.is_empty() {
+                    self.action_bar = Some(ActionBar::new(self.actions.clone(), None, cx));
+                }
+            }
+            PanelKind::Search => {
+                let search_state = self.state.clone();
+                let search_plugin = self.plugin_id.clone();
+                let search_command = self.command.clone();
+                let on_input: steward_ui_components::SearchInputCallback =
+                    Rc::new(move |query: String, _cx: &mut App| {
+                        let gen = {
+                            let s = search_state.borrow();
+                            let gen = s.search_gen.get() + 1;
+                            s.search_gen.set(gen);
+                            gen
+                        };
+                        if search_state
+                            .borrow()
+                            .plugin_host
+                            .borrow_mut()
+                            .invoke_search(gen, &search_plugin, &search_command, &query)
+                            .is_none()
+                        {
+                            eprintln!(
+                                "[steward] plugin {search_plugin} not ready for search.query"
+                            );
+                        }
+                    });
+                let placeholder = self.i18n.translate("search-placeholder");
+                let bar = SearchBar::new(placeholder, Some(on_input), None, cx);
+                self.search_bar = Some(bar);
+
+                let items_rc = Rc::new(RefCell::new(Vec::<ResultItem>::new()));
+                let host = self.state.borrow().plugin_host.clone();
+                let panel_command = self.command.clone();
+                let delegate = ResultListDelegate::new()
+                    .type_label(self.i18n.translate("command"))
+                    .on_confirm(move |index, _cx: &mut App| {
+                        let item = items_rc.borrow().get(index).cloned();
+                        if let Some(ResultItem::Plugin {
+                            plugin_id,
+                            item_id,
+                            command: item_command,
+                            ..
+                        }) = item
+                        {
+                            let cmd = if item_command.is_empty() {
+                                panel_command.as_str()
+                            } else {
+                                item_command.as_str()
+                            };
+                            if host
+                                .borrow_mut()
+                                .invoke_item(&plugin_id, cmd, &item_id)
+                                .is_none()
+                            {
+                                eprintln!(
+                                    "[steward] plugin {} is not ready for item.invoke",
+                                    plugin_id
+                                );
+                            }
+                        }
+                        false
+                    });
+                self.search_list = Some(ResultList::new(delegate, window, cx));
             }
         }
         self.kind = kind;
@@ -518,6 +697,38 @@ impl PluginPanelWindow {
         }
     }
 
+    /// The title bar's close button: parks the window back and removes it from
+    /// the registry (equivalent to Esc), so a plugin window can always be
+    /// dismissed.
+    fn close_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.clone();
+        let plugin_id = self.plugin_id.clone();
+        let command = self.command.clone();
+        div()
+            .id(ElementId::from("panel-close"))
+            .h(px(28.0))
+            .w(px(28.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgb(0xffffff).opacity(0.12))
+            .hover(|style| style.bg(rgb(palette::HOVER).opacity(0.05)))
+            .text_color(rgb(palette::MUTED_FOREGROUND))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                dock_panel_back(&state, &plugin_id, &command, cx);
+            }))
+            .child(
+                svg()
+                    .data(CLOSE_ICON_SVG)
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .text_color(rgb(palette::MUTED_FOREGROUND)),
+            )
+    }
+
     /// Keyboard handling: the detached widget owns the same selection /
     /// confirm keys as the launcher, plus Esc to dock it back.
     fn handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -561,6 +772,7 @@ impl PluginPanelWindow {
                 }
                 "enter" => {
                     if let Some(view) = self.list.as_ref() {
+                        view.ensure_selected(cx);
                         view.confirm_selected(window, cx);
                     }
                     cx.stop_propagation();
@@ -573,8 +785,9 @@ impl PluginPanelWindow {
                 }
                 _ => {}
             },
-            PanelKind::Detail(_) | PanelKind::Form(_) => {
-                // Escape docks the detached detail / form panel back into the
+            PanelKind::Detail(_) | PanelKind::Form(_) | PanelKind::Grid(_) | PanelKind::Search => {
+                // Escape docks the detached detail / form / grid / search panel
+                // back into the
                 // launcher; everything else is handled by the widgets.
                 if keystroke.key.as_str() == "escape" {
                     let (plugin_id, command) = (self.plugin_id.clone(), self.command.clone());
@@ -615,6 +828,40 @@ impl PluginPanelWindow {
         {
             eprintln!("[steward] plugin {plugin_id} not ready for item.invoke");
         }
+    }
+
+    /// Push a fresh `search.query` result into the search panel: drop stale
+    /// generations, store the view, and rebuild the result rows.
+    pub(crate) fn apply_search_result(
+        &mut self,
+        gen: u64,
+        result: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        if gen != self.state.borrow().search_gen.get() {
+            return;
+        }
+        self.search_results = Some(result.clone());
+        if let Some(list) = self.search_list.as_ref() {
+            let items = list_items(result, &self.plugin_id, &self.command);
+            let icons = {
+                let state = self.state.borrow();
+                items
+                    .iter()
+                    .map(|row| match row {
+                        ResultItem::Plugin { plugin_id, .. } => state
+                            .plugin_icons
+                            .borrow()
+                            .get(plugin_id)
+                            .cloned()
+                            .flatten(),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            list.set_results(items, icons, cx);
+        }
+        cx.notify();
     }
 }
 
@@ -735,6 +982,27 @@ pub(crate) fn focus_plugin_panel_window(
     }
 }
 
+/// Push a `search.query` result into an open search panel for `(plugin_id,
+/// command)`. No-op when no such panel is open (the launcher keeps the result
+/// in its shared search-results map instead).
+pub(crate) fn apply_search_result_to_panel(
+    state: &Rc<RefCell<LauncherState>>,
+    plugin_id: &str,
+    command: &str,
+    gen: u64,
+    result: &serde_json::Value,
+    cx: &mut App,
+) {
+    let Some(handle) = state.borrow().plugin_window(plugin_id, command) else {
+        return;
+    };
+    if let Some(panel) = handle.downcast::<PluginPanelWindow>() {
+        let _ = panel.update(cx, |panel, _window, cx| {
+            panel.apply_search_result(gen, result, cx);
+        });
+    }
+}
+
 /// Dock a detached plugin view back into the launcher: close the window, drop
 /// it from the registry, and re-render the launcher so the panel reappears.
 pub(crate) fn dock_panel_back(
@@ -809,19 +1077,17 @@ fn panel_height(kind: &PanelKind) -> f32 {
         PanelKind::Calendar(_) => CALENDAR_GRID_HEIGHT,
         PanelKind::List(items) => list_height(items.len()),
         PanelKind::Detail(_) | PanelKind::Form(_) => DETAIL_FORM_PANEL_HEIGHT,
+        PanelKind::Grid(_) => 320.0,
+        PanelKind::Search => 360.0,
     };
     let nav = if matches!(kind, PanelKind::Calendar(_)) {
         PANEL_NAV_HEIGHT
     } else {
         0.0
     };
-    // A detail/form panel reserves room for its action bar (32) plus padding.
-    let action_reserve = if matches!(kind, PanelKind::Detail(_) | PanelKind::Form(_)) {
-        32.0
-    } else {
-        0.0
-    };
-    content + action_reserve + PLUGIN_WIDGET_PADDING * 2.0 + PANEL_DRAG_HEIGHT + nav
+    // The title bar (drag strip + icon action bar + close button) sits above
+    // the content; the action bar no longer takes a separate footer row.
+    content + PLUGIN_WIDGET_PADDING * 2.0 + PANEL_TITLEBAR_HEIGHT + nav
 }
 
 /// Read the persisted detached-panel window size (`"<width> <height>"`),
@@ -862,7 +1128,7 @@ fn list_items(view: &serde_json::Value, plugin_id: &str, command: &str) -> Vec<R
             let subtitle = item
                 .get("subtitle")
                 .and_then(|value| value.as_str())
-                .unwrap_or(command)
+                .unwrap_or("")
                 .to_string();
             Some(ResultItem::Plugin {
                 plugin_id: plugin_id.to_string(),
@@ -897,6 +1163,12 @@ fn parse_panel_view(
     }
     if let Some(data) = parse_form_view(view) {
         return Some((PanelKind::Form(data), extract_actions(view)));
+    }
+    if let Some(data) = parse_grid_view(view) {
+        return Some((PanelKind::Grid(data), extract_actions(view)));
+    }
+    if is_search_view(view) {
+        return Some((PanelKind::Search, extract_actions(view)));
     }
     None
 }
@@ -1043,6 +1315,64 @@ fn parse_form_field(field: &serde_json::Value) -> Option<FormField> {
     })
 }
 
+/// Parse a plugin `grid` view into its display data.
+fn parse_grid_view(view: &serde_json::Value) -> Option<GridData> {
+    let view = unwrap_view(view);
+    if view.get("type").and_then(|kind| kind.as_str()) != Some("grid") {
+        return None;
+    }
+    let columns = view
+        .get("columns")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(4)
+        .clamp(1, 8) as usize;
+    let selected = view
+        .get("selectedId")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    let items = view
+        .get("items")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(GridItem {
+                        id: item.get("id")?.as_str()?.to_string(),
+                        title: item
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        subtitle: item
+                            .get("subtitle")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string()),
+                        icon: item
+                            .get("icon")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string()),
+                        badge: item
+                            .get("badge")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v.to_string()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(GridData {
+        columns,
+        items,
+        selected,
+    })
+}
+
+/// Whether a plugin view is a `search` view.
+fn is_search_view(view: &serde_json::Value) -> bool {
+    unwrap_view(view).get("type").and_then(|kind| kind.as_str()) == Some("search")
+}
+
 /// Extract the `actionPanel.actions` array from a view's JSON payload.
 fn extract_actions(view: &serde_json::Value) -> Vec<ActionRef> {
     let view = unwrap_view(view);
@@ -1111,7 +1441,7 @@ mod tests {
         assert!(matches!(
             &items[1],
             ResultItem::Plugin { item_id, title, subtitle, command, .. }
-                if item_id == "b" && title == "Beta" && subtitle == "cmd"
+                if item_id == "b" && title == "Beta" && subtitle.is_empty()
                     && command == "cmd"
         ));
     }

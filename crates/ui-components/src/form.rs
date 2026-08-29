@@ -10,6 +10,7 @@ use gpui::{
     div, prelude::*, px, rgb, App, AppContext, Context, ElementId, Entity, InteractiveElement,
     IntoElement, Render, StatefulInteractiveElement,
 };
+use gpui_component::ActiveTheme;
 
 use crate::palette;
 
@@ -100,6 +101,7 @@ impl Render for FormViewState {
             .unwrap_or_else(|| "Submit".to_string());
         let fields = self.data.fields.clone();
         let values = self.values.clone();
+        let accent = cx.theme().primary;
         div()
             .id(ElementId::from("form-view"))
             .flex()
@@ -132,7 +134,7 @@ impl Render for FormViewState {
                     .justify_center()
                     .rounded_full()
                     .cursor_pointer()
-                    .bg(rgb(palette::ACCENT))
+                    .bg(accent)
                     .text_color(rgb(0xffffff))
                     .text_sm()
                     .on_click(cx.listener(|this, _, _, cx| this.submit(cx)))
@@ -273,6 +275,7 @@ fn string_option(
     cx: &mut Context<FormViewState>,
 ) -> impl IntoElement {
     let option_id = opt.id.clone();
+    let accent = cx.theme().primary;
     div()
         .id(ElementId::from(format!(
             "form-option-{}-{option_id}",
@@ -286,9 +289,7 @@ fn string_option(
         .cursor_pointer()
         .border_1()
         .border_color(rgb(0xffffff).opacity(0.12))
-        .when(selected, |this| {
-            this.bg(rgb(palette::ACCENT)).text_color(rgb(0xffffff))
-        })
+        .when(selected, |this| this.bg(accent).text_color(rgb(0xffffff)))
         .when(!selected, |this| {
             this.text_color(rgb(palette::MUTED_FOREGROUND))
         })
