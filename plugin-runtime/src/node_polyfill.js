@@ -952,6 +952,19 @@
   });
   if (global.steward) {
     global.steward.fs = { readFile: fsModule.readFile, writeFile: fsModule.writeFile };
+    global.steward.net = {
+      request: function (options) {
+        var o = options || {};
+        return hostRequest("host.net.request", {
+          method: String(o.method || "GET"),
+          url: String(o.url || ""),
+          headers: o.headers || {},
+          body: o.body === undefined || o.body === null ? "" : String(o.body),
+          timeout_ms: o.timeoutMs === undefined ? 5000 : Number(o.timeoutMs),
+          max_bytes: o.maxBytes === undefined ? 8 * 1024 * 1024 : Number(o.maxBytes),
+        });
+      },
+    };
   }
 
   /* Remaining network/native modules the runtime cannot back in this phase. */

@@ -293,6 +293,7 @@ impl Permission {
                 | Self::OpenPath
                 | Self::FsRead
                 | Self::FsWrite
+                | Self::Network
         )
     }
 }
@@ -528,14 +529,25 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_permissions_are_rejected() {
-        let mut manifest = calendar();
-        manifest.permissions = vec![Permission::Network];
-        let error = manifest.validate().unwrap_err();
-        assert!(
-            error.0.contains("not supported in M3"),
-            "unexpected error: {error}"
-        );
+    fn all_permissions_are_supported() {
+        for permission in [
+            Permission::ClipboardRead,
+            Permission::ClipboardWrite,
+            Permission::ClipboardHistory,
+            Permission::OpenUrl,
+            Permission::OpenPath,
+            Permission::FsRead,
+            Permission::FsWrite,
+            Permission::Network,
+        ] {
+            assert!(
+                permission.supported_in_m3(),
+                "{permission} should be supported in M3"
+            );
+            let mut manifest = calendar();
+            manifest.permissions = vec![permission];
+            manifest.validate().unwrap();
+        }
     }
 
     #[test]

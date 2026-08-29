@@ -53,9 +53,8 @@
 ## permissions（白名单枚举，M3 扩展）
 
 `clipboard.read` / `clipboard.write` / `clipboard.history` / `open.url` /
-`open.path` / `fs.read` / `fs.write`；`network` 目前被识别但 **扫描阶段整体拒绝**
-（文案为 `not supported in M3`）。主进程按声明开放对应 host function，未声明恒抛
-`permission denied`。
+`open.path` / `fs.read` / `fs.write` / `network`。主进程按声明开放对应 host function，
+未声明恒抛 `permission denied`。
 
 - `open.url`：打开 URL（默认浏览器）。
 - `open.path`：打开文件 / 文件夹 / `shell:`、`.lnk` 目标（OS `open` verb）。
@@ -63,3 +62,5 @@
   `canonicalize` 后做前缀沙箱，越界或空 roots 一律拒绝；单文件上限 4 MiB。
 - `fs.write`：写入磁盘文件，同样受 `fs_roots` 沙箱约束（目标父目录需已存在，可建在
   roots 内）；`data` 可为 utf8 字符串或 `base64: true` 的 base64 文本；上限 4 MiB。
+- `network`：出站 HTTP(S) 请求（`net.request`）；宿主强制 `http/https`、超时上限 30s、
+  回应体上限（默认 8 MiB，最大 64 MiB）。

@@ -177,6 +177,9 @@ interface HostBridge {
     readFile(path: string, encoding?: "utf8" | "base64"): Promise<string | Uint8Array>;
     writeFile(path: string, data: string | Uint8Array, encoding?: "utf8" | "base64"): Promise<void>;
   };
+  net: {
+    request(options: NetRequestOptions): Promise<NetResponse>;
+  };
   /** Per-plugin local key-value storage (file-backed, sandboxed). */
   storage: {
     get(key: string): string | null;
@@ -265,6 +268,28 @@ export const fs = {
     encoding: "utf8" | "base64" = "utf8",
   ): Promise<void> {
     return hostBridge().fs.writeFile(path, data, encoding);
+  },
+};
+
+export interface NetRequestOptions {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+  url: string;
+  headers?: Record<string, string>;
+  body?: string;
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+export interface NetResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** Make an HTTP(S) request on the host (requires the `network` permission). */
+export const net = {
+  request(options: NetRequestOptions): Promise<NetResponse> {
+    return hostBridge().net.request(options);
   },
 };
 

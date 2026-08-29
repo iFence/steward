@@ -487,3 +487,26 @@ steward/
   `cargo test -p steward-plugin-runtime --lib`（含新并行/一致性/超时用例，除既有
   storage 沙箱路径测试）；`cargo test -p steward-plugin-registry --lib`、`tsc --noEmit`、
   esbuild 构建全绿。
+
+### 2026-08-29（P0-1 阶段 B2：net.request + network 权限）
+
+- 补齐 `net.request`：新增 runtime→host `host.net.request`
+  （`{ pending_id, plugin_id, method, url, headers, body, timeout_ms, max_bytes }`
+  → `{ status, headers, body }`），复用既有跨进程 park/resume。
+- 依赖：引入 `ureq`（同步、轻量、rustls，`[workspace.dependencies]` + `plugin-host`；
+  需联网 `cargo fetch`）。宿主在沙箱外拉取成功（`ureq v2.12.1`，仅新增 3 个包，其余
+  rustls/webpki 已存在于锁）。
+- 宿主 `host_net_request`：权限校验 → 仅 `http/https` → ureq 超时（100ms..30s）→
+  `headers`/`body` 透传 → 4xx/5xx 也作为正常响应返回（插件可检查）→ 回应体上限
+  （默认 8 MiB，`into_string` 后按 `max_bytes` 校验）。`ureq::Response` 无公开
+  `headers()`，用 `headers_names()` + `all(name)` 拼接。
+- manifest：`network` 纳入 M3 支持（`supported_in_m3`），`unknown permission` 仍按
+  `clipboard.erase` 这类未知变体在扫描时失败。SDK 新增 `net.request(options)`
+  （`NetRequestOptions`/`NetResponse`）。
+- 边界：`network` 能力默认零权限；宿主只信任 `http/https`；回应体上限防内存膨胀。
+- 验证：runtime 新增 `await_net_request_parks_and_resumes`、
+  `net_request_without_permission_rejects_immediately`；`cargo fmt --check` /
+  `cargo clippy -D warnings` / `cargo test -p steward-plugin-runtime --lib`（32 用例，
+  新增 2 个 net 用例）、`cargo test -p steward-plugin-registry --lib`
+  （`all_permissions_are_supported` 取代原 `unimplemented_permissions_are_rejected`）；
+  `tsc --noEmit`、esbuild 构建全绿。

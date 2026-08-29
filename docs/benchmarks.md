@@ -87,5 +87,6 @@
 host 回复若 isolate 已被 kill/驱逐则被丢弃。
 
 > 说明：该异步链路的正确性已由 `plugin-runtime` 的 park/resume、并行 `Promise.all`、
-> kill/驱逐一致性、parked 超时等单元用例保障；整机延迟/内存影响待 `net.request`
-> 落地后随 `scripts/bench.sh` 一起在 release 机器上回填。
+> kill/驱逐一致性、parked 超时等单元用例保障；`net.request` 已随 `ureq` 落地
+> （宿主强制 http/https + 超时 + 回应体上限）。整机延迟/内存影响仍待
+> `scripts/bench.sh` 在 release 机器上回填。

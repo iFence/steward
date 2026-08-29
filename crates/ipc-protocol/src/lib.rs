@@ -205,6 +205,11 @@ pub mod method {
     /// to the plugin's `fs_roots`; `base64` decodes `data` from base64 before
     /// writing (binary files).
     pub const HOST_FS_WRITE: &str = "host.fs.write";
+    /// Runtime -> main process *request*: make an HTTP(S) request on the host.
+    /// Params: `{ pending_id, plugin_id, method, url, headers, body,
+    /// timeout_ms, max_bytes }`; result: `{ status, headers, body }`. Gated by
+    /// the `network` permission; the host enforces http/https only.
+    pub const HOST_NET_REQUEST: &str = "host.net.request";
 }
 
 /// Whether a method is a runtime-initiated request to the host (as opposed to

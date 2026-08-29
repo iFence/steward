@@ -621,6 +621,7 @@ impl PluginHost {
         let response = match request.method.as_str() {
             method::HOST_FS_READ => self.host_fs_read(&request),
             method::HOST_FS_WRITE => self.host_fs_write(&request),
+            method::HOST_NET_REQUEST => self.host_net_request(&request),
             _ => Response::error(
                 request.id,
                 RpcError::new(
@@ -824,6 +825,112 @@ impl PluginHost {
                 RpcError::new(code::INTERNAL_ERROR, format!("fs.write failed: {error}")),
             ),
         }
+    }
+
+    /// Make an HTTP(S) request on behalf of a plugin with the `network`
+    /// permission. Only http/https URLs are allowed; the response body is
+    /// capped and the request timeout is bounded.
+    fn host_net_request(&mut self, request: &Request) -> Response {
+        const DEFAULT_TIMEOUT_MS: u64 = 5000;
+        const DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+        let params = &request.params;
+        let Some(plugin_id) = params.get("plugin_id").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INVALID_PARAMS,
+                    "host.net.request: plugin_id is required",
+                ),
+            );
+        };
+        let Some(url) = params.get("url").and_then(Value::as_str) else {
+            return Response::error(
+                request.id,
+                RpcError::new(code::INVALID_PARAMS, "host.net.request: url is required"),
+            );
+        };
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INVALID_PARAMS,
+                    "host.net.request: only http/https URLs are allowed",
+                ),
+            );
+        }
+        if !self.plugin_has_permission(plugin_id, Permission::Network) {
+            return Response::error(
+                request.id,
+                RpcError::new(code::PERMISSION_DENIED, "permission denied: network"),
+            );
+        }
+        let method = params
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("GET")
+            .to_uppercase();
+        let timeout_ms = params
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(100, 30_000);
+        let max_bytes = params
+            .get("max_bytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_MAX_BYTES)
+            .clamp(1024, 64 * 1024 * 1024);
+
+        let mut builder = ureq::AgentBuilder::new()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .request(&method, url);
+        if let Some(headers) = params.get("headers").and_then(Value::as_object) {
+            for (name, value) in headers {
+                if let Some(value) = value.as_str() {
+                    builder = builder.set(name.as_str(), value);
+                }
+            }
+        }
+        let response = if let Some(body) = params.get("body").and_then(Value::as_str) {
+            builder.send_string(body)
+        } else {
+            builder.call()
+        };
+        let response = match response {
+            Ok(response) => response,
+            // HTTP error statuses (4xx/5xx) are still legitimate responses the
+            // plugin may want to inspect; only transport failures are errors.
+            Err(ureq::Error::Status(_, response)) => response,
+            Err(ureq::Error::Transport(error)) => {
+                return Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        format!("network request failed: {error}"),
+                    ),
+                );
+            }
+        };
+        let status = response.status() as u64;
+        let mut headers = serde_json::Map::new();
+        for name in response.headers_names() {
+            let values = response.all(&name).join(", ");
+            headers.insert(name, serde_json::Value::String(values));
+        }
+        let body = response.into_string().unwrap_or_default();
+        if body.len() as u64 > max_bytes {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::INTERNAL_ERROR,
+                    "network response exceeds the size limit",
+                ),
+            );
+        }
+        Response::ok(
+            request.id,
+            serde_json::json!({ "status": status, "headers": headers, "body": body }),
+        )
     }
 
     fn plugin_has_permission(&self, plugin_id: &str, permission: Permission) -> bool {

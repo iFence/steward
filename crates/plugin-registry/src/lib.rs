@@ -557,19 +557,19 @@ mod tests {
                 "id": "com.test.bad",
                 "name": "Bad",
                 "version": "1.0.0",
-                "commands": [
-                    { "name": "cmd", "title": "Command", "trigger": { "type": "prefix", "value": "x" } }
-                ],
-                "permissions": ["network"],
-                "isolation": "shared-pool"
-            }"#,
+            "commands": [
+                { "name": "cmd", "title": "Command", "trigger": { "type": "prefix", "value": "x" } }
+            ],
+            "permissions": ["clipboard.erase"],
+            "isolation": "shared-pool"
+        }"#,
         )
         .unwrap();
 
         let report = registry.scan().unwrap();
         assert_eq!(report.inserted, 1);
         assert_eq!(report.failed.len(), 1);
-        assert!(report.failed[0].contains("not supported in M3"));
+        assert!(report.failed[0].contains("com.test.bad"));
         let cached = registry.cached_plugins().unwrap();
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].manifest.id, "com.test.alpha");

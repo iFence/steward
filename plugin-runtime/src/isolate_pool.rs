@@ -879,6 +879,7 @@ fn install_host_bridge<'js>(
     let can_open_path = permissions.contains(&Permission::OpenPath);
     let can_fs_read = permissions.contains(&Permission::FsRead);
     let can_fs_write = permissions.contains(&Permission::FsWrite);
+    let can_network = permissions.contains(&Permission::Network);
 
     let clipboard = Object::new(ctx.clone())?;
     clipboard.set(
@@ -1082,6 +1083,12 @@ fn install_host_bridge<'js>(
                     return Err(Exception::throw_message(
                         &ctx,
                         "Steward permission denied: fs.write",
+                    ));
+                }
+                if method == method::HOST_NET_REQUEST && !can_network {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "Steward permission denied: network",
                     ));
                 }
                 let params = js_value_to_json(&ctx, &params).unwrap_or(Json::Null);
@@ -2014,5 +2021,76 @@ mod tests {
         // The isolate was killed and its bookkeeping cleared.
         assert_eq!(pool.active_count(), 0);
         assert!(!pool.is_parked(id));
+    }
+
+    #[test]
+    fn await_net_request_parks_and_resumes() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    var res = await steward.net.request({ url: "https://x.test", method: "GET" });
+                    return { type: "list", items: [{ id: "1", title: res.body }] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&["network"])).unwrap();
+
+        assert_eq!(
+            pool.invoke_command(id, "echo", &Json::Null, 1000)
+                .unwrap_err(),
+            InvokeError::Pending
+        );
+        let requests = pool.drain_outbound(id);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, method::HOST_NET_REQUEST);
+        assert_eq!(requests[0].params["url"], "https://x.test");
+        assert_eq!(requests[0].params["method"], "GET");
+
+        let original = Request::new(6, method::COMMAND_INVOKE, Json::Null);
+        pool.park_invocation(id, original);
+        let outcome = pool.handle_host_response(Response::ok(
+            requests[0].id,
+            serde_json::json!({ "status": 200, "headers": {}, "body": "ok" }),
+        ));
+        let ResumeOutcome::Reply(response) = outcome else {
+            panic!("expected the parked command to settle, got {outcome:?}");
+        };
+        assert_eq!(response.id, 6);
+        assert_eq!(
+            response.result.as_ref().unwrap()["view"]["items"][0]["title"],
+            "ok"
+        );
+        assert!(!pool.is_parked(id));
+    }
+
+    #[test]
+    fn net_request_without_permission_rejects_immediately() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                async function command(name, input) {
+                    await steward.net.request({ url: "https://x.test" });
+                    return { type: "list", items: [] };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let error = pool
+            .invoke_command(id, "echo", &Json::Null, 1000)
+            .unwrap_err();
+        assert!(
+            matches!(&error, InvokeError::PermissionDenied(message) if message.contains("network")),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(pool.active_count(), 1);
     }
 }
