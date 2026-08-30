@@ -2,16 +2,16 @@
 //! `calendar` view (M2 extension to the plugin view contract).
 //!
 //! The grid is a plain stacked layout like the results list: one header row,
-//! one weekday row and six 7-cell week rows, with a left rail labelling each
-//! row's ISO week number. Day cells are individually clickable; the app owns
-//! keyboard navigation and confirmation, so this component only reports
-//! clicks and highlights the currently selected date.
+//! one weekday row and one 7-cell week row per week the month spans, with a
+//! left rail labelling each row's ISO week number. Day cells are individually
+//! clickable; the app owns keyboard navigation and confirmation, so this
+//! component only reports clicks and highlights the currently selected date.
 
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, rgb, svg, App, AppContext, Context, ElementId, Entity,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    div, prelude::FluentBuilder as _, px, svg, App, AppContext, Context, ElementId, Entity, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _,
 };
 use gpui_component::ActiveTheme;
@@ -49,26 +49,28 @@ pub struct CalendarData {
 /// Callback fired when a day is clicked: the day's ISO date.
 pub type CalendarSelectCallback = Rc<dyn Fn(String, &mut App)>;
 
-/// Grid metrics (logical px); the app uses [`CALENDAR_GRID_HEIGHT`] to size
-/// the launcher window when a calendar view is active.
+/// Grid metrics (logical px); the app sizes the launcher window through
+/// [`calendar_grid_height`] once it knows the month's row count.
 pub const CALENDAR_HEADER_HEIGHT: f32 = 34.0;
 pub const CALENDAR_WEEKDAY_HEIGHT: f32 = 26.0;
 pub const CALENDAR_ROW_HEIGHT: f32 = 52.0;
-pub const CALENDAR_ROWS: usize = 6;
 /// Fixed width of the left week-number rail (logical px).
 pub const CALENDAR_WEEK_COLUMN_WIDTH: f32 = 38.0;
 /// Card chrome around the grid: a 1px hairline border and vertical padding.
 pub const CALENDAR_CARD_BORDER: f32 = 1.0;
 pub const CALENDAR_CARD_PADDING_Y: f32 = 4.0;
 pub const CALENDAR_CARD_PADDING_X: f32 = 6.0;
-/// Total outer height of the calendar card: chrome + header + weekday row +
-/// the six week rows. GPUI lays out with a border-box model, so pinning both
-/// the card and the launcher window to this value fits the grid exactly.
-pub const CALENDAR_GRID_HEIGHT: f32 = CALENDAR_CARD_BORDER * 2.0
-    + CALENDAR_CARD_PADDING_Y * 2.0
-    + CALENDAR_HEADER_HEIGHT
-    + CALENDAR_WEEKDAY_HEIGHT
-    + CALENDAR_ROWS as f32 * CALENDAR_ROW_HEIGHT;
+/// Total outer height of the calendar card for `rows` week rows: chrome +
+/// header + weekday row + `rows * CALENDAR_ROW_HEIGHT`. GPUI lays out with a
+/// border-box model, so pinning both the card and the launcher window to this
+/// value fits the grid exactly.
+pub fn calendar_grid_height(rows: usize) -> f32 {
+    CALENDAR_CARD_BORDER * 2.0
+        + CALENDAR_CARD_PADDING_Y * 2.0
+        + CALENDAR_HEADER_HEIGHT
+        + CALENDAR_WEEKDAY_HEIGHT
+        + rows as f32 * CALENDAR_ROW_HEIGHT
+}
 
 /// Whether `year` is a leap year in the proleptic Gregorian calendar.
 fn is_leap_year(year: i32) -> bool {
@@ -164,17 +166,24 @@ fn leading_blanks(year: i32, month: u32, start_of_week: u8) -> usize {
     ((weekday + 7 - (start_of_week % 7) as u32) % 7) as usize
 }
 
-/// The month laid out as a 7-column grid of `CALENDAR_ROWS * 7` cells,
-/// padded with `None` blanks before the first and after the last day.
+/// The number of week rows a month occupies in the 7-column grid: the leading
+/// blanks plus the month's days split into rows of seven, rounded up. Always
+/// 4..=6 — the smallest month (February in a common year starting Monday)
+/// fits in four rows, and a 31-day month starting late in the week needs six.
+pub fn month_week_rows(year: i32, month: u32, start_of_week: u8) -> usize {
+    let cells = leading_blanks(year, month, start_of_week) + days_in_month(year, month) as usize;
+    cells.div_ceil(7)
+}
+
+/// The month laid out as a 7-column grid of
+/// `month_week_rows(year, month, start_of_week) * 7` cells, padded with `None`
+/// blanks before the first day and after the last (so every row is a full week).
 pub fn month_grid(year: i32, month: u32, start_of_week: u8) -> Vec<Option<u32>> {
     let days = days_in_month(year, month);
     let leading = leading_blanks(year, month, start_of_week);
     let mut cells = vec![None; leading];
     cells.extend((1..=days).map(Some));
-    while cells.len() < CALENDAR_ROWS * 7 {
-        cells.push(None);
-    }
-    cells.truncate(CALENDAR_ROWS * 7);
+    cells.resize(month_week_rows(year, month, start_of_week) * 7, None);
     cells
 }
 
@@ -211,17 +220,17 @@ pub struct CalendarViewState {
 }
 
 impl CalendarViewState {
-    /// The height of each of the six week rows, derived from the card's
-    /// `max_height` so the grid scales with the window: the header and weekday
-    /// rows stay fixed and the remaining height is split across the rows. The
-    /// floor keeps the geometry valid at very small sizes; the launcher's fixed
-    /// height still yields [`CALENDAR_ROW_HEIGHT`] per row.
+    /// The height of each week row, derived from the card's `max_height` so the
+    /// grid scales with the window: the header and weekday rows stay fixed and
+    /// the remaining height is split across the month's rows. The floor keeps
+    /// the geometry valid at very small sizes; the launcher's fixed height
+    /// still yields [`CALENDAR_ROW_HEIGHT`] per row.
     fn row_height(&self) -> f32 {
         let fixed = CALENDAR_CARD_BORDER * 2.0
             + CALENDAR_CARD_PADDING_Y * 2.0
             + CALENDAR_HEADER_HEIGHT
             + CALENDAR_WEEKDAY_HEIGHT;
-        let rows = CALENDAR_ROWS as f32;
+        let rows = month_week_rows(self.data.year, self.data.month, self.data.start_of_week) as f32;
         ((self.max_height - fixed) / rows).max(1.0)
     }
 }
@@ -239,7 +248,18 @@ impl Render for CalendarViewState {
         // size so a larger widget spreads out instead of rendering giant text.
         let day_font = 14.0;
         let lunar_font = 10.0;
-        let accent = cx.theme().primary;
+        let (accent, foreground, muted_foreground, background_alt) = {
+            let theme = cx.theme();
+            (
+                theme.primary,
+                theme.foreground,
+                theme.muted_foreground,
+                theme.muted,
+            )
+        };
+        // Hairlines keep the frosted look documented in palette.rs: a faint
+        // wash of the theme's foreground rather than the opaque border token.
+        let hairline = foreground.opacity(0.06);
 
         let header = div()
             .id(ElementId::from("cal-header"))
@@ -249,7 +269,7 @@ impl Render for CalendarViewState {
             .items_center()
             .justify_between()
             .px_3()
-            .text_color(rgb(crate::palette::FOREGROUND))
+            .text_color(foreground)
             .text_sm()
             .child(div().flex_1().child(self.month_label.clone()));
         let header = if detachable {
@@ -266,7 +286,7 @@ impl Render for CalendarViewState {
             .flex_row()
             // Blank rail cell keeps the weekday labels aligned with the day
             // columns below.
-            .child(week_rail_cell(None));
+            .child(week_rail_cell(None, muted_foreground, hairline));
         let weekday_row = self.weekday_labels.iter().fold(weekday_row, |row, label| {
             row.child(
                 div()
@@ -274,7 +294,7 @@ impl Render for CalendarViewState {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                    .text_color(muted_foreground)
                     .text_size(px(11.0))
                     .child(label.to_owned()),
             )
@@ -289,7 +309,11 @@ impl Render for CalendarViewState {
                 .h(px(row_height))
                 .flex()
                 .flex_row()
-                .child(week_rail_cell(Some((week_number, week_index))));
+                .child(week_rail_cell(
+                    Some((week_number, week_index)),
+                    muted_foreground,
+                    hairline,
+                ));
             for day in week {
                 let cell = match day {
                     Some(day) => {
@@ -308,23 +332,15 @@ impl Render for CalendarViewState {
                             .justify_center()
                             .rounded_full()
                             .mx(px(2.0))
-                            .text_color(if is_today {
-                                accent
-                            } else {
-                                Hsla::from(rgb(crate::palette::FOREGROUND))
-                            })
+                            .text_color(if is_today { accent } else { foreground })
                             .text_size(px(day_font))
                             .cursor_pointer()
-                            .when(is_selected, |this| {
-                                this.bg(rgb(crate::palette::SELECTION).opacity(0.14))
-                            })
+                            .when(is_selected, |this| this.bg(foreground.opacity(0.14)))
                             .when(!is_selected && is_today, |this| {
                                 this.bg(accent.opacity(0.18))
                             })
                             .when(!is_selected, |this| {
-                                this.hover(|style| {
-                                    style.bg(rgb(crate::palette::HOVER).opacity(0.05))
-                                })
+                                this.hover(|style| style.bg(foreground.opacity(0.05)))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(cb) = this.on_select.clone() {
@@ -341,7 +357,7 @@ impl Render for CalendarViewState {
                                         .text_color(if info.highlighted() {
                                             accent
                                         } else {
-                                            Hsla::from(rgb(crate::palette::MUTED_FOREGROUND))
+                                            muted_foreground
                                         })
                                         .child(info.label().to_string()),
                                 )
@@ -368,8 +384,8 @@ impl Render for CalendarViewState {
             .flex_col()
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0xffffff).opacity(0.08))
-            .bg(rgb(crate::palette::BACKGROUND_ALT).opacity(0.35))
+            .border_color(foreground.opacity(0.08))
+            .bg(background_alt.opacity(0.35))
             .px(px(CALENDAR_CARD_PADDING_X))
             .py(px(CALENDAR_CARD_PADDING_Y))
             .child(header)
@@ -381,7 +397,11 @@ impl Render for CalendarViewState {
 /// The fixed-width left rail cell: a week-number label in week rows, or a
 /// blank spacer in the weekday header that keeps the day columns aligned. A
 /// hairline separates the rail from the day grid.
-fn week_rail_cell(week: Option<(String, usize)>) -> impl IntoElement {
+fn week_rail_cell(
+    week: Option<(String, usize)>,
+    muted_foreground: Hsla,
+    hairline: Hsla,
+) -> impl IntoElement {
     let cell = div()
         .w(px(CALENDAR_WEEK_COLUMN_WIDTH))
         .h_full()
@@ -389,11 +409,11 @@ fn week_rail_cell(week: Option<(String, usize)>) -> impl IntoElement {
         .items_center()
         .justify_center()
         .border_r_1()
-        .border_color(rgb(0xffffff).opacity(0.06));
+        .border_color(hairline);
     match week {
         Some((label, row)) => cell
             .id(ElementId::from(format!("cal-week-number-{row}")))
-            .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+            .text_color(muted_foreground)
             .text_size(px(11.0))
             .child(label),
         None => cell.id(ElementId::from("cal-week-rail-spacer")),
@@ -407,7 +427,10 @@ fn week_rail_cell(week: Option<(String, usize)>) -> impl IntoElement {
 /// (pinned) / "dock back" (unpinned). Pinned and unpinned share the Lucide
 /// pushpin glyph; the accent tint marks the pinned state.
 fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoElement {
-    let accent = cx.theme().primary;
+    let (accent, muted_foreground, foreground) = {
+        let theme = cx.theme();
+        (theme.primary, theme.muted_foreground, theme.foreground)
+    };
     div()
         .id(ElementId::from("cal-pin-toggle"))
         .flex()
@@ -421,11 +444,11 @@ fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoEle
         .border_color(if pinned {
             accent.opacity(0.55)
         } else {
-            Hsla::from(rgb(0xffffff)).opacity(0.08)
+            foreground.opacity(0.08)
         })
         .when(pinned, |this| this.bg(accent.opacity(0.16)))
         .when(!pinned, |this| {
-            this.hover(|style| style.bg(rgb(crate::palette::HOVER).opacity(0.05)))
+            this.hover(|style| style.bg(foreground.opacity(0.05)))
         })
         .on_click(cx.listener(|this, _, _, cx| {
             let pinned = !this.pinned;
@@ -440,11 +463,7 @@ fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoEle
                 .data(PIN_ICON_SVG)
                 .w(px(14.0))
                 .h(px(14.0))
-                .text_color(if pinned {
-                    accent
-                } else {
-                    Hsla::from(rgb(crate::palette::MUTED_FOREGROUND))
-                }),
+                .text_color(if pinned { accent } else { muted_foreground }),
         )
 }
 
@@ -477,7 +496,7 @@ impl CalendarView {
             on_toggle_pin,
             pinned: false,
             detachable: true,
-            max_height: CALENDAR_GRID_HEIGHT,
+            max_height: calendar_grid_height(month_week_rows(1970, 1, 1)),
         });
         Self { state }
     }
@@ -544,12 +563,23 @@ mod tests {
         // 2026-08-01 is a Saturday; Monday-first -> 5 leading blanks, 31 days,
         // 42 cells total.
         let cells = month_grid(2026, 8, 1);
-        assert_eq!(cells.len(), CALENDAR_ROWS * 7);
+        assert_eq!(month_week_rows(2026, 8, 1), 6);
+        assert_eq!(cells.len(), month_week_rows(2026, 8, 1) * 7);
         assert_eq!(cells.iter().filter(|c| c.is_some()).count(), 31);
         assert!(cells.iter().take(5).all(Option::is_none));
         assert_eq!(cells[5], Some(1));
         assert_eq!(cells[5 + 30], Some(31));
         assert!(cells[36..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn month_week_rows_counts_only_actual_weeks() {
+        // August 2026 (Monday-first) needs six rows; February 2026 five; and a
+        // 28-day February starting on Monday (2027-02) fits in four.
+        assert_eq!(month_week_rows(2026, 8, 1), 6);
+        assert_eq!(month_week_rows(2026, 8, 0), 6);
+        assert_eq!(month_week_rows(2026, 2, 1), 5);
+        assert_eq!(month_week_rows(2027, 2, 1), 4);
     }
 
     #[test]

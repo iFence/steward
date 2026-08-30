@@ -344,7 +344,7 @@ steward/
 
 - 能力定位：把「视图弹出为独立窗口」做成插件级可扩展能力，而不是耦合到 calendar 插件。插件在 manifest 的 `commands[].detachable: true` 声明某命令的视图可弹出；宿主提供通用「弹出 / 移回」机制与通用独立窗口宿主，calendar 是第一个启用者（`packages/plugins/calendar/plugin.json` 设置 `detachable: true`）。
 - 契约与类型：`PluginCommand` 新增 `#[serde(default)] detachable: bool`（默认 false，序列化省略，`deny_unknown_fields` 下向后兼容）；`RouteHit` 新增 `detachable: bool`，由路由构建时从 `command.detachable` 填入。`extension-api` 的 `View`/`PluginModule` 与 `plugin-runtime` 不变。
-- 通用窗口宿主：`plugin_panel_window.rs` 的 `PluginPanelWindow` 按 `view["type"]` 分发渲染——`calendar` 复用 `CalendarView`（点击日期 / 方向键 / Enter 走 `item.invoke`），`list` 复用 `ResultList`/`ResultItem::Plugin`（行确认走 `item.invoke`）。窗口为无边框、始终置顶、无任务栏、不可缩放的 `WindowKind::PopUp`，尺寸按视图类型推导（日历用 `CALENDAR_GRID_HEIGHT`，列表按行数）。
+- 通用窗口宿主：`plugin_panel_window.rs` 的 `PluginPanelWindow` 按 `view["type"]` 分发渲染——`calendar` 复用 `CalendarView`（点击日期 / 方向键 / Enter 走 `item.invoke`），`list` 复用 `ResultList`/`ResultItem::Plugin`（行确认走 `item.invoke`）。窗口为无边框、始终置顶、无任务栏、不可缩放的 `WindowKind::PopUp`，尺寸按视图类型推导（日历用 `calendar_grid_height(month_week_rows(...))`，列表按行数）。
 - 通用注册表：`LauncherState.panel_view_windows: HashMap<(plugin_id, command), AnyWindowHandle>` 取代原先的 `calendar_pinned`/单窗口思路；同命令只保留一个独立窗口，重复弹出仅聚焦已有窗口。`on_window_closed` 按 `window_id` 比对并清理，触发移回。
 - 与启动器解耦：删除 `calendar_pinned` 对启动器失焦 / 前台切换隐显的豁免（`observe_window_activation`、foreground-watch 均不再因日历保持启动器），并移除 `toggle_launcher` 隐藏分支对该位的清零；独立窗口不受全局唤醒热键影响，主面板可继续搜索使用。
 - 弹出 / 移回：日历内嵌网格头部的图钉按钮语义改为「弹出」（仅 manifest `detachable` 时显示，`CalendarView` 新增 `detachable` 门控）；detachable `list` 视图在启动器结果头部显示通用「弹出」按钮（`external-link` 图标，仅在恰有一个可弹出 list 面板时出现，避免歧义）。关闭 / Esc / 点击已弹出态按钮触发 `dock_panel_back`，把视图交还启动器主面板。
@@ -472,6 +472,12 @@ steward/
   `cargo clippy -D warnings` / `cargo test -p steward-plugin-registry`（含
   `fs_write_permission_is_accepted`）、`cargo test -p steward-plugin-runtime --lib`；
   `tsc --noEmit`、esbuild 构建全绿。
+
+### 2026-08-29（日历视图：主题色跟随 + 周数按实际显示）
+
+- 主题一致性：日历视图所有颜色从硬编码 `palette::*` 常量与固定白色低透明度描边，改为读取全局主题 token（`cx.theme()` 的 `foreground` / `muted_foreground` / `muted` / `primary`），因此设置页所选主题色实时作用于月历网格（今天/选中高亮、天数、星期名、`Wn`、农历、卡片背景与细边框）。外观保持不变：`apply_steward_theme` 已把对应 token 映射为原 `palette` 常量。
+- 周数按实际显示：新增 `month_week_rows(year, month, start_of_week)`（值为 4–6）= `ceil((前导空白 + 当月天数) / 7)`，`month_grid` 只生成实际行数；`CALENDAR_ROWS` / `CALENDAR_GRID_HEIGHT` 两个常量由 `month_week_rows(...)` / `calendar_grid_height(rows)` 取代。左侧 `Wn` 只显示当月实际占用的周行，启动器 `calendar_height(&data)`、日历卡片高度与 detached 面板 `panel_height` 均按实际行数同步收缩。
+- 验证：`cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` 全绿。
 
 ### 2026-08-29（P0-1 阶段 C：并行 pending + kill/驱逐一致性 + parked 超时）
 

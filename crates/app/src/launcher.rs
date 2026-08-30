@@ -22,8 +22,8 @@ use gpui_component::ActiveTheme;
 use steward_plugin_host::{PluginHost, RouteHit};
 use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
 use steward_ui_components::{
-    days_in_month, iso_date, CalendarData, CalendarView, ResultItem, ResultList,
-    CALENDAR_GRID_HEIGHT,
+    calendar_grid_height, days_in_month, iso_date, month_week_rows, CalendarData, CalendarView,
+    ResultItem, ResultList,
 };
 
 use crate::config::{
@@ -64,9 +64,11 @@ fn launcher_height(result_count: usize) -> f32 {
 }
 
 /// Total launcher window height when a plugin calendar view is active: the
-/// input bar plus the month grid (no results list).
-fn calendar_height() -> f32 {
-    LAUNCHER_HEIGHT + 2.0 * LAUNCHER_MARGIN + CALENDAR_GRID_HEIGHT
+/// input bar plus the month grid sized to the month's actual week rows (no
+/// results list).
+fn calendar_height(data: &CalendarData) -> f32 {
+    let rows = month_week_rows(data.year, data.month, data.start_of_week);
+    LAUNCHER_HEIGHT + 2.0 * LAUNCHER_MARGIN + calendar_grid_height(rows)
 }
 
 /// A plugin `calendar` view currently displayed in the launcher, plus the
@@ -242,11 +244,13 @@ impl LauncherState {
     /// Total launcher window height for the current result count: the input
     /// bar plus the result drop-down.
     pub(crate) fn height(&self) -> f32 {
-        if self.plugin_calendar.borrow().is_some() && !self.is_active_panel_detached() {
-            calendar_height()
-        } else {
-            launcher_height(self.result_count)
+        let calendar = self.plugin_calendar.borrow();
+        if let Some(active) = calendar.as_ref() {
+            if !self.is_active_panel_detached() {
+                return calendar_height(&active.data);
+            }
         }
+        launcher_height(self.result_count)
     }
 
     /// Whether a plugin view is currently popped out into its own window.
@@ -883,6 +887,21 @@ impl gpui::Render for StewardApp {
         let state = self.state.borrow();
         let calendar_active =
             state.plugin_calendar.borrow().is_some() && !state.is_active_panel_detached();
+        // The month grid's height follows the actual number of week rows the
+        // displayed month spans (4..=6), so a short month makes the bar shorter
+        // instead of leaving an empty six-row grid.
+        let calendar_grid_h = state
+            .plugin_calendar
+            .borrow()
+            .as_ref()
+            .map(|active| {
+                calendar_grid_height(month_week_rows(
+                    active.data.year,
+                    active.data.month,
+                    active.data.start_of_week,
+                ))
+            })
+            .unwrap_or(0.0);
         let primary = cx.theme().primary;
         let root = div()
             .track_focus(&self.focus_handle)
@@ -961,9 +980,9 @@ impl gpui::Render for StewardApp {
                 this.child(div().w_full().h(px(1.0)).bg(rgb(0xffffff).opacity(0.10)))
                     .child(
                         div()
-                            .h(px(CALENDAR_GRID_HEIGHT))
+                            .h(px(calendar_grid_h))
                             .mx(px(LAUNCHER_MARGIN))
-                            .child(self.calendar.render(CALENDAR_GRID_HEIGHT, cx)),
+                            .child(self.calendar.render(calendar_grid_h, cx)),
                     )
             })
             .when(!calendar_active && result_count > 0, |this| {
@@ -1619,7 +1638,10 @@ impl StewardApp {
 
         let count = self.results.visible_count(cx);
         let height = if show_calendar_grid {
-            calendar_height()
+            let active = active_calendar
+                .as_ref()
+                .expect("show_calendar_grid implies Some");
+            calendar_height(&active.data)
         } else {
             launcher_height(count)
         };

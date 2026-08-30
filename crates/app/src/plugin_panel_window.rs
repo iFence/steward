@@ -17,10 +17,10 @@ use gpui::{
     WindowControlArea, WindowKind, WindowOptions,
 };
 use steward_ui_components::{
-    days_in_month, iso_date, palette, ActionBar, ActionRef, CalendarView, DetailBlock, DetailData,
-    DetailView, FieldKind, FormData, FormField, FormOption, FormValue, FormView, GridData,
-    GridItem, GridView, ResultItem, ResultList, ResultListDelegate, SearchBar,
-    CALENDAR_GRID_HEIGHT,
+    calendar_grid_height, days_in_month, iso_date, month_week_rows, palette, ActionBar, ActionRef,
+    CalendarView, DetailBlock, DetailData, DetailView, FieldKind, FormData, FormField, FormOption,
+    FormValue, FormView, GridData, GridItem, GridView, ResultItem, ResultList, ResultListDelegate,
+    SearchBar,
 };
 
 use crate::config::{
@@ -1075,7 +1075,11 @@ fn panel_width() -> f32 {
 
 fn panel_height(kind: &PanelKind) -> f32 {
     let content = match kind {
-        PanelKind::Calendar(_) => CALENDAR_GRID_HEIGHT,
+        PanelKind::Calendar(active) => calendar_grid_height(month_week_rows(
+            active.data.year,
+            active.data.month,
+            active.data.start_of_week,
+        )),
         PanelKind::List(items) => list_height(items.len()),
         PanelKind::Detail(_) | PanelKind::Form(_) => DETAIL_FORM_PANEL_HEIGHT,
         PanelKind::Grid(_) => 320.0,
@@ -1481,7 +1485,10 @@ mod tests {
             command: "calendar".into(),
             detachable: true,
         };
-        assert!(panel_height(&PanelKind::Calendar(cal)) >= CALENDAR_GRID_HEIGHT);
+        assert!(
+            panel_height(&PanelKind::Calendar(cal))
+                >= calendar_grid_height(month_week_rows(2026, 8, 1))
+        );
     }
 
     #[test]
