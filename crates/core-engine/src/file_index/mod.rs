@@ -1,36 +1,34 @@
 //! Full-disk file indexing and retrieval.
 //!
-//! A Rust port of the design recovered from Everything 1.4.1.1032 (see
-//! `Everything_索引与检索逆向报告.md` and `recovered_core.c` in the repository
-//! root): a compact, resident, name-only index that answers queries by scanning
-//! it in parallel, rather than by walking the filesystem per query.
+//! A compact, resident, name-only index that answers a query by scanning itself
+//! in parallel, rather than by walking the filesystem per query.
 //!
-//! Mapping from the reverse-engineering report to this module:
+//! Module map:
 //!
-//! | Report finding | Here |
+//! | Concern | Here |
 //! |---|---|
-//! | `IndexInput` (0x40-byte enumeration records) | [`EntryInfo`] |
-//! | `db_rebuild` → enumerate → accept → resolve parents → sort (§3, §4) | [`FileDbBuilder`], [`scan`] |
+//! | Enumeration records handed to the builder | [`EntryInfo`] |
+//! | Enumerate → accept → resolve parents → sort | [`FileDbBuilder`], [`scan`] |
 //! | Record layout: parent pointer, 1-byte name length, UTF-8 name, metadata after it | [`db`] |
 //! | `0xff` length byte → real `u32` length at `record - 4` | [`db::FileDb::entry`] |
-//! | Directory/file name-pointer arrays + block index (§4) | [`db::FileDb::finalize`] |
-//! | `db_query_search` → parse terms/modifiers → compile file+folder ops (§6.1) | [`query::parse`] |
-//! | `ceil(block_count / 16)` workers over index blocks (§6.3) | [`search::search_parallel`] |
-//! | Single-operation fast path, otherwise the `next`/`notnext` graph (§6.2) | [`search::match_record`] |
-//! | USN Journal incremental maintenance (§5.1) | [`update`], [`ntfs`] |
-//! | `ESDb` persistence header (§7) | `FileDb::to_bytes` / `FileDb::from_bytes` |
+//! | Directory/file name-pointer arrays + block index | [`db::FileDb::finalize`] |
+//! | Parse terms/modifiers → compile file+folder predicates | [`query::parse`] |
+//! | `ceil(block_count / 16)` workers over index blocks | [`search::search_parallel`] |
+//! | Single-operation fast path, otherwise the `next`/`notnext` graph | [`search::match_record`] |
+//! | USN Journal incremental maintenance | [`update`], [`ntfs`] |
+//! | Snapshot persistence header | `FileDb::to_bytes` / `FileDb::from_bytes` |
 //!
-//! Deliberate differences from the original:
+//! Design notes:
 //!
 //! - **NTFS MFT is the fast path, a directory walk is the fallback.** Reading
 //!   `\\.\C:` and its `$MFT` needs an elevated handle; when that fails the index
 //!   is built with `FindFirstFileExW` instead (same record shape, slower build).
-//! - **Names are UTF-8, not UTF-16**, matching the report's own post-conversion
-//!   record layout. CJK names therefore cost 3 bytes per character instead of 2.
+//! - **Names are UTF-8, not UTF-16.** CJK names therefore cost 3 bytes per
+//!   character instead of 2.
 //! - **No hand-rolled regex engine.** The `regex` crate is used for `regex:`
-//!   terms; the original ships PCRE.
-//! - **No `content:` (full-text) search.** The report only locates that path in
-//!   the original and never claims the name index is an inverted index.
+//!   terms.
+//! - **No `content:` (full-text) search.** The index is a name index, not an
+//!   inverted index over file contents.
 
 use std::path::{Path, PathBuf};
 
@@ -45,6 +43,9 @@ mod update;
 
 #[cfg(target_os = "windows")]
 pub mod ntfs;
+
+#[cfg(target_os = "windows")]
+pub mod watch;
 
 pub use db::{
     describe_bytes, filetime_to_mtime, mtime_to_unix, unix_to_mtime, EntryInfo, FileDb,
@@ -63,12 +64,16 @@ pub use search::{
 #[cfg(target_os = "windows")]
 pub use ntfs::{DataRun, NtfsError, RawVolume, UsnReadOutcome, UsnRecord, VolumeGeometry};
 #[cfg(target_os = "windows")]
-pub use update::{apply_usn_records, cursor_is_usable, volume_root, UsnOutcome};
+pub use update::{
+    apply_fs_changes, apply_usn_records, cursor_is_usable, volume_root, FsOutcome, UsnOutcome,
+};
+#[cfg(target_os = "windows")]
+pub use watch::{DirectoryWatcher, FsAction, FsChange, WatchBatch};
 
 /// Which enumerator produced a root's records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexBackend {
-    /// Direct `$MFT` parsing on an NTFS volume (the Everything fast path).
+    /// Direct `$MFT` parsing on an NTFS volume (the fast path).
     Mft,
     /// Recursive directory enumeration.
     Walk,
@@ -160,6 +165,51 @@ pub fn is_volume_root(path: &Path) -> bool {
     let text = path.to_string_lossy();
     let text = text.trim_end_matches(['\\', '/']);
     text.len() == 2 && text.as_bytes()[1] == b':'
+}
+
+/// Every fixed (local, non-removable) drive root, e.g. `C:\`, `D:\`.
+///
+/// This is the default set when nothing is configured. `GetDriveTypeW` filters
+/// out removable media, network shares, CD-ROMs and RAM disks: those may not be
+/// present (or readable) at the next start, and indexing them would make the
+/// index's contents depend on what happened to be plugged in. All fixed volumes
+/// are returned, so a multi-disk machine is indexed in full.
+///
+/// Returns an empty vector on non-Windows targets.
+#[cfg(target_os = "windows")]
+pub fn fixed_drive_roots() -> Vec<PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+
+    /// `DRIVE_FIXED` from `winbase.h`.
+    const DRIVE_FIXED: u32 = 3;
+
+    // SAFETY: no arguments, no output buffers; the bitmask is fully described
+    // by the API contract.
+    let mask = unsafe { GetLogicalDrives() };
+    let mut roots = Vec::new();
+    for index in 0..26u32 {
+        if mask & (1 << index) == 0 {
+            continue;
+        }
+        let letter = (b'A' + index as u8) as char;
+        let wide: Vec<u16> = format!("{letter}:\\")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        let kind = unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) };
+        if kind == DRIVE_FIXED {
+            roots.push(PathBuf::from(format!("{letter}:\\")));
+        }
+    }
+    roots
+}
+
+/// Every fixed drive root; empty on non-Windows targets.
+#[cfg(not(target_os = "windows"))]
+pub fn fixed_drive_roots() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 #[cfg(test)]

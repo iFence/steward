@@ -1,8 +1,7 @@
 //! The compact, resident file index.
 //!
-//! Record layout, mirroring what was recovered from the Everything binary
-//! (`recovered_core.c`, "Valid after rebuild converts temporary parent FRNs to
-//! pointers"):
+//! Record layout. Parent references are stored as temporary file reference
+//! numbers during a build and resolved to record indices at finalize time:
 //!
 //! ```text
 //! Header at record[0..24] (little endian, 4-byte aligned):
@@ -13,25 +12,25 @@
 //!   +08 u64 size        bytes, meaningful only when SIZE_VALID is set
 //!   +10 u64 mtime       seconds since the Windows epoch (1601), 0 = unknown
 //! then the UTF-8 name (no terminator), then, when `name_len == 0xff`, a u32
-//! holding the real name length (the original reads that slot as `record - 4`
-//! from the name pointer), then `meta_len` bytes of metadata, then padding to a
+//! holding the real name length (a name pointer can read that slot as
+//! `record - 4`), then `meta_len` bytes of metadata, then padding to a
 //! 4-byte boundary.
 //! ```
 //!
 //! Storing a parent *index* rather than a parent path is what keeps the index
 //! small: a directory with 100k children stores its path once, and renaming the
-//! directory only rewrites the links that point at it (report §4).
+//! directory only rewrites the links that point at it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Parent index marking a record whose parent is not itself indexed (a root).
 pub const ROOT_PARENT: u32 = u32::MAX;
-/// Records per search block. The report derives worker count from *block*
-/// count (`ceil(block_count / 16)`), not from file count.
+/// Records per search block. Worker count derives from *block* count
+/// (`ceil(block_count / 16)`), not from file count.
 pub const BLOCKS: usize = 4096;
 /// Name bytes stored inline (0..=254). Longer names use the `0xff` escape with
-/// a full `u32` length, like the original.
+/// a full `u32` length.
 pub const INLINE_NAME_MAX: usize = 254;
 /// Names longer than this are truncated at build time, which keeps the escaped
 /// layout from needing a second escape level.
@@ -43,7 +42,7 @@ const META_LEN: u16 = 20;
 /// Sentinel meaning "this record's file id is unknown".
 const NO_ID: u64 = 0;
 /// Parent key that never resolved to a record: the parent is outside the
-/// indexed scope, which makes the record an orphan (report §4, orphan cleanup).
+/// indexed scope, which makes the record an orphan.
 const UNRESOLVED: u32 = u32::MAX - 1;
 
 /// File record status bits (`status` byte).
@@ -62,8 +61,7 @@ const ATTR_DIRECTORY: u32 = 0x10;
 /// `FILE_ATTRIBUTE_REPARSE_POINT`.
 const ATTR_REPARSE: u32 = 0x400;
 
-/// A record as handed over by an enumerator — the recovered `IndexInput`
-/// structure (0x40 bytes on x64 in the original), with idiomatic field types.
+/// A record as handed over by an enumerator, with idiomatic field types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryInfo {
     /// NTFS file reference number (`sequence << 48 | record number`). `0` when
@@ -142,7 +140,7 @@ pub struct FileEntry {
     pub is_reparse: bool,
 }
 
-/// Resumable USN Journal position for one volume (report §5.1, §7).
+/// Resumable USN Journal position for one volume.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct JournalState {
     /// Journal identity. A different id means the journal was recreated, so the
@@ -172,8 +170,7 @@ impl std::fmt::Display for IndexError {
 
 impl std::error::Error for IndexError {}
 
-/// Persisted-index magic: `"FSDB"` little endian. Steward's own signature —
-/// the original's `ESDb` marks a different, unimplemented format (report §7).
+/// Persisted-index magic: `"FSDB"` little endian.
 pub const MAGIC: u32 = 0x4244_5346;
 /// Current persisted format version.
 pub const FORMAT_VERSION: u32 = 1;
@@ -304,8 +301,7 @@ impl FileDb {
     ///
     /// A name longer than [`INLINE_NAME_MAX`] stores only its first 254 bytes
     /// inline and puts the real `u32` length in the escape slot right after
-    /// them, which is the original's layout seen from the other side (the
-    /// report reads that slot as `record - 4` from a name pointer).
+    /// them, so a reader holding a name pointer can find it at `record - 4`.
     pub fn name_bytes(&self, index: u32) -> &[u8] {
         let offset = self.offsets[index as usize] as usize;
         let escaped = self.data[offset + 4] == 0xff;
@@ -394,8 +390,7 @@ impl FileDb {
     /// Full path of a record appended into `out`, returning the byte range of
     /// the appended segment so callers can borrow it without allocating.
     ///
-    /// This is the parent-pointer walk the original performs when it needs a
-    /// full path (report §4): no record stores its own full path.
+    /// This is a parent-pointer walk: no record stores its own full path.
     pub fn path_into(&self, index: u32, out: &mut String) -> std::ops::Range<usize> {
         out.clear();
         if !self.is_live(index) {
@@ -759,8 +754,8 @@ enum ParentRef {
 ///
 /// The builder keeps temporary parent identities (file reference numbers)
 /// alongside the records and resolves them to record indices in
-/// [`FileDbBuilder::finalize`] — the report's "rebuild converts temporary
-/// parent FRNs to pointers, removes orphans and sorts the name pointer arrays".
+/// [`FileDbBuilder::finalize`] — converting temporary parent FRNs to pointers,
+/// removing orphans and sorting the name pointer arrays.
 pub struct FileDbBuilder {
     data: Vec<u8>,
     offsets: Vec<u32>,
@@ -916,7 +911,7 @@ impl FileDbBuilder {
         let status_at = |index: usize| self.data[self.offsets[index] as usize + 5];
 
         // 2. Prune to a fixpoint: a record whose parent is missing, tombstoned,
-        //    or not a directory is an orphan (report §4's orphan cleanup).
+        //    or not a directory is an orphan.
         //
         //    Empty directories are deliberately *kept*: the index mirrors the
         //    disk, and a folder the user can see in Explorer must be findable

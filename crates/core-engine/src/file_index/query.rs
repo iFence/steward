@@ -1,7 +1,6 @@
-//! Query compilation: the "parse terms and modifiers, then match in memory"
-//! half of the recovered design (report §6.1).
+//! Query compilation: parse terms and modifiers, then match in memory.
 //!
-//! The original parser understands `case:`, `nocase:`, `path:`, `regex:`,
+//! The parser understands `case:`, `nocase:`, `path:`, `regex:`,
 //! `wildcards:`, `wholeword:`, `diacritics:` modifiers, `< >` groups, negation
 //! and branch connections. This module implements that surface minus
 //! `diacritics:` (an ASCII-folded haystack already covers the common case, and
@@ -27,7 +26,7 @@ pub enum MatchMode {
     WholeWord,
     /// `*` and `?` globbing, where `*` also crosses separators.
     Wildcards,
-    /// Regular expression (`regex` crate; the original links PCRE).
+    /// Regular expression (via the `regex` crate).
     Regex,
 }
 
@@ -294,8 +293,8 @@ impl<'a> Haystack<'a> {
 /// Evaluate a compiled filter against one record.
 ///
 /// `size`/`mtime` are `None` when the enumerator did not report the metadata;
-/// those predicates then fail (report §3.3 keeps metadata optional per index
-/// configuration, and a filter that cannot be evaluated must not match).
+/// those predicates then fail (metadata is optional per index configuration, and
+/// a filter that cannot be evaluated must not match).
 pub fn evaluate(
     filter: &Filter,
     haystack: &Haystack<'_>,
@@ -431,10 +430,9 @@ impl Builder {
     /// Apply a `modifier:value` token.
     ///
     /// Returns a filter when the token itself constrains the query, and `None`
-    /// for a bare state modifier (which scopes the terms that follow). Exported
-    /// shapes follow the report's examples: `case:` / `path:` / `regex:` act on
-    /// the rest of the query, while `wildcards:*.pdf` and `wholeword:report`
-    /// carry their own pattern.
+    /// for a bare state modifier (which scopes the terms that follow). Modifier
+    /// shapes: `case:` / `path:` / `regex:` act on the rest of the query, while
+    /// `wildcards:*.pdf` and `wholeword:report` carry their own pattern.
     fn apply_modifier(&mut self, name: &str, value: Option<&str>) -> Option<Filter> {
         let value = value.unwrap_or("");
         // A modifier with a value still switches the mode on, so the rest of a
@@ -628,7 +626,7 @@ fn classify(word: String) -> Token {
     let (negated, body) = if let Some(rest) = word.strip_prefix('!') {
         (true, rest.to_string())
     } else if let Some(rest) = word.strip_prefix('-') {
-        // A leading `-` negates a word (Everything's exclusion syntax), but a
+        // A leading `-` negates a word (the usual exclusion syntax), but a
         // digit or a bare `-` stays literal so `-5`/`--flag` remain searches.
         if rest.is_empty()
             || rest.starts_with('-')
@@ -834,8 +832,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 /// branch-free: `b | 0x20` maps `A-Z` onto `a-z` and leaves every other byte
 /// that matters unchanged (`[` `\` `]` `^` `_` map onto punctuation, which can
 /// only ever produce a false positive on a name containing those bytes AND the
-/// query being their folded twin — accepted, as in the original's byte-fold
-/// table).
+/// query being their folded twin — accepted as a false positive).
 fn substring_match(haystack: &[u8], needle: &[u8], case: CaseMode) -> bool {
     if needle.is_empty() {
         return true;

@@ -1,7 +1,11 @@
 //! Bridges native tray/hotkey events into the GPUI event loop and drains
 //! background work (scan results, icon batches) on the foreground thread.
 
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
@@ -298,10 +302,24 @@ fn drain_file_index(
     i18n: &Rc<Localization>,
 ) {
     let changed = state.borrow_mut().file_index.poll_events();
-    if changed {
-        // A finished build is worth writing back: the next cold start then
-        // loads the snapshot instead of walking the disk again.
-        persist_file_index(state);
+    // Always offer the pending snapshot: a live update may be waiting out the
+    // persistence throttle, and this is the only place it can be flushed.
+    persist_file_index(state);
+    // The real-time watcher lost changes (its kernel buffer overflowed), so the
+    // index can no longer be trusted without a reconcile: replay the journal
+    // when one exists (it holds the same changes and is cheap), otherwise
+    // rebuild.
+    {
+        let mut launcher = state.borrow_mut();
+        if launcher.file_index.take_reconcile_request() {
+            if launcher.file_index.supports_journal() {
+                eprintln!("file index: watcher lost changes; catching up from the journal");
+                launcher.file_index.request_catch_up();
+            } else {
+                eprintln!("file index: watcher lost changes; rebuilding the index");
+                launcher.file_index.request_build();
+            }
+        }
     }
     update_tray_status(state, i18n);
 
@@ -438,6 +456,14 @@ pub(crate) fn spawn_event_poll_task(
     #[cfg(target_os = "windows")]
     let mut last_foreground_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
 
+    // How often the USN journal is replayed across all volumes. The real-time
+    // watcher handles most changes first; this is the safety net for changes
+    // made while Steward was not running (or while a watcher root was
+    // unreadable), and it is cheap because only records after each stored
+    // cursor are read.
+    const LIVE_INDEX_REFRESH: Duration = Duration::from_secs(2);
+    let mut last_live_tick = Instant::now();
+
     cx.spawn(async move |cx| loop {
         // A background scan may finish at any time; both event loops drain it.
         state.borrow().apply_scan_results();
@@ -454,6 +480,19 @@ pub(crate) fn spawn_event_poll_task(
         // answers to file searches. A finished build or a fresh set of file hits
         // re-runs the visible query so the drop-down reflects them.
         drain_file_index(&state, cx, &i18n);
+        // Live maintenance: replay each volume's USN journal on a short timer so
+        // changes made while Steward was closed (or while a watcher root was
+        // unreadable) reach the index without a restart.
+        if last_live_tick.elapsed() >= LIVE_INDEX_REFRESH {
+            last_live_tick = Instant::now();
+            let mut launcher = state.borrow_mut();
+            // Only a `$MFT`-built index has journals to replay; a walk-built
+            // one is maintained solely by the real-time watcher after its
+            // startup rebuild.
+            if launcher.file_index.is_ready() && launcher.file_index.supports_journal() {
+                launcher.file_index.request_catch_up();
+            }
+        }
         #[cfg(target_os = "windows")]
         crate::file_continuum::poll(&state, i18n.clone(), cx);
 

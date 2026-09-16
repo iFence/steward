@@ -1,8 +1,7 @@
 //! Query execution: match the compiled filter against the whole index, in
 //! parallel, over index blocks.
 //!
-//! This is the Rust counterpart of the recovered `db_query_search` →
-//! `file_worker` path (report §6.2/§6.3): the query is compiled once, workers
+//! This is the parallel execution path: the query is compiled once, workers
 //! are derived from the *block* count (not the file count), each worker scans a
 //! contiguous block range and appends to its own result vector, and the main
 //! thread merges. A single-term query takes the fast path and only reaches for
@@ -87,14 +86,12 @@ pub struct SearchOutcome {
     pub stats: SearchStats,
 }
 
-/// Concurrency ceiling. The report's worker count is `ceil(block_count / 16)`
-/// clamped by configuration and by the system limit; the same shape is used
-/// here, with the core count as the system limit.
+/// Concurrency ceiling: `ceil(block_count / 16)` workers, clamped by the
+/// system limit (the core count).
 const BLOCKS_PER_WORKER: usize = 16;
 
 /// Cancel handle handed to search workers: one flag for the whole query, so a
-/// newer keystroke can stop a running scan the way the original checks its
-/// query-cancel flag inside the block loop.
+/// newer keystroke can stop a running scan inside the block loop.
 #[derive(Debug, Default)]
 pub struct Cancel {
     flag: AtomicBool,
@@ -373,8 +370,8 @@ fn raw_hit(index: &FileDb, record: u32, path: String) -> FileHit {
     }
 }
 
-/// Ranking, mirroring the report's observation that the folded substring match
-/// against the name is the cheap and strongest signal:
+/// Ranking. The folded substring match against the name is the cheap and
+/// strongest signal:
 ///
 /// 1. a term that hits the *name* counts for far more than one that only hits
 ///    the *path* (a `path:` query still reaches everything, but a name hit is
@@ -447,8 +444,8 @@ fn finish(
 
 /// `ceil(block_count / 16)`, clamped by the core count.
 ///
-/// The report is explicit that the worker count derives from the number of
-/// *index blocks* (`ceil(block_count / 16)`), not from the number of files.
+/// The worker count derives from the number of *index blocks*
+/// (`ceil(block_count / 16)`), not from the number of files.
 fn worker_count(blocks: usize) -> usize {
     let by_blocks = blocks.div_ceil(BLOCKS_PER_WORKER);
     let cores = std::thread::available_parallelism()

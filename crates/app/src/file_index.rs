@@ -26,9 +26,19 @@ use steward_core_engine::file_index::{
     FileDbBuilder, FileHit, IndexBackend, IndexProgress, JournalState, KindFilter, ScanOptions,
     SearchOptions,
 };
+#[cfg(target_os = "windows")]
+use steward_core_engine::file_index::{apply_fs_changes, DirectoryWatcher, FsChange};
 
 /// Records per search request from the launcher.
 pub(crate) const FILE_RESULT_LIMIT: usize = 12;
+
+/// How often a live update is written back to the snapshot.
+///
+/// A build is persisted at once, but a real-time change only marks the snapshot
+/// dirty: writing the whole blob (and its SQLite row) on every create/delete on
+/// a busy disk would cost far more than the update. Nothing is lost if the app
+/// exits before it flushes — the next start replays the journal, or rebuilds.
+const LIVE_PERSIST_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Default excluded directory names on top of the walker's own list.
 const EXTRA_EXCLUSIONS: [&str; 4] = ["node_modules", ".git", "winsxs", "$recycle.bin"];
@@ -64,6 +74,11 @@ pub(crate) enum IndexEvent {
     },
     /// Nothing could be indexed.
     Failed(String),
+    /// A catch-up pass finished with nothing to do (the journal is caught up).
+    Idle,
+    /// The real-time watcher's change buffer overflowed: changes were lost, so
+    /// the index must be reconciled (caught up or rebuilt).
+    Reconcile,
 }
 
 /// A search reply, paired with the generation that asked for it. The generation
@@ -109,6 +124,16 @@ pub(crate) struct FileIndex {
     /// A snapshot waiting to be written by the launcher's thread (the worker
     /// holds no SQLite connection, so persistence stays on the UI side).
     pending_snapshot: Option<String>,
+    /// Set when the watcher lost changes and the index needs a reconcile.
+    needs_reconcile: bool,
+    /// The last failure message, so a repeating one (an unreadable volume polled
+    /// every couple of seconds) is logged once instead of on every tick.
+    last_failure: Option<String>,
+    /// When the snapshot was last written, for [`LIVE_PERSIST_INTERVAL`].
+    last_persist: Instant,
+    /// Whether the pending snapshot is from a build (written at once) rather
+    /// than a live update (throttled).
+    snapshot_is_build: bool,
 }
 
 impl FileIndex {
@@ -123,16 +148,26 @@ impl FileIndex {
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded::<SearchReply>();
         let db = Arc::new(Mutex::new(None));
         let worker_db = Arc::clone(&db);
-        std::thread::Builder::new()
-            .name("steward-file-index".into())
-            .spawn(move || worker_loop(command_rx, event_tx, reply_tx, worker_db))
-            .expect("spawn the file index worker");
 
         let roots = if configured_roots.is_empty() {
             default_roots()
         } else {
             parse_roots(configured_roots)
         };
+
+        // Real-time changes: watch every indexed root. Reading the USN journal
+        // needs an elevated handle that a normal launch does not have, so this
+        // is what makes a create or delete visible without a restart. The
+        // worker owns the watcher (and its threads) for the process lifetime.
+        #[cfg(target_os = "windows")]
+        let watcher = DirectoryWatcher::watch(&roots);
+        #[cfg(not(target_os = "windows"))]
+        let watcher = ();
+
+        std::thread::Builder::new()
+            .name("steward-file-index".into())
+            .spawn(move || worker_loop(command_rx, event_tx, reply_tx, worker_db, watcher))
+            .expect("spawn the file index worker");
 
         let mut index = Self {
             db,
@@ -145,6 +180,10 @@ impl FileIndex {
             building: false,
             records: 0,
             pending_snapshot: None,
+            needs_reconcile: false,
+            last_failure: None,
+            last_persist: Instant::now(),
+            snapshot_is_build: false,
         };
         if let Some(blob) = snapshot {
             match file_index::persist::decode(&blob, unix_seconds()) {
@@ -176,6 +215,19 @@ impl FileIndex {
     /// Whether a build or catch-up pass is running.
     pub(crate) fn is_building(&self) -> bool {
         self.building
+    }
+
+    /// Whether the loaded index carries a usable USN journal cursor.
+    ///
+    /// A `$MFT`-built index has one per volume; a directory-walk index (the
+    /// non-elevated fallback) has none, so it cannot be caught up and must be
+    /// rebuilt to fold in changes made while Steward was not running.
+    pub(crate) fn supports_journal(&self) -> bool {
+        self.db
+            .lock()
+            .expect("file index lock")
+            .as_ref()
+            .is_some_and(|db| db.journals().values().any(|state| state.journal_id != 0))
     }
 
     /// Ask for a full build. Ignored while one is already running.
@@ -226,6 +278,10 @@ impl FileIndex {
                 } => {
                     self.building = false;
                     self.records = records;
+                    self.last_failure = None;
+                    // A build is the expensive result of a restart/cold start, so
+                    // it is persisted immediately regardless of the throttle.
+                    self.snapshot_is_build = true;
                     *self.db.lock().expect("file index lock") = Some(Arc::new(*db));
                     changed = true;
                     let covered: Vec<String> = backends
@@ -250,27 +306,55 @@ impl FileIndex {
                 } => {
                     self.building = false;
                     self.records = db.len();
+                    self.last_failure = None;
+                    self.snapshot_is_build = false;
                     *self.db.lock().expect("file index lock") = Some(Arc::new(*db));
                     changed = true;
                     eprintln!(
-                        "file index: replayed {replayed} USN records (+{created} -{removed} ~{renamed})"
+                        "file index: applied {replayed} changes (+{created} -{removed} ~{renamed})"
                     );
                     self.pending_snapshot = Some(snapshot);
                 }
                 IndexEvent::Failed(message) => {
                     self.building = false;
-                    eprintln!("file index: {message}");
+                    // A volume that stays unreadable would otherwise log on
+                    // every catch-up tick; only a change is worth reporting.
+                    if self.last_failure.as_deref() != Some(message.as_str()) {
+                        eprintln!("file index: {message}");
+                        self.last_failure = Some(message);
+                    }
+                }
+                IndexEvent::Idle => {
+                    self.building = false;
+                    self.last_failure = None;
+                }
+                IndexEvent::Reconcile => {
+                    self.needs_reconcile = true;
                 }
             }
         }
         changed
     }
 
+    /// Take the "the index lost changes and must be reconciled" flag, if set.
+    pub(crate) fn take_reconcile_request(&mut self) -> bool {
+        std::mem::take(&mut self.needs_reconcile)
+    }
+
     /// Take the snapshot waiting to be written, if any.
     ///
     /// The worker encodes it (it holds the index) and the launcher writes it (it
-    /// holds the SQLite connection), so this is the hand-off between them.
+    /// holds the SQLite connection), so this is the hand-off between them. Live
+    /// updates are throttled (see [`LIVE_PERSIST_INTERVAL`]): the newest
+    /// snapshot stays pending and is returned once the interval elapses, while
+    /// a build snapshot goes out at once.
     pub(crate) fn take_pending_snapshot(&mut self) -> Option<String> {
+        self.pending_snapshot.as_ref()?;
+        if !self.snapshot_is_build && self.last_persist.elapsed() < LIVE_PERSIST_INTERVAL {
+            return None;
+        }
+        self.snapshot_is_build = false;
+        self.last_persist = Instant::now();
         self.pending_snapshot.take()
     }
 
@@ -296,14 +380,35 @@ impl FileIndex {
     }
 }
 
-/// The worker thread: builds, replays, and answers searches.
+/// The worker thread: builds, replays, answers searches, and applies the
+/// real-time filesystem changes the watcher reports.
 fn worker_loop(
     commands: crossbeam_channel::Receiver<Command>,
     events: crossbeam_channel::Sender<IndexEvent>,
     replies: crossbeam_channel::Sender<SearchReply>,
     db: Arc<Mutex<Option<Arc<FileDb>>>>,
+    #[cfg(target_os = "windows")] watcher: DirectoryWatcher,
 ) {
-    while let Ok(command) = commands.recv() {
+    // How long the worker is willing to sit idle before checking the watcher.
+    // A change notification is only as useful as this delay is short.
+    const WATCH_POLL: Duration = Duration::from_millis(150);
+    // Changes seen while the first build is still running, applied as soon as
+    // an index exists. Capped so a long build on a busy disk cannot grow it
+    // without bound; past the cap a rebuild is requested instead.
+    #[cfg(target_os = "windows")]
+    const MAX_PENDING_CHANGES: usize = 100_000;
+    #[cfg(target_os = "windows")]
+    let mut pending: Vec<FsChange> = Vec::new();
+    loop {
+        let command = match commands.recv_timeout(WATCH_POLL) {
+            Ok(command) => command,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                #[cfg(target_os = "windows")]
+                drain_watcher(&watcher, &db, &events, &mut pending, MAX_PENDING_CHANGES);
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             Command::Build(options) => {
                 let started = Instant::now();
@@ -350,10 +455,9 @@ fn worker_loop(
                         });
                     }
                     Ok(None) => {
-                        // No journal, or the index cannot be updated in place.
-                        let _ = events.send(IndexEvent::Failed(
-                            "the USN journal is unavailable; keeping the current index".into(),
-                        ));
+                        // Nothing new on any volume (or no journal at all). Not
+                        // an error; just clear the busy flag.
+                        let _ = events.send(IndexEvent::Idle);
                     }
                     Err(error) => {
                         let _ = events.send(IndexEvent::Failed(error));
@@ -390,15 +494,80 @@ fn worker_loop(
                 });
             }
         }
+        // A long build/search just delayed the watcher; apply what queued up
+        // before going back to waiting.
+        #[cfg(target_os = "windows")]
+        drain_watcher(&watcher, &db, &events, &mut pending, MAX_PENDING_CHANGES);
     }
 }
 
-/// Roots to index when nothing is configured: every fixed drive.
+/// Apply every queued filesystem change to the index and publish the result.
 ///
-/// "Full disk" is exactly this — the configured volumes. Removable and network
-/// drives are excluded because indexing them reads media that may not be present
-/// at the next boot.
+/// Batches are coalesced into one edit (and one re-sort). While no index exists
+/// yet (the first build is running) the changes are buffered in `pending` and
+/// applied as soon as one does. An overflow notice raises
+/// [`IndexEvent::Reconcile`], which makes the launcher ask for a full rebuild —
+/// the watcher cannot say what it missed.
+#[cfg(target_os = "windows")]
+fn drain_watcher(
+    watcher: &DirectoryWatcher,
+    db: &Arc<Mutex<Option<Arc<FileDb>>>>,
+    events: &crossbeam_channel::Sender<IndexEvent>,
+    pending: &mut Vec<FsChange>,
+    max_pending: usize,
+) {
+    let mut overflow = false;
+    while let Some(batch) = watcher.try_recv() {
+        pending.extend(batch.changes);
+        overflow |= batch.overflow;
+    }
+    if overflow {
+        let _ = events.send(IndexEvent::Reconcile);
+    }
+    if pending.is_empty() {
+        return;
+    }
+    let current = db.lock().expect("file index lock").clone();
+    let Some(current) = current else {
+        // No index yet: keep buffering, but do not let a slow build accumulate
+        // without bound. Dropping the batch and rebuilding afterwards is the
+        // documented reconcile anyway.
+        if pending.len() > max_pending {
+            pending.clear();
+            let _ = events.send(IndexEvent::Reconcile);
+        }
+        return;
+    };
+    let changes = std::mem::take(pending);
+    let mut updated = current.as_ref().duplicate();
+    let outcome = apply_fs_changes(&mut updated, &changes);
+    if outcome.is_empty() {
+        return;
+    }
+    let snapshot = file_index::persist::encode(&updated, 0, unix_seconds());
+    let shared = Arc::new(updated);
+    *db.lock().expect("file index lock") = Some(Arc::clone(&shared));
+    let _ = events.send(IndexEvent::Updated {
+        db: Box::new(shared.as_ref().duplicate()),
+        snapshot,
+        replayed: changes.len(),
+        created: outcome.created,
+        removed: outcome.removed,
+        renamed: outcome.renamed,
+    });
+}
+
+/// Roots to index when nothing is configured: every fixed (local) drive.
+///
+/// `GetDriveTypeW` keeps removable media, network shares and optical drives out:
+/// indexing them reads media that may not be present at the next boot, and on a
+/// multi-disk machine every fixed volume is included (not just the system one).
 fn default_roots() -> Vec<PathBuf> {
+    let roots = file_index::fixed_drive_roots();
+    if !roots.is_empty() {
+        return roots;
+    }
+    // Non-Windows (or an API hiccup): fall back to whatever roots exist.
     (b'A'..=b'Z')
         .map(|letter| PathBuf::from(format!("{}:\\", letter as char)))
         .filter(|root| root.is_dir())
@@ -529,28 +698,68 @@ fn build_volume_from_mft(
     Ok(records)
 }
 
-/// Replay the USN journal into `db`, if the volume's journal is usable.
+/// Replay the USN journal of **every** indexed volume into `db`.
 ///
-/// Returns `None` when there is nothing to replay on this platform or the index
-/// has no journal cursor (a walk-built index), and an error string when the
-/// volume cannot be read.
+/// Each volume keeps its own cursor, so a multi-disk index catches up each one
+/// independently: a locked or disconnected volume is reported and skipped while
+/// the others still advance. Returns `None` when there is nothing to replay on
+/// this platform or no journal cursor exists (a walk-built index), and an error
+/// string when no volume could be read at all.
 #[cfg(target_os = "windows")]
 fn replay_journal(db: &FileDb) -> Result<Option<CatchUpOutput>, String> {
-    let Some((letter, stored)) = db.journals().iter().next().map(|(l, s)| (*l, *s)) else {
-        return Ok(None);
-    };
-    if stored.journal_id == 0 {
+    let mut cursors: Vec<(u8, JournalState)> = db
+        .journals()
+        .iter()
+        .filter(|(_, state)| state.journal_id != 0)
+        .map(|(letter, state)| (*letter, *state))
+        .collect();
+    cursors.sort_by_key(|(letter, _)| *letter);
+    if cursors.is_empty() {
         return Ok(None);
     }
-    let volume = match file_index::RawVolume::open(letter) {
-        Ok(volume) => volume,
-        Err(error) => {
-            return Err(format!(
-                "cannot open {}: for USN catch-up ({error})",
-                letter as char
-            ))
+
+    let mut updated = db.duplicate();
+    let mut replayed = 0usize;
+    let mut created = 0usize;
+    let mut removed = 0usize;
+    let mut renamed = 0usize;
+    let mut any = false;
+    let mut errors: Vec<String> = Vec::new();
+    for (letter, stored) in cursors {
+        match replay_one_volume(&mut updated, letter, stored) {
+            Ok(Some((volume_replayed, outcome))) => {
+                any = true;
+                replayed += volume_replayed;
+                created += outcome.created;
+                removed += outcome.removed;
+                renamed += outcome.renamed;
+            }
+            Ok(None) => {}
+            Err(error) => errors.push(error),
         }
-    };
+    }
+    if any {
+        return Ok(Some((updated, replayed, created, removed, renamed)));
+    }
+    if errors.is_empty() {
+        Ok(None)
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Replay one volume's journal into `db`, advancing that volume's cursor.
+///
+/// Returns `None` when the volume had no new records; the cursor is still
+/// advanced so an idle volume is not re-read from the same point every tick.
+#[cfg(target_os = "windows")]
+fn replay_one_volume(
+    db: &mut FileDb,
+    letter: u8,
+    stored: JournalState,
+) -> Result<Option<(usize, file_index::UsnOutcome)>, String> {
+    let volume = file_index::RawVolume::open(letter)
+        .map_err(|error| format!("cannot open {}: for USN catch-up ({error})", letter as char))?;
     let live = volume.query_journal().map_err(|error| error.to_string())?;
     if !file_index::cursor_is_usable(Some(stored), live) {
         return Err(format!(
@@ -559,37 +768,37 @@ fn replay_journal(db: &FileDb) -> Result<Option<CatchUpOutput>, String> {
         ));
     }
     let mut records = Vec::new();
-    volume
+    let read = volume
         .read_usn(stored.next_usn, live.journal_id, |record| {
             records.push(record)
         })
         .map_err(|error| error.to_string())?;
-    let replayed = records.len();
-    if replayed == 0 {
-        return Ok(None);
-    }
     let Some(root_index) = file_index::volume_root(db, letter) else {
         return Err(format!(
             "no root record for {}: in the index",
             letter as char
         ));
     };
-    let mut updated = db.duplicate();
-    let outcome = apply_usn_records(&mut updated, root_index, &records);
-    updated.set_journal(
+    let outcome = if records.is_empty() {
+        file_index::UsnOutcome::default()
+    } else {
+        apply_usn_records(db, root_index, &records)
+    };
+    // Use the read's own next USN, not the one [`query_journal`] reported
+    // before the read: a record written while reading would otherwise be
+    // skipped on the next pass.
+    db.set_journal(
         letter,
         JournalState {
             journal_id: live.journal_id,
-            next_usn: live.next_usn,
+            next_usn: read.next_usn,
         },
     );
-    Ok(Some((
-        updated,
-        replayed,
-        outcome.created,
-        outcome.removed,
-        outcome.renamed,
-    )))
+    if records.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((records.len(), outcome)))
+    }
 }
 
 /// Non-Windows builds have no USN journal to replay.

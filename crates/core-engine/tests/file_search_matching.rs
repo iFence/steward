@@ -1,7 +1,7 @@
 //! Does a plain term match anywhere in a name, and does the matching row reach
-//! the top of the list? The report's own `SUBSTRING_FOLDED` opcode is a
-//! anywhere-in-the-name match, so this pins that behaviour at the level the
-//! launcher actually uses: parse -> search -> rank -> truncate.
+//! the top of the list? A plain term is an anywhere-in-the-name match, so this
+//! pins that behaviour at the level the launcher actually uses: parse -> search
+//! -> rank -> truncate.
 
 use steward_core_engine::file_index::{
     match_tier, parse_filter, search_filtered, EntryInfo, FileDbBuilder, KindFilter, MatchTier,

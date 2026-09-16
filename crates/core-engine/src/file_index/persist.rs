@@ -1,12 +1,11 @@
 //! Persistence: a compact snapshot of the index plus the USN cursors, so a
 //! restart can load instead of re-enumerating the volume.
 //!
-//! The report (§7) describes the original writing a logical stream with an
-//! `ESDb` signature, a format-version field, counts and the volume/USN
-//! information, with an optional bzip2 layer. Steward stores its snapshot in
-//! the `settings` table of the same SQLite database that already caches apps
-//! and plugin metadata, and encodes the byte arena as base64 inside a
-//! `serde_json` envelope — no new dependency, and it survives schema migration.
+//! The snapshot is a logical stream with a signature, a format-version field,
+//! counts and the volume/USN information. Steward stores it in the `settings`
+//! table of the same SQLite database that already caches apps and plugin
+//! metadata, and encodes the byte arena as base64 inside a `serde_json`
+//! envelope — no new dependency, and it survives schema migration.
 //!
 //! Invariants worth stating explicitly, because they decide whether a load is
 //! safe:

@@ -49,7 +49,7 @@ pub struct IndexProgress {
 pub struct ScanOptions {
     /// Roots to walk. A drive root indexes the whole volume.
     pub roots: Vec<PathBuf>,
-    /// Include hidden and system records (default: on — Everything indexes them
+    /// Include hidden and system records (default: on — the index stores them
     /// and only the *search* filters, which keeps one build usable for every
     /// query).
     pub include_hidden: bool,

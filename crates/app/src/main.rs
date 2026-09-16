@@ -228,12 +228,12 @@ fn main() {
         // Seed the plugin host from the metadata cache (cold path: SQLite
         // only); a background scan reconciles new/changed plugins.
         state.borrow().ensure_plugin_index();
-        // Full-disk file index. A loaded snapshot is already searchable; a cold
-        // start asks for a build instead, which walks the volumes on the index
-        // worker while the launcher stays responsive. Rebuilding on every start
-        // is deliberate: the USN journal only catches up changes since the build,
-        // so a build doubles as the periodic reconciliation for files that were
-        // created or deleted while Steward was not running.
+        // Full-disk file index. A loaded snapshot is already searchable; the
+        // worker then either replays each volume's USN journal (a `$MFT` build)
+        // or rebuilds in the background (a directory-walk build has no journal).
+        // From then on the built-in directory watcher applies creates, deletes
+        // and renames as they happen, so the index tracks the disk without a
+        // restart. The launcher stays responsive throughout.
         state.borrow_mut().start_file_index();
         let window = open_launcher_window(cx, &focus, i18n.clone(), &state);
         state.borrow_mut().window = Some(window);

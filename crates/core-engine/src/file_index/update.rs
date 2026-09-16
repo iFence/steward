@@ -1,8 +1,8 @@
-//! Incremental index maintenance from the USN Journal (report §5.1).
+//! Incremental index maintenance from the USN Journal.
 //!
-//! The original does not treat a USN record as a row to insert. Directory and
-//! file records take different branches, a rename needs the old name paired
-//! with the new one, and some changes require re-reading metadata:
+//! A USN record is not a row to insert. Directory and file records take
+//! different branches, a rename needs the old name paired with the new one, and
+//! some changes require re-reading metadata:
 //!
 //! | reason bits | handling |
 //! |---|---|
@@ -10,15 +10,16 @@
 //! | `0x1000` / `0x2000` | rename old / new name: remember, then move |
 //! | `0x8000` and data bits | refresh size/time/attributes |
 //!
-//! Steward keeps that shape. What it does *not* keep is the original's
-//! fully-sorted incremental update: after applying a batch, the name array is
-//! re-sorted once, which is O(n log n) on a batch boundary rather than per
-//! record and keeps one code path for "the index is in index order".
+//! After applying a batch the name array is re-sorted once, which is O(n log n)
+//! on a batch boundary rather than per record and keeps one code path for "the
+//! index is in index order".
 
 use std::collections::HashSet;
+use std::path::Path;
 
-use super::db::{EntryInfo, FileDb, JournalState, ROOT_PARENT};
+use super::db::{unix_to_mtime, EntryInfo, FileDb, JournalState, ROOT_PARENT};
 use super::ntfs::UsnRecord;
+use super::watch::{FsAction, FsChange};
 
 /// What happened to a batch of USN records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,8 +46,7 @@ impl UsnOutcome {
 /// A pending "rename old name" whose matching new name has not arrived yet.
 ///
 /// Only the file id is needed: the record is still indexed under its old name,
-/// so the paired new-name record replaces it by id (report §5.1: "save the old
-/// name and old parent, then process the new name").
+/// so the paired new-name record replaces it by id.
 type PendingRenames = HashSet<u64>;
 
 /// Apply a batch of USN changes to `db`.
@@ -62,7 +62,7 @@ pub fn apply_usn_records(db: &mut FileDb, volume_root: u32, records: &[UsnRecord
     };
     // Renames arrive as two records (old name, then new name); pair them.
     // File ids whose "rename old name" half has arrived and whose paired
-    // "rename new name" has not yet (report §5.1). Only the id matters: the
+    // "rename new name" has not yet. Only the id matters: the
     // record is still indexed under its old name, so the new-name record
     // replaces it by id.
     let mut pending: PendingRenames = PendingRenames::new();
@@ -118,8 +118,8 @@ pub fn apply_usn_records(db: &mut FileDb, volume_root: u32, records: &[UsnRecord
         }
         if record.is_data_or_basic_change() {
             // Refresh from the filesystem rather than from the USN record: the
-            // journal carries no size, and the report notes that some changes
-            // require re-reading metadata.
+            // journal carries no size, and some changes require re-reading
+            // metadata.
             if let Some(index) = db.index_of_id(record.file_id) {
                 if refresh_metadata(db, index) {
                     outcome.metadata_refreshed += 1;
@@ -151,7 +151,7 @@ fn insert(db: &mut FileDb, volume_root: u32, info: &EntryInfo) -> Option<u32> {
 
 /// Map a parent file reference number to a record index.
 ///
-/// Special cases, both from the report: the volume root's own record has no
+/// Special cases: the volume root's own record has no
 /// parent, and some system records report a parent id of 0 or 5 (`$Extend`
 /// style roots) — those fall back to the volume root so their children still
 /// land inside the index.
@@ -185,8 +185,7 @@ fn refresh_metadata(db: &mut FileDb, index: u32) -> bool {
 }
 
 /// Whether a stored cursor can still be used, or the volume must be rebuilt
-/// (report §5.2: journal identity changed, monitor out of date, journal
-/// deleted).
+/// (the journal identity changed or its data was deleted).
 pub fn cursor_is_usable(stored: Option<JournalState>, live: JournalState) -> bool {
     match stored {
         Some(stored) => stored.journal_id == live.journal_id && stored.next_usn <= live.next_usn,
@@ -206,11 +205,209 @@ pub fn volume_root(db: &FileDb, letter: u8) -> Option<u32> {
     })
 }
 
+/// What applying a batch of filesystem changes did to the index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FsOutcome {
+    pub created: usize,
+    pub removed: usize,
+    pub renamed: usize,
+    pub refreshed: usize,
+    /// Changes whose parent (or entry) is not in the index; the next reconcile
+    /// picks them up.
+    pub skipped: usize,
+}
+
+impl FsOutcome {
+    /// Whether anything changed the index, i.e. whether a re-sort is needed.
+    pub fn is_empty(&self) -> bool {
+        self.created == 0 && self.removed == 0 && self.renamed == 0 && self.refreshed == 0
+    }
+}
+
+/// Apply real-time filesystem changes (from [`super::watch::DirectoryWatcher`])
+/// to `db`.
+///
+/// This is the non-privileged analogue of [`apply_usn_records`]: the USN path
+/// keys on NTFS file-reference numbers, while `ReadDirectoryChangesW` only
+/// reports names, so a record is located by walking the index from the root
+/// whose path prefixes the change. Creates, deletes, renames and metadata
+/// changes all resolve that way, and a duplicate event (the same change also
+/// seen through the USN journal) is a no-op.
+pub fn apply_fs_changes(db: &mut FileDb, changes: &[FsChange]) -> FsOutcome {
+    let mut outcome = FsOutcome::default();
+    let mut changed = false;
+    for change in changes {
+        match change.action {
+            FsAction::Created | FsAction::Modified => {
+                if upsert_path(db, &change.path, &mut outcome) {
+                    changed = true;
+                }
+            }
+            FsAction::Removed => {
+                if remove_path(db, &change.path, &mut outcome) {
+                    changed = true;
+                }
+            }
+            // A rename arrives as old-name then new-name. Removing the old and
+            // inserting the new works whether the two halves land in one batch
+            // or in two (a cross-volume move is reported by each volume's own
+            // watch, so they are never paired) and whether the move changed
+            // directories.
+            FsAction::RenamedOld => {
+                if remove_path(db, &change.path, &mut outcome) {
+                    changed = true;
+                }
+            }
+            FsAction::RenamedNew => {
+                if upsert_path(db, &change.path, &mut outcome) {
+                    changed = true;
+                }
+                outcome.renamed += 1;
+            }
+        }
+    }
+    if changed {
+        db.finish_incremental();
+    }
+    outcome
+}
+
+/// The root record whose path prefixes `path`, plus the component names below
+/// it (empty when `path` is the root itself).
+fn root_and_rest(db: &FileDb, path: &Path) -> Option<(u32, Vec<String>)> {
+    let text = path.to_string_lossy();
+    // Compare without a trailing separator so the root itself (`C:\`) and a
+    // child (`C:\Windows`) take the same path.
+    let trimmed = text.trim_end_matches(['\\', '/']);
+    let mut best: Option<(u32, usize)> = None;
+    for index in 0..db.slot_count() as u32 {
+        if !db.is_live(index) || db.parent_of(index) != ROOT_PARENT {
+            continue;
+        }
+        let root = db.path_of(index).to_string_lossy().into_owned();
+        let root = root.trim_end_matches(['\\', '/']);
+        let prefix_len = if trimmed.eq_ignore_ascii_case(root) {
+            trimmed.len()
+        } else if trimmed.len() > root.len()
+            && trimmed[..root.len()].eq_ignore_ascii_case(root)
+            && matches!(trimmed.as_bytes().get(root.len()), Some(b'\\') | Some(b'/'))
+        {
+            root.len() + 1
+        } else {
+            continue;
+        };
+        // Longest matching root wins, so `D:\Media` beats a hypothetical `D:`
+        // if both are indexed.
+        if best.is_none_or(|(_, len)| prefix_len > len) {
+            best = Some((index, prefix_len));
+        }
+    }
+    let (root, prefix_len) = best?;
+    let rest = text[prefix_len.min(text.len())..]
+        .split(['\\', '/'])
+        .filter(|part| !part.is_empty() && *part != ".")
+        .map(str::to_owned)
+        .collect();
+    Some((root, rest))
+}
+
+/// Resolve a directory path to its record index, if every component is
+/// indexed.
+fn resolve_dir(db: &FileDb, path: &Path) -> Option<u32> {
+    let (root, rest) = root_and_rest(db, path)?;
+    let mut current = root;
+    for part in &rest {
+        current = db.child_by_name(current, part, true)?;
+    }
+    Some(current)
+}
+
+/// Resolve any indexed path (file or directory) to its record index.
+fn resolve_entry(db: &FileDb, path: &Path) -> Option<u32> {
+    let (root, rest) = root_and_rest(db, path)?;
+    let mut current = root;
+    for (position, part) in rest.iter().enumerate() {
+        current = if position + 1 == rest.len() {
+            db.child_by_name(current, part, true)
+                .or_else(|| db.child_by_name(current, part, false))?
+        } else {
+            db.child_by_name(current, part, true)?
+        };
+    }
+    Some(current)
+}
+
+/// Insert a created path, or refresh the metadata of one already indexed.
+fn upsert_path(db: &mut FileDb, path: &Path, outcome: &mut FsOutcome) -> bool {
+    let (Some(parent_path), Some(name)) = (path.parent(), path.file_name()) else {
+        outcome.skipped += 1;
+        return false;
+    };
+    let name = name.to_string_lossy();
+    let Some(parent) = resolve_dir(db, parent_path) else {
+        // The parent is not indexed (an excluded directory, or a create that
+        // arrived before its parent's own event): reconcile later.
+        outcome.skipped += 1;
+        return false;
+    };
+    let Ok(metadata) = std::fs::metadata(path) else {
+        outcome.skipped += 1;
+        return false;
+    };
+    let is_dir = metadata.is_dir();
+    let size = (!is_dir).then_some(metadata.len());
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| unix_to_mtime(duration.as_secs() as i64));
+    if let Some(index) = db.child_by_name(parent, &name, is_dir) {
+        if db.set_metadata(index, size, mtime) {
+            outcome.refreshed += 1;
+            return true;
+        }
+        return false;
+    }
+    let info = EntryInfo {
+        // A watcher cannot supply an NTFS file id; `0` means "unknown" and the
+        // record links by parent index (exactly like a walk-built record).
+        id: 0,
+        parent_id: 0,
+        size,
+        mtime,
+        attributes: if is_dir { 0x10 } else { 0 },
+        name: name.into_owned(),
+        is_dir,
+    };
+    match db.insert_child(parent, &info) {
+        Some(_) => {
+            outcome.created += 1;
+            true
+        }
+        None => {
+            outcome.skipped += 1;
+            false
+        }
+    }
+}
+
+/// Tombstone the record at `path`, if the index has one.
+fn remove_path(db: &mut FileDb, path: &Path, outcome: &mut FsOutcome) -> bool {
+    let Some(index) = resolve_entry(db, path) else {
+        outcome.skipped += 1;
+        return false;
+    };
+    db.remove_subtree(index);
+    outcome.removed += 1;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::file_index::db::FileDbBuilder;
     use crate::file_index::ntfs::UsnRecord;
+    use std::path::PathBuf;
     use windows::Win32::System::Ioctl::{
         USN_REASON_DATA_EXTEND, USN_REASON_FILE_CREATE, USN_REASON_FILE_DELETE,
         USN_REASON_RENAME_NEW_NAME, USN_REASON_RENAME_OLD_NAME,
@@ -445,5 +642,149 @@ mod tests {
         let (db, root) = populated();
         assert_eq!(volume_root(&db, b'c'), Some(root));
         assert_eq!(volume_root(&db, b'z'), None);
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "steward-fs-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn fs_changes_add_refresh_rename_and_remove_by_path() {
+        let root = scratch_dir("changes");
+        let mut builder = FileDbBuilder::new();
+        let root_index = builder.add_root(&root.to_string_lossy(), 0);
+        let mut db = builder.finalize();
+
+        // Create: the file exists on disk and is inserted under the root.
+        let created = root.join("added.txt");
+        std::fs::write(&created, b"one").unwrap();
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::Created,
+                path: created.clone(),
+            }],
+        );
+        assert_eq!(outcome.created, 1);
+        let index = db.child_by_name(root_index, "added.txt", false).unwrap();
+        assert_eq!(db.meta(index).0, Some(3));
+
+        // Modify: same path, new size, metadata refreshed in place.
+        std::fs::write(&created, b"longer").unwrap();
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::Modified,
+                path: created.clone(),
+            }],
+        );
+        assert_eq!(outcome.refreshed, 1);
+        assert_eq!(db.meta(index).0, Some(6));
+
+        // Rename: the old record goes, the new path is inserted.
+        let renamed = root.join("renamed.txt");
+        std::fs::rename(&created, &renamed).unwrap();
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[
+                FsChange {
+                    action: FsAction::RenamedOld,
+                    path: created.clone(),
+                },
+                FsChange {
+                    action: FsAction::RenamedNew,
+                    path: renamed.clone(),
+                },
+            ],
+        );
+        assert_eq!(outcome.renamed, 1);
+        assert!(db.child_by_name(root_index, "added.txt", false).is_none());
+        assert!(db.child_by_name(root_index, "renamed.txt", false).is_some());
+
+        // Delete: the record and its subtree are tombstoned.
+        std::fs::remove_file(&renamed).unwrap();
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::Removed,
+                path: renamed.clone(),
+            }],
+        );
+        assert_eq!(outcome.removed, 1);
+        assert!(db.child_by_name(root_index, "renamed.txt", false).is_none());
+        assert_eq!(db.len(), 1, "only the root record is left");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn fs_changes_before_the_parent_is_indexed_are_skipped() {
+        let root = scratch_dir("skipped");
+        let mut builder = FileDbBuilder::new();
+        builder.add_root(&root.to_string_lossy(), 0);
+        let mut db = builder.finalize();
+        let nested = root.join("not-indexed").join("file.txt");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, b"x").unwrap();
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::Created,
+                path: nested,
+            }],
+        );
+        assert_eq!(outcome.created, 0);
+        assert_eq!(outcome.skipped, 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_rename_split_across_batches_still_moves_the_record() {
+        let root = scratch_dir("rename-split");
+        let mut builder = FileDbBuilder::new();
+        let root_index = builder.add_root(&root.to_string_lossy(), 0);
+        let mut db = builder.finalize();
+        let old = root.join("before.txt");
+        std::fs::write(&old, b"x").unwrap();
+        apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::Created,
+                path: old.clone(),
+            }],
+        );
+        assert!(db.child_by_name(root_index, "before.txt", false).is_some());
+
+        // The cross-volume move case: the old-name half and the new-name half
+        // are applied in separate batches.
+        std::fs::remove_file(&old).unwrap();
+        apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::RenamedOld,
+                path: old.clone(),
+            }],
+        );
+        let new = root.join("after.txt");
+        std::fs::write(&new, b"x").unwrap();
+        apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::RenamedNew,
+                path: new.clone(),
+            }],
+        );
+        assert!(db.child_by_name(root_index, "before.txt", false).is_none());
+        assert!(db.child_by_name(root_index, "after.txt", false).is_some());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -7050,6 +7050,7 @@ name = "steward-core-engine"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "crossbeam-channel",
  "nucleo",
  "pinyin",
  "regex",

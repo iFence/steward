@@ -674,11 +674,20 @@ impl LauncherState {
     /// Ask the file index for a build, or for a journal catch-up when a snapshot
     /// was already loaded and the index is usable.
     pub(crate) fn start_file_index(&mut self) {
-        if self.file_index.is_ready() {
+        if !self.file_index.is_ready() {
+            self.file_index.request_build();
+            return;
+        }
+        if self.file_index.supports_journal() {
             // The snapshot is searchable already; a catch-up pass folds in
-            // whatever the USN journal recorded since it was written.
+            // whatever each volume's USN journal recorded since it was written,
+            // including while Steward was closed.
             self.file_index.request_catch_up();
         } else {
+            // A directory-walk index has no journal: the only way to pick up
+            // changes made while Steward was closed is a fresh background pass.
+            // The live watcher handles everything from here on, and the loaded
+            // snapshot stays searchable throughout the rebuild.
             self.file_index.request_build();
         }
     }

@@ -1,6 +1,6 @@
 //! NTFS fast path: raw volume access, `$MFT` parsing and the USN Journal.
 //!
-//! This follows the recovered design closely (report §3, §5):
+//! This is how it works:
 //!
 //! 1. open the volume (`\\.\C:`), read the boot sector (`[0x0B/0x0D]` cluster
 //!    geometry, `[0x30]` `$MFT` LCN, `[0x40]` bytes-per-record encoding);
@@ -37,13 +37,13 @@ use super::db::{EntryInfo, JournalState};
 
 /// `FILE_ATTRIBUTE_DIRECTORY`.
 const ATTR_DIRECTORY: u32 = 0x10;
-/// `FILE` signature, as seen in the report.
+/// `FILE` signature.
 const FILE_SIGNATURE: u32 = 0x454C_4946;
 /// Version of the `USN_RECORD` layout this module decodes.
 const USN_RECORD_V2_VERSION: u16 = 2;
 /// USN record version carrying 128-bit file ids (ReFS).
 const USN_RECORD_V3_VERSION: u16 = 3;
-/// Read buffer for USN journal reads: 64 KiB, as in the original.
+/// Read buffer for USN journal reads: 64 KiB.
 const USN_BUFFER_BYTES: usize = 0x1_0000;
 /// `FILE_ATTRIBUTE_*` mask of bits that are meaningful for an index record.
 const ATTR_MASK: u32 = 0x0000_FFFF;
@@ -85,7 +85,7 @@ impl std::fmt::Display for NtfsError {
 
 impl std::error::Error for NtfsError {}
 
-/// Volume geometry, filled from the boot sector (report §3.1).
+/// Volume geometry, filled from the boot sector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VolumeGeometry {
     pub bytes_per_sector: u32,
@@ -115,7 +115,7 @@ impl VolumeGeometry {
         }
         let bytes_per_cluster = bytes_per_sector * sectors_per_cluster;
         // `[0x40]`: a positive value is a cluster count, a negative one is a
-        // power-of-two exponent — the report calls this out explicitly.
+        // power-of-two exponent.
         let record_code = boot[0x40] as i8;
         let bytes_per_record = if record_code > 0 {
             (record_code as u32) * bytes_per_cluster
@@ -255,7 +255,7 @@ impl RawVolume {
     }
 
     /// Enumerate every in-use MFT record, emitting one [`EntryInfo`] per
-    /// non-DOS `FILE_NAME` name (report §3.2/§3.3).
+    /// non-DOS `FILE_NAME` name.
     pub fn enumerate_mft(&mut self, mut emit: impl FnMut(&EntryInfo)) -> Result<usize, NtfsError> {
         let record0 = self.read_mft_record(0)?;
         let runs = data_runs(&record0).map_err(NtfsError::Mft)?;
@@ -332,8 +332,7 @@ impl RawVolume {
     /// Read USN records starting at `next_usn`, calling `emit` for each.
     ///
     /// Returns the number of records read. The first eight bytes of every
-    /// returned buffer are the next USN to read from, exactly as the report
-    /// describes; the records follow.
+    /// returned buffer are the next USN to read from; the records follow.
     pub fn read_usn(
         &self,
         next_usn: i64,
@@ -370,8 +369,8 @@ pub struct UsnRecord {
 }
 
 impl UsnRecord {
-    /// A batch reason mask covering everything the index cares about, as used
-    /// by the original (`ReasonMask = 0xFFFFFFFF`).
+    /// A batch reason mask covering everything the index cares about
+    /// (`ReasonMask = 0xFFFFFFFF`).
     pub const ALL_REASONS: u32 = 0xFFFF_FFFF;
 
     pub fn is_create(&self) -> bool {
@@ -771,8 +770,8 @@ fn parse_record_verbose(record: &[u8], emit: &mut impl FnMut(&EntryInfo)) -> Par
             let expected = [record[entry], record[entry + 1]];
             let tail = trailer_offset(at);
             if fixed[tail..tail + 2] != signature {
-                // A mismatched update sequence means the record is torn; the
-                // original rejects it rather than indexing garbage.
+                // A mismatched update sequence means the record is torn; reject
+                // it rather than indexing garbage.
                 return ParseResult::Torn;
             }
             fixed[tail..tail + 2].copy_from_slice(&expected);
@@ -809,8 +808,8 @@ fn parse_attributes(
         if attribute_type == 0x30 && !non_resident {
             if let Some(name) = parse_file_name(record, offset, length) {
                 let (name_text, parent_frn, namespace) = name;
-                // Namespace 2 is DOS-only: the 8.3 alias. Report §3.3 excludes
-                // it so one file does not become two index entries.
+                // Namespace 2 is DOS-only: the 8.3 alias. Excluding it keeps
+                // one file from becoming two index entries.
                 if namespace != 2 && !name_text.is_empty() {
                     emit(&EntryInfo {
                         id: file_id,
@@ -1078,8 +1077,8 @@ mod tests {
     ///
     /// A record's last two bytes in every 512-byte sector are the update-sequence
     /// number in its on-disk form; the protection array holds the signature
-    /// followed by one entry per sector. This is the layout the report's record
-    /// parser reverses, so the fixture and the parser must agree byte for byte.
+    /// followed by one entry per sector. The record parser reverses this, so the
+    /// fixture and the parser must agree byte for byte.
     fn write_fixups(record: &mut [u8], sector_size: usize, entries: &[u8]) {
         let sectors = record.len() / sector_size;
         let count = sectors + 1;
