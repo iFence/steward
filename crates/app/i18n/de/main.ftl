@@ -3,6 +3,8 @@ app-settings = Einstellungen
 app-autostart = Beim Anmelden starten
 app-quit = Beenden
 application = Anwendung
+# Shortcut hints shown on the right of the result rows (Ctrl+N)
+row-shortcut-modifier = Strg
 open-in-browser = Im Browser öffnen
 command = Befehl
 settings-general = Allgemein
@@ -25,14 +27,14 @@ settings-about-description = Steward – ein schneller, speicherschonender Launc
 settings-version = Version
 
 # Automatic directory picker for open/save dialogs
-quick-switch-placeholder = Ordnerpfad eingeben oder letzte Ordner durchsuchen
-quick-switch-hint = Enter: zum Ordner · Esc: abbrechen
-quick-switch-searching = Ordner werden gesucht…
-quick-switch-no-results = Keine Ordner gefunden — vollständigen Pfad eingeben
-quick-switch-navigating = Ordner wird geöffnet…
-quick-switch-directory = Ordner
-quick-switch-target-unavailable = Der ursprüngliche Dialog ist nicht verfügbar oder wird nicht unterstützt. Esc drücken und erneut versuchen.
-quick-switch-release-modifiers = Strg / Alt / Umschalt loslassen und erneut versuchen.
-quick-switch-invalid-directory = Dieser Ordner existiert nicht oder ist nicht zugänglich.
-quick-switch-cancelled = Abgebrochen
-quick-switch-passive = Zum Eingeben in das Suchfeld klicken
+file-continuum-no-results = Keine Ordner gefunden — vollständigen Pfad eingeben
+file-continuum-navigating = Ordner wird geöffnet…
+file-continuum-target-unavailable = Der ursprüngliche Dialog ist nicht verfügbar oder wird nicht unterstützt. Esc drücken und erneut versuchen.
+file-continuum-release-modifiers = Strg / Alt / Umschalt loslassen und erneut versuchen.
+file-continuum-invalid-directory = Dieser Ordner existiert nicht oder ist nicht zugänglich.
+file-continuum-cancelled = Abgebrochen
+file-continuum-passive = Zum Eingeben in das Suchfeld klicken
+# Full-disk file index
+files-indexing = Dateien werden indiziert…
+files-no-index = Der Dateiindex ist nicht verfügbar. Geben Sie file: plus Namen ein, sobald er erstellt wurde.
+files-indexed = Indizierte Dateien

@@ -3,6 +3,8 @@ app-settings = Settings
 app-autostart = Launch at Startup
 app-quit = Quit
 application = Application
+# Shortcut hints shown on the right of the result rows (Ctrl+N)
+row-shortcut-modifier = Ctrl
 open-in-browser = Open in Browser
 command = Command
 settings-general = General
@@ -25,14 +27,14 @@ settings-about-description = Steward — a fast, low-memory launcher and plugin 
 settings-version = Version
 
 # Automatic directory picker for open/save dialogs
-quick-switch-placeholder = Type a folder path or search recent folders
-quick-switch-hint = Enter: go to folder · Esc: cancel
-quick-switch-searching = Searching folders…
-quick-switch-no-results = No folders found — enter a full path
-quick-switch-navigating = Navigating to folder…
-quick-switch-directory = Folder
-quick-switch-target-unavailable = The original dialog is unavailable or unsupported. Press Esc and try again.
-quick-switch-release-modifiers = Release Ctrl / Alt / Shift and try again.
-quick-switch-invalid-directory = This folder no longer exists or cannot be accessed.
-quick-switch-cancelled = Cancelled
-quick-switch-passive = Click the search box to type
+file-continuum-no-results = No folders found — enter a full path
+file-continuum-navigating = Navigating to folder…
+file-continuum-target-unavailable = The original dialog is unavailable or unsupported. Press Esc and try again.
+file-continuum-release-modifiers = Release Ctrl / Alt / Shift and try again.
+file-continuum-invalid-directory = This folder no longer exists or cannot be accessed.
+file-continuum-cancelled = Cancelled
+file-continuum-passive = Click the search box to type
+# Full-disk file index
+files-indexing = Indexing files…
+files-no-index = The file index is not available. Type file: plus a name once it has been built.
+files-indexed = Files indexed

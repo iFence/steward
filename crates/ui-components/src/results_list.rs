@@ -14,7 +14,7 @@
 //! through the `on_confirm` callback so the app can launch the application and
 //! bump its usage frequency.
 
-use std::{rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use gpui::{
     div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context, ElementId, Entity, Image,
@@ -29,6 +29,32 @@ use steward_core_engine::AppEntry;
 /// rows return `false` so the bar stays open after an `item.invoke`.
 pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App) -> bool>;
 
+/// Observer for confirmation attempts (see [`set_confirm_trace`]).
+pub type ConfirmTrace = Rc<dyn Fn(&str)>;
+
+thread_local! {
+    /// The installed [`ConfirmTrace`], if any. The host app installs one when
+    /// its diagnostics are on.
+    static CONFIRM_TRACE: RefCell<Option<ConfirmTrace>> = const { RefCell::new(None) };
+}
+
+/// Install an observer for every confirmation attempt, accepted or refused.
+///
+/// The host app sets this when its diagnostics are on, so a key that appears to
+/// do nothing can say *why*: rows that are not confirmable, a selection past the
+/// end, no callback. The widget never prints on its own.
+pub fn set_confirm_trace(trace: Option<ConfirmTrace>) {
+    CONFIRM_TRACE.with(|slot| *slot.borrow_mut() = trace);
+}
+
+fn trace_confirm(message: &str) {
+    CONFIRM_TRACE.with(|slot| {
+        if let Some(trace) = slot.borrow().as_ref() {
+            trace(message);
+        }
+    });
+}
+
 /// A row in the launcher drop-down. Either a launchable application or a
 /// one-off action such as a calculator result — an action row shows its own
 /// title and subtitle instead of an icon plus the application label, and its
@@ -37,7 +63,10 @@ pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App) -> bool>;
 /// "open in browser" command: it shows the URL and, on confirm, opens it in
 /// the default browser. A plugin row is one list item rendered by a plugin
 /// command; confirming sends `item.invoke` and keeps the launcher open.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` is what lets [`ResultListState::set_results`] recognise a
+/// re-pushed, unchanged list and leave the selection alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultItem {
     App(AppEntry),
     /// A filesystem directory offered to an open/save dialog.
@@ -73,6 +102,20 @@ pub enum ResultItem {
         title: String,
         subtitle: String,
     },
+    /// A file or folder from the full-disk index. The row carries three
+    /// columns — name, size, containing folder — so a long path can only
+    /// shorten itself: it can never push the size into the middle of the path.
+    /// There is no "File" / "Folder" tag: the row's icon already says which it
+    /// is. Confirming opens the entry with the OS default handler, or reveals
+    /// the folder when the match is a directory.
+    File {
+        path: std::path::PathBuf,
+        name: String,
+        /// The containing folder, alone.
+        subtitle: String,
+        /// Formatted byte count ("120.6 KB"), or empty for a folder.
+        size: String,
+    },
     /// A plugin command's entry row: confirming it opens the plugin's view in
     /// its own independent application window (instead of flattening the view
     /// into the launcher drop-down). Applies to every plugin command, so each
@@ -100,6 +143,78 @@ const DESIGN_ICON_SIZE: f32 = 24.0;
 /// GPUI Windows revision never has to clip overflowing children (its scroll
 /// container paints them unclipped, spilling below the drop-down).
 pub const VISIBLE_ROWS: usize = 8;
+/// The first row reachable with a Ctrl+number shortcut. The top row is
+/// confirmed with a bare Enter, so the digits start at the second row (Ctrl+1)
+/// and run to Ctrl+7 for the eighth and last visible row.
+const FIRST_CTRL_INDEX: usize = 1;
+/// The label on the top row's cap: the key that confirms it. Not localized —
+/// "Enter" is the name printed on the key of every keyboard and keyboard
+/// layout Steward supports, so it reads the same in all seven locales.
+const ENTER_KEY_LABEL: &str = "Enter";
+/// Width reserved for the shortcut before every row's content, so that the key
+/// caps, icons and names line up across rows. Sized for the widest cap — a
+/// five-glyph shortcut such as the German `Strg+1` — plus a gap to the icon.
+const HINT_COLUMN_WIDTH: f32 = 52.0;
+/// Horizontal padding inside the chip, between its border and the key text.
+const HINT_CHIP_PADDING: f32 = 5.0;
+/// Width of the secondary text column (a file row's folder, an app row's kind
+/// label, a plugin row's subtitle). Fixed, and applied on every row, so the text
+/// starts on one axis and the column's edge lands in one place instead of
+/// drifting with the length of each string.
+const DETAIL_COLUMN_WIDTH: f32 = 280.0;
+/// Width reserved for the size column. Fixed — and reserved on every row, file
+/// or not — so the trailing columns line up down the whole drop-down.
+const SIZE_COLUMN_WIDTH: f32 = 64.0;
+/// Opacity of the chip's border. The border is `palette::BORDER` (white 0.20
+/// over the launcher surface) dropped to a whisper: at full strength it reads
+/// as a box drawn around every row rather than as a key cap.
+const HINT_CHIP_BORDER_ALPHA: f32 = 0.45;
+
+/// The row confirmed by the bare Enter key (and by a click): the first one.
+/// Every visible row therefore advertises a key — Enter on top, Ctrl+1 …
+/// Ctrl+7 below it — and no row is left without one.
+pub fn enter_row_index() -> usize {
+    0
+}
+
+/// The Ctrl+number shortcut that confirms the row at `index`, or `None` for the
+/// rows that have none. The top row belongs to Enter (see [`enter_row_index`]);
+/// the rows below it take Ctrl+1, Ctrl+2, ... in order, capped at the last
+/// visible row.
+pub(crate) fn shortcut_key_for(index: usize) -> Option<char> {
+    let digit = index.checked_sub(FIRST_CTRL_INDEX)?.checked_add(1)?;
+    (digit <= VISIBLE_ROWS - FIRST_CTRL_INDEX)
+        .then(|| char::from_digit(digit as u32, 10))
+        .flatten()
+}
+
+/// The text of the keyboard shortcut for the row at `index`: `Enter` on the top
+/// row, `Ctrl+1` … `Ctrl+7` on the rows below it, and `None` for a row past the
+/// last mapped key. `modifier` is the localized name of the Ctrl key; an empty
+/// one (the hint label is missing from the active locale) falls back to the
+/// bare number.
+pub(crate) fn shortcut_hint(index: usize, modifier: &str) -> Option<String> {
+    if index == enter_row_index() {
+        return Some(ENTER_KEY_LABEL.to_owned());
+    }
+    let key = shortcut_key_for(index)?;
+    Some(if modifier.is_empty() {
+        key.to_string()
+    } else {
+        format!("{modifier}+{key}")
+    })
+}
+
+/// The row index that a digit shortcut selects when combined with Ctrl, i.e.
+/// the inverse of [`shortcut_hint`]. `None` for digits outside the mapped
+/// range. Kept next to the forward mapping so the two cannot drift apart.
+pub fn shortcut_digit_index(digit: char) -> Option<usize> {
+    let value = digit.to_digit(10)? as usize;
+    if value == 0 || value > VISIBLE_ROWS - FIRST_CTRL_INDEX {
+        return None;
+    }
+    Some(FIRST_CTRL_INDEX + value - 1)
+}
 
 /// The state backing the results list. Kept as its own entity so updates
 /// (`set_results`, selection moves) can happen without a window.
@@ -114,6 +229,14 @@ pub struct ResultListState {
     /// scrim (raised over bright backdrops, where a fixed 0.10 wash reads too
     /// faint against the lightened bar).
     selected_wash: f32,
+    /// Localized name of the Ctrl key ("Ctrl" / "^"), shown in the shortcut cap
+    /// on every row below the first. Empty drops the modifier and leaves the
+    /// bare digit.
+    shortcut_modifier: String,
+    /// Whether the displayed rows may be confirmed. The directory picker turns
+    /// this off while a search is in flight, so rows kept on screen for a smooth
+    /// repaint cannot be navigated to by mistake. See [`ResultList::set_confirmable`].
+    confirmable: bool,
 }
 
 impl Render for ResultListState {
@@ -122,15 +245,23 @@ impl Render for ResultListState {
         let range = self.visible_range();
         let selected = self.selected;
         let selected_wash = self.selected_wash;
+        let modifier = self.shortcut_modifier.clone();
         let rows = self.items[range.clone()]
             .iter()
             .enumerate()
             .map(|(offset, item)| {
                 let index = range.start + offset;
+                let shortcut = match item {
+                    // A placeholder row is not confirmable, so it gets no
+                    // shortcut: the hint never advertises a key that no-ops.
+                    ResultItem::Loading { .. } => None,
+                    _ => shortcut_hint(index, &modifier),
+                };
                 render_row(
                     item,
                     self.icons.get(index).cloned().flatten(),
                     &type_label,
+                    shortcut,
                     selected == Some(index),
                     selected_wash,
                     index,
@@ -147,6 +278,115 @@ impl Render for ResultListState {
             .flex_col()
             .w_full()
             .children(rows)
+    }
+}
+
+/// Whether two icon lists are the same. `Arc` identity is enough: icons are
+/// cached and shared, so a re-pushed list holds the same pointers.
+fn icons_equal(left: &[Option<Arc<Image>>], right: &[Option<Arc<Image>>]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use steward_core_engine::AppEntry;
+
+    fn row(name: &str) -> ResultItem {
+        ResultItem::App(AppEntry {
+            name: name.to_owned(),
+            path: std::path::PathBuf::from(format!("C:/{name}.exe")),
+        })
+    }
+
+    #[test]
+    fn identical_rows_compare_equal() {
+        assert_eq!(row("a"), row("a"));
+        assert_ne!(row("a"), row("b"));
+        // Order matters: a reordered list is a different list.
+        assert_ne!(vec![row("a"), row("b")], vec![row("b"), row("a")]);
+    }
+
+    #[test]
+    fn icon_lists_compare_by_pointer() {
+        assert!(icons_equal(&[], &[]));
+        assert!(icons_equal(&[None], &[None]));
+        assert!(!icons_equal(&[None], &[]));
+        // A `Some` slot is only "the same" when it is the same allocation, which
+        // is what a cached icon re-pushed by the app looks like.
+        let shared = Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new()));
+        assert!(icons_equal(
+            &[Some(shared.clone())],
+            &[Some(shared.clone())]
+        ));
+        assert!(!icons_equal(
+            &[Some(shared.clone())],
+            &[Some(Arc::new(Image::from_bytes(
+                gpui::ImageFormat::Png,
+                Vec::new()
+            )))]
+        ));
+        assert!(!icons_equal(&[Some(shared)], &[None]));
+    }
+
+    #[test]
+    fn every_visible_row_advertises_a_key() {
+        // The top row is the bare Enter target, so it shows "Enter" rather than
+        // a digit...
+        assert_eq!(enter_row_index(), 0);
+        assert_eq!(
+            shortcut_hint(enter_row_index(), "Ctrl").as_deref(),
+            Some("Enter")
+        );
+        assert_eq!(shortcut_key_for(enter_row_index()), None);
+        // ...and Ctrl+1 upward starts on the row below it.
+        assert_eq!(shortcut_key_for(1), Some('1'));
+        assert_eq!(shortcut_key_for(2), Some('2'));
+        assert_eq!(shortcut_key_for(7), Some('7'));
+        assert_eq!(shortcut_hint(1, "Ctrl").as_deref(), Some("Ctrl+1"));
+        assert_eq!(shortcut_hint(7, "Ctrl").as_deref(), Some("Ctrl+7"));
+        // Nothing past the last visible row: the drop-down renders exactly
+        // `VISIBLE_ROWS` rows, so a hint there would advertise a dead key.
+        assert_eq!(shortcut_key_for(VISIBLE_ROWS), None);
+        assert_eq!(shortcut_hint(VISIBLE_ROWS, "Ctrl"), None);
+        // Enter is not localized: it names the key printed on every keyboard.
+        assert_eq!(shortcut_hint(0, "").as_deref(), Some("Enter"));
+    }
+
+    #[test]
+    fn shortcut_hints_carry_the_localized_modifier() {
+        assert_eq!(shortcut_hint(1, "Ctrl").as_deref(), Some("Ctrl+1"));
+        assert_eq!(shortcut_hint(7, "^").as_deref(), Some("^+7"));
+        assert_eq!(shortcut_hint(1, "Strg").as_deref(), Some("Strg+1"));
+        // A locale without the modifier label still shows the key itself.
+        assert_eq!(shortcut_hint(1, "").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn digits_map_back_to_the_rows_the_hints_advertise() {
+        // The digit handler and the hint renderer must agree: every advertised
+        // shortcut selects the row that shows it.
+        for index in 0..=VISIBLE_ROWS {
+            let Some(key) = shortcut_key_for(index) else {
+                continue;
+            };
+            assert_eq!(shortcut_digit_index(key), Some(index));
+        }
+    }
+
+    #[test]
+    fn unmapped_digits_do_not_select_a_row() {
+        // Ctrl+0 is not a shortcut (the row numbering starts at 1), and
+        // neither is a digit past the last visible row.
+        assert_eq!(shortcut_digit_index('0'), None);
+        assert_eq!(shortcut_digit_index('8'), None);
+        assert_eq!(shortcut_digit_index('9'), None);
+        assert_eq!(shortcut_digit_index('a'), None);
     }
 }
 
@@ -173,10 +413,18 @@ impl ResultListState {
 /// and the original expression on the right. Selected rows get Tinycast's
 /// neutral white wash (opacity adapted by the app); hovered rows get the
 /// fainter white 0.05 surface tint.
+///
+/// A row with a keyboard shortcut (see [`shortcut_hint`]) also carries the
+/// hint "Ctrl+N" as a fixed-width cell before its right-hand detail column, so
+/// a long name is truncated ahead of it rather than running into the shortcut.
+#[allow(clippy::too_many_arguments)]
 fn render_row(
     item: &ResultItem,
     icon: Option<Arc<Image>>,
     type_label: &str,
+    // Already-formatted shortcut hint ("Ctrl+1"), or `None` for a row without
+    // one (the first row, and any row past the last mapped digit).
+    shortcut: Option<String>,
     selected: bool,
     selected_wash: f32,
     index: usize,
@@ -189,6 +437,7 @@ fn render_row(
         ResultItem::Link { .. } => ElementId::from(format!("result-link-{index}")),
         ResultItem::Plugin { .. } => ElementId::from(format!("result-plugin-{index}")),
         ResultItem::Calendar { .. } => ElementId::from(format!("result-calendar-{index}")),
+        ResultItem::File { path, .. } => ElementId::from(path.to_string_lossy().into_owned()),
         ResultItem::Command { .. } => ElementId::from(format!("result-command-{index}")),
         ResultItem::Loading { .. } => ElementId::from(format!("result-loading-{index}")),
     };
@@ -222,51 +471,28 @@ fn render_row(
             cx.notify();
         }));
 
-    match item {
-        ResultItem::App(app) => row
-            .when_some(icon, |this, icon| {
-                this.child(
-                    img(ImageSource::Image(icon))
-                        .w(px(DESIGN_ICON_SIZE))
-                        .h(px(DESIGN_ICON_SIZE)),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::FOREGROUND))
-                    .text_sm()
-                    .child(app.name.to_owned()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(11.0))
-                    .child(type_label.to_string()),
-            ),
-        ResultItem::Action { title, subtitle }
-        | ResultItem::Directory {
-            title, subtitle, ..
-        } => row
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::FOREGROUND))
-                    .text_sm()
-                    .child(title.to_owned()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(11.0))
-                    .child(subtitle.to_owned()),
-            ),
+    // Every arm below pairs the row's main text with its trailing columns: the
+    // name, and optionally the size (file rows) and the secondary text. Splitting
+    // the text out here is what lets the shortcut hint sit at the head of the row,
+    // and the trailing columns stay put, without repeating the layout in every
+    // arm. `None` means the row has that column and leaves it out entirely.
+    let (row, name, size, detail, icon) = match item {
+        ResultItem::App(app) => (
+            row,
+            app.name.to_owned(),
+            None,
+            Some(type_label.to_owned()),
+            icon,
+        ),
+        // A directory picker row is the whole path and nothing else: the path is
+        // what Enter navigates to, so a separate name and parent column would
+        // only ask the user to reassemble it by eye.
+        ResultItem::Directory { path, .. } => {
+            (row, path.to_string_lossy().into_owned(), None, None, None)
+        }
+        ResultItem::Action { title, subtitle } => {
+            (row, title.to_owned(), None, Some(subtitle.to_owned()), None)
+        }
         // A link row mirrors the action-row layout: the command label ("Open
         // in Browser") on the left, and the "Command" type tag on the right —
         // the URL itself is only carried for the confirm handler to open.
@@ -274,130 +500,136 @@ fn render_row(
             label,
             command_label,
             ..
-        } => row
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::FOREGROUND))
-                    .text_sm()
-                    .child(label.to_owned()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(11.0))
-                    .child(command_label.to_owned()),
-            ),
+        } => (
+            row,
+            label.to_owned(),
+            None,
+            Some(command_label.to_owned()),
+            None,
+        ),
         // A plugin row mirrors the app-row layout: the manifest's SVG icon
         // (when declared), item title on the left, its subtitle on the right.
         // Confirming dispatches `item.invoke` to the plugin and keeps the
         // launcher open.
         ResultItem::Plugin {
             title, subtitle, ..
-        } => row
-            .when_some(icon, |this, icon| {
-                this.child(
-                    img(ImageSource::Image(icon))
-                        .w(px(DESIGN_ICON_SIZE))
-                        .h(px(DESIGN_ICON_SIZE)),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::FOREGROUND))
-                    .text_sm()
-                    .child(title.to_owned()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(11.0))
-                    .child(subtitle.to_owned()),
-            ),
-        // A calendar row mirrors the plugin row: the plugin's icon, the
-        // command title on the left and the "Command" tag on the right.
-        // Confirming reveals the calendar grid (see the app's `on_confirm`).
-        ResultItem::Calendar {
+        }
+        | ResultItem::Calendar {
             title, subtitle, ..
-        } => row
-            .when_some(icon, |this, icon| {
-                this.child(
-                    img(ImageSource::Image(icon))
-                        .w(px(DESIGN_ICON_SIZE))
-                        .h(px(DESIGN_ICON_SIZE)),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::FOREGROUND))
-                    .text_sm()
-                    .child(title.to_owned()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(11.0))
-                    .child(subtitle.to_owned()),
-            ),
-        // A plugin command entry row mirrors the calendar row: the plugin's
-        // icon, the command title on the left and the "Command" tag on the
-        // right. Confirming opens the plugin's independent application window.
-        ResultItem::Command {
+        }
+        | ResultItem::Command {
             title, subtitle, ..
-        } => row
-            .when_some(icon, |this, icon| {
-                this.child(
-                    img(ImageSource::Image(icon))
-                        .w(px(DESIGN_ICON_SIZE))
-                        .h(px(DESIGN_ICON_SIZE)),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::FOREGROUND))
-                    .text_sm()
-                    .child(title.to_owned()),
-            )
-            .child(
-                div()
-                    .truncate()
-                    .max_w(px(DESIGN_ROW_HEIGHT * 7.5))
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(11.0))
-                    .child(subtitle.to_owned()),
-            ),
+        } => (row, title.to_owned(), None, Some(subtitle.to_owned()), icon),
+        // A file row carries three columns: the name, the size and the
+        // containing folder. Each is its own cell, so a long path can only
+        // shorten itself — it can never push the size into the middle of the
+        // path. There is no "File" / "Folder" tag: the icon already says which
+        // it is, and the column cost more than it told.
+        ResultItem::File {
+            name,
+            subtitle,
+            size,
+            ..
+        } => (
+            row,
+            name.clone(),
+            Some(size.clone()),
+            Some(subtitle.clone()),
+            icon,
+        ),
         // A loading placeholder: muted title on the left, a pulse on the
         // right. It is intentionally not confirmable (see the app's confirm
         // handler) and disappears as soon as the command's view lands.
-        ResultItem::Loading { command } => row
-            .child(
-                div()
-                    .flex_1()
-                    .truncate()
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_sm()
-                    .child(command.to_owned()),
+        ResultItem::Loading { command } => {
+            (row, command.to_owned(), None, Some("…".to_owned()), None)
+        }
+    };
+
+    let name = div()
+        .flex_1()
+        .truncate()
+        .text_color(rgb(crate::palette::FOREGROUND))
+        .text_sm()
+        .child(name);
+
+    // The row reads left to right: the key cap (or the empty spacer that
+    // reserves its width on the first row), the icon, the name, the size, then
+    // the secondary text.
+    //
+    // Both text columns truncate to the right and are laid out left to right, so
+    // the name gives way to the size and the size never moves: the name is the
+    // flexible column and the two trailing ones are reserved on every row that
+    // has them, which is what keeps the columns on one axis down the drop-down.
+    // A row with nothing to put in them (a picker's path) drops them entirely
+    // instead of reserving two empty columns against its own text.
+    let mut row = row
+        .child(hint_cell(shortcut))
+        .when_some(icon, |this, icon| {
+            this.child(
+                img(ImageSource::Image(icon))
+                    .w(px(DESIGN_ICON_SIZE))
+                    .h(px(DESIGN_ICON_SIZE)),
             )
-            .child(
-                div()
-                    .text_color(rgb(crate::palette::MUTED_FOREGROUND))
-                    .text_size(px(14.0))
-                    .child("…"),
-            ),
+        });
+    row = row.child(name);
+    if let Some(size) = size {
+        row = row.child(
+            div()
+                .w(px(SIZE_COLUMN_WIDTH))
+                .flex_shrink_0()
+                .truncate()
+                .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                .text_size(px(11.0))
+                .child(size),
+        );
     }
+    if let Some(detail) = detail {
+        row = row.child(
+            div()
+                .w(px(DETAIL_COLUMN_WIDTH))
+                .flex_shrink_0()
+                .truncate()
+                .text_color(rgb(crate::palette::MUTED_FOREGROUND))
+                .text_size(px(11.0))
+                .child(detail),
+        );
+    }
+    row
+}
+
+/// The shortcut cell that opens every row: the key itself ("Ctrl+1") drawn in
+/// a small rounded box, the way launchers and menus show a key cap, inside a
+/// fixed-width column.
+///
+/// The shortcut leads the row rather than trailing it, which keeps the two out
+/// of each other's way without any overlay: a truncated long name can never
+/// reach the key, and the key never shifts between rows. The first row has no
+/// shortcut (see [`shortcut_key_for`]), so it gets the same fixed-width cell
+/// with nothing in it and every row's icon and name stay on one axis.
+fn hint_cell(hint: Option<String>) -> gpui::Div {
+    let cell = div()
+        .w(px(HINT_COLUMN_WIDTH))
+        .flex_shrink_0()
+        .flex()
+        .items_center();
+    let Some(hint) = hint else {
+        return cell;
+    };
+    cell.child(
+        div()
+            .px(px(HINT_CHIP_PADDING))
+            .rounded_md()
+            // The row has no background of its own (the window root paints one
+            // translucent scrim across the whole launcher), so the cap is a
+            // raised surface tint plus a hairline border rather than a fill
+            // that would have to match the backdrop.
+            .bg(rgb(crate::palette::BACKGROUND_ALT))
+            .border_1()
+            .border_color(rgb(crate::palette::BORDER).opacity(HINT_CHIP_BORDER_ALPHA))
+            .text_color(rgb(crate::palette::FOREGROUND))
+            .text_size(px(11.0))
+            .child(hint),
+    )
 }
 
 /// Builds the `ResultList` with an optional confirm callback.
@@ -459,13 +691,34 @@ impl ResultList {
             selected: None,
             on_confirm: delegate.on_confirm,
             selected_wash: crate::palette::SELECTION_WASH,
+            shortcut_modifier: String::new(),
+            confirmable: true,
         });
         Self { state }
+    }
+
+    /// Set the localized name of the Ctrl key shown in the row shortcut hints
+    /// ("Ctrl" / "^"). An empty string hides the hints (the list is still
+    /// keyboard-selectable; only the on-screen affordance goes away).
+    pub fn set_shortcut_modifier<C: AppContext>(&self, modifier: impl Into<String>, cx: &mut C) {
+        self.state.update(cx, |this, cx| {
+            let modifier = modifier.into();
+            if this.shortcut_modifier != modifier {
+                this.shortcut_modifier = modifier;
+                cx.notify();
+            }
+        });
     }
 
     /// Replace the displayed rows (and their icons, aligned with `items`) and
     /// re-render. Called by the app after every search; no window access is
     /// required (works from a plain entity context).
+    ///
+    /// Rows that are equal to what is already displayed, and icons that are
+    /// unchanged, are left alone — and the selection with them. A caller that
+    /// re-pushes the same list (an index that republishes identical hits, an
+    /// icon batch that only fills the cache) must not reset the highlight the
+    /// user is moving with the arrow keys.
     pub fn set_results<C>(
         &self,
         items: Vec<ResultItem>,
@@ -473,20 +726,24 @@ impl ResultList {
         cx: &mut Context<C>,
     ) {
         self.state.update(cx, |this, cx| {
+            let rows_changed = this.items != items;
+            let icons_changed = !icons_equal(&this.icons, &icons);
+            if !rows_changed && !icons_changed {
+                return;
+            }
             this.items = items;
             this.icons = icons;
-            // Default-select the first row so Enter (or the highlight) works
-            // immediately after typing, without a manual Down press.
-            this.selected = (!this.items.is_empty()).then_some(0);
-            cx.notify();
-        });
-    }
-
-    /// Replace the icons (aligned with the current `items`) without touching
-    /// the rows or selection — used when icons finish loading asynchronously.
-    pub fn set_icons<C: AppContext>(&self, icons: Vec<Option<Arc<Image>>>, cx: &mut C) {
-        self.state.update(cx, |this, cx| {
-            this.icons = icons;
+            if rows_changed {
+                // Default-select the first row so Enter (or the highlight) works
+                // immediately after typing, without a manual Down press. Keep the
+                // old selection when it still points at a row.
+                if this
+                    .selected
+                    .is_none_or(|selected| selected >= this.items.len())
+                {
+                    this.selected = (!this.items.is_empty()).then_some(0);
+                }
+            }
             cx.notify();
         });
     }
@@ -494,6 +751,22 @@ impl ResultList {
     /// Number of results from the latest update (used for window sizing).
     pub fn visible_count(&self, cx: &App) -> usize {
         self.state.read(cx).items.len()
+    }
+
+    /// Allow or refuse confirmation of the displayed rows.
+    ///
+    /// The directory picker keeps the previous rows on screen while it searches
+    /// for the new query (blanking them made the drop-down flash on every
+    /// keystroke), so for that window the rows are visible but must not be
+    /// actionable: confirming one would navigate to a folder the user did not
+    /// ask for.
+    pub fn set_confirmable<C: AppContext>(&self, confirmable: bool, cx: &mut C) {
+        self.state.update(cx, |this, cx| {
+            if this.confirmable != confirmable {
+                this.confirmable = confirmable;
+                cx.notify();
+            }
+        });
     }
 
     /// Replace the type label shown on the right of every row. Used when the
@@ -528,18 +801,52 @@ impl ResultList {
         next
     }
 
+    /// Select the row at `index` outright (used by the Ctrl+number shortcuts,
+    /// which jump straight to a row instead of stepping the selection). Returns
+    /// whether the index names an existing row, leaving the selection alone
+    /// when it does not.
+    pub fn set_selected<C: AppContext>(&self, index: usize, cx: &mut C) -> bool {
+        let mut ok = false;
+        self.state.update(cx, |this, cx| {
+            if index < this.items.len() {
+                ok = true;
+                if this.selected != Some(index) {
+                    this.selected = Some(index);
+                    cx.notify();
+                }
+            }
+        });
+        ok
+    }
+
     /// Confirm the currently selected row, invoking the delegate's `on_confirm`
     /// callback. Returns whether the launcher should hide afterwards (no-op
     /// when nothing is selected: `false`).
+    ///
+    /// Every refusal is reported through [`set_confirm_trace`]. "Nothing
+    /// happened when I pressed the key" is otherwise indistinguishable from a
+    /// broken keybinding, and the reason — the rows were stale, or nothing was
+    /// selected — is exactly what tells the two apart.
     pub fn confirm_selected<C>(&self, _window: &mut gpui::Window, cx: &mut Context<C>) -> bool {
         let mut should_hide = false;
         self.state.update(cx, |this, cx| {
-            if let Some(index) = this.selected {
-                if index < this.items.len() {
-                    if let Some(cb) = this.on_confirm.clone() {
+            if !this.confirmable {
+                trace_confirm("refused: the displayed rows are not confirmable (stale)");
+                return;
+            }
+            match this.selected {
+                None => trace_confirm("refused: nothing is selected"),
+                Some(index) if index >= this.items.len() => trace_confirm(&format!(
+                    "refused: selected row {index} is past the end ({} rows)",
+                    this.items.len()
+                )),
+                Some(index) => match this.on_confirm.clone() {
+                    Some(cb) => {
+                        trace_confirm(&format!("confirmed row {index}"));
                         should_hide = cb(index, cx);
                     }
-                }
+                    None => trace_confirm("refused: no confirm callback is registered"),
+                },
             }
             cx.notify();
         });

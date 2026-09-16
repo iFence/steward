@@ -10,21 +10,22 @@
  * second M3 wave).
  */
 
-export const version = "0.1.0";
-
 /** One row rendered by the launcher's list view. */
 export interface ListItem {
-  /** Stable id; `item.invoke` uses it to reach the row's `onSelect`. */
+  /** Stable id; the plugin's `select(itemId)` receives it. */
   id: string;
   title: string;
   subtitle?: string;
-  /** Extra keywords for future fuzzy matching inside the view. */
-  keywords?: string[];
   icon?: string;
 }
 
 export interface ListOptions {
   items: ListItem[];
+  /**
+   * Registered for the current invocation. The host does not dispatch this
+   * itself: it calls the plugin's exported `select(itemId)`, which is where a
+   * plugin keeps whatever state its own handlers need.
+   */
   onSelect?: (item: ListItem) => void;
 }
 
@@ -199,30 +200,16 @@ function hostBridge(): HostBridge {
   return bridge;
 }
 
-/** The list registered by the latest `List` call; `selectItem` dispatches on it. */
-let currentList: { items: ListItem[]; onSelect?: (item: ListItem) => void } = {
-  items: [],
-};
-
 /**
- * Register the list view for the current command invocation. The plugin's
- * `command` both returns the view (for the host to render) and calls `List` to
- * attach the `onSelect` handler used by `item.invoke`.
+ * Register the list view for the current command invocation.
+ *
+ * The host renders the `list` view the plugin's `command` *returns*; this call
+ * carries no state the host reads. It is kept as a no-op so the documented call
+ * site stays valid, and so its `ListOptions` type keeps checking the option
+ * names a plugin writes. Row selection arrives at the plugin's own exported
+ * `select(itemId)`, not through here.
  */
-export function List(options: ListOptions): void {
-  currentList = options;
-}
-
-/**
- * Dispatch an `item.invoke` to the `onSelect` handler registered by the latest
- * `List` call. Plugins export `select(itemId)` and delegate to this helper.
- */
-export function selectItem(id: string): void {
-  const item = currentList.items.find((candidate) => candidate.id === id);
-  if (item && currentList.onSelect) {
-    currentList.onSelect(item);
-  }
-}
+export function List(_options: ListOptions): void {}
 
 /** Clipboard access, gated by the manifest's `clipboard.read/write/history` grants. */
 export const Clipboard = {

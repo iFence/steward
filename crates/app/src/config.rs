@@ -33,6 +33,10 @@ pub const MAX_PLUGIN_ROWS: usize = 4;
 pub const MENU_SETTINGS: &str = "settings";
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub const MENU_QUIT: &str = "quit";
+/// The tray's read-only status line (file-index progress). It carries an id so
+/// the menu row can be addressed, and is never routed as an action.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub const MENU_STATUS: &str = "status";
 
 /// Whether hiding the launcher destroys its window — reclaiming the
 /// per-window renderer, swapchain and GPU atlas — instead of keeping it

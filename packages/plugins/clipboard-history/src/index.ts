@@ -1,11 +1,11 @@
 /**
  * Official example plugin: Clipboard History.
  *
- * M3 milestone validation plugin: exercises `List` + `Detail` + `ActionPanel` +
+ * M3 milestone validation plugin: exercises `List` + `ActionPanel` +
  * `LocalStorage` + `Clipboard.history()` / `Clipboard.write`. Typing
  * `clipboard-history` shows the recent clipboard entries (pinned ones first);
- * selecting an entry drills into a `Detail` view of the full text; the action
- * bar copies the entry back to the clipboard or pins/unpins it.
+ * confirming an entry copies it back to the clipboard, and the action bar
+ * copies the selected entry or pins/unpins it.
  */
 
 import {
@@ -23,7 +23,6 @@ import {
 
 export const id = "com.example.clipboard-history";
 export const name = "Clipboard History";
-export const version = "0.1.0";
 
 const PIN_KEY = "pinned";
 const MAX_TEXT_PREVIEW = 60;
@@ -111,7 +110,6 @@ export function command(_name: string, _input: string): View {
   const items: ListItem[] = entries.map((entry) => ({
     id: entry.id,
     title: entry.text.slice(0, MAX_TEXT_PREVIEW),
-    keywords: [entry.text],
   }));
   List({
     items,

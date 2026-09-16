@@ -7,15 +7,20 @@ edition.workspace = true
 nucleo.workspace = true
 pinyin.workspace = true
 serde.workspace = true
-anyhow.workspace = true
+regex.workspace = true
+base64.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
-    "Win32_UI_Shell",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    # MFT/USN enumeration is DeviceIoControl against a raw volume handle.
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
-    "Win32_Foundation",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Com",
+    "Win32_UI_Shell",
 ] }
 widestring = "1"

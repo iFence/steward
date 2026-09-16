@@ -296,10 +296,10 @@ fn gpui_component_locale(code: &str) -> &'static str {
     }
 }
 
-/// Refresh the launcher's localized row type label ("应用"/"Application")
-/// after the UI language changes. The label is stored state in the results
-/// list, so it needs an explicit update even though the shared i18n loader
-/// already switched.
+/// Refresh the launcher's localized row text ("应用"/"Application", and the
+/// Ctrl key name in the row shortcut hints) after the UI language changes.
+/// Those labels are stored state in the results list, so they need an explicit
+/// update even though the shared i18n loader already switched.
 fn update_launcher_label(state: &Rc<RefCell<LauncherState>>, cx: &mut App) {
     let Some(window) = state.borrow().window else {
         return;
@@ -310,6 +310,8 @@ fn update_launcher_label(state: &Rc<RefCell<LauncherState>>, cx: &mut App) {
     let _ = app.update(cx, |app, _window, cx| {
         let label = app.i18n.translate("application");
         app.results.set_type_label(label, cx);
+        let modifier = app.i18n.translate("row-shortcut-modifier");
+        app.results.set_shortcut_modifier(modifier, cx);
         cx.notify();
     });
 }

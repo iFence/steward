@@ -64,6 +64,8 @@ On launch the app stays silent in the system tray rather than popping up a windo
 Hotkeys / interactions:
 
 - `Ctrl+Alt+Space`: summon / hide the launcher bar
+- `Up` / `Down`: move the result selection
+- `Enter`: confirm the first result; `Ctrl+1` … `Ctrl+7`: confirm the 2nd … 8th result directly (every row shows its key in a cap on the left)
 - `Esc`: hide the launcher bar
 - Tray left-click: summon / hide the launcher bar
 - Tray right-click menu: show / hide, exit

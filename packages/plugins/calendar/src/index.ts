@@ -11,10 +11,6 @@
 
 import { Clipboard, showToast, type View } from "@steward/extension-api";
 
-export const id = "com.example.calendar";
-export const name = "Calendar";
-export const version = "0.1.0";
-
 function isoDate(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");

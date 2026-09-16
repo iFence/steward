@@ -18,9 +18,13 @@ pub use nucleo;
 mod scanner;
 
 pub mod calc;
+pub mod file_index;
 pub mod link;
 
 pub use calc::{format_value, try_evaluate};
+pub use file_index::{
+    match_tier, EntryInfo, FileDb, FileDbBuilder, FileHit, Filter, MatchTier, SearchOptions,
+};
 pub use link::try_openable;
 pub use scanner::{platform_scanner, AppScanner};
 
@@ -42,6 +46,14 @@ const FREQ_WEIGHT: f64 = 20.0;
 struct ScoredApp {
     app: AppEntry,
     score: u16,
+}
+
+/// An application match with the fuzzy score that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppHit {
+    pub app: AppEntry,
+    /// nucleo's score for the best-matching haystack variant; higher is better.
+    pub score: u16,
 }
 
 /// The search engine: an immutable index of applications plus a reusable
@@ -82,6 +94,19 @@ impl Engine {
     /// `freq` resolves the usage count for an app path; pass a no-op closure
     /// when usage is unknown.
     pub fn query(&self, query: &str, freq: &dyn Fn(&str) -> u32) -> Vec<AppEntry> {
+        self.query_scored(query, freq)
+            .into_iter()
+            .map(|hit| hit.app)
+            .collect()
+    }
+
+    /// [`Engine::query`] with the raw fuzzy score kept alongside each entry.
+    ///
+    /// The launcher needs the score to rank applications against *other* result
+    /// kinds (files, plugin items) instead of always listing applications first:
+    /// a file whose name is an exact match should be able to outrank an
+    /// application that merely fuzzily contains the query's letters.
+    pub fn query_scored(&self, query: &str, freq: &dyn Fn(&str) -> u32) -> Vec<AppHit> {
         // nucleo's default config is case-insensitive with latin normalization,
         // which is well suited to launcher search. It only normalizes the
         // haystack though, so the needle has to be case-folded here (as the
@@ -142,7 +167,13 @@ impl Engine {
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        scored.into_iter().map(|s| s.app).collect()
+        scored
+            .into_iter()
+            .map(|scored| AppHit {
+                app: scored.app,
+                score: scored.score,
+            })
+            .collect()
     }
 
     fn path_key(&self, app: &AppEntry) -> String {

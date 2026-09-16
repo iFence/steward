@@ -22,8 +22,6 @@ pub use palette::*;
 pub use results_list::*;
 pub use search_bar::*;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
 /// Initialize the gpui-component stack.
 ///
 /// Runs the full component initialization (theme, global state, root, popover,

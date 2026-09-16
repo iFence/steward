@@ -12,5 +12,3 @@ pub mod route;
 
 pub use host::{HostConfig, HostEvent, PluginHost};
 pub use route::{RouteHit, RouteIndex};
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");

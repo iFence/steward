@@ -1,4 +1,4 @@
-//! Bounded folder suggestions for the file-dialog quick switcher.
+//! Bounded folder suggestions for the file-dialog file continuumer.
 //!
 //! This module deliberately does not build a disk-wide index. Call it on a
 //! worker thread: even a single metadata lookup can wait on a network share.
@@ -166,7 +166,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "steward-quick-switch-{}-{unique}-{}",
+                "steward-file-continuum-{}-{unique}-{}",
                 std::process::id(),
                 NEXT_ID.fetch_add(1, Ordering::Relaxed),
             ));

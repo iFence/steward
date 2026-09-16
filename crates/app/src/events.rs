@@ -267,7 +267,139 @@ fn drain_icon_batches(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
     let Some(app) = window.downcast::<StewardApp>() else {
         return;
     };
-    let _ = app.update(cx, |app, window, cx| app.search(window, cx));
+    let _ = app.update(cx, |app, window, cx| {
+        // The picker's rows carry no icons, and its box answers folder paths
+        // only: a batch from the ordinary launcher's search must not re-run a
+        // picker search. The cache above is already filled for the next real
+        // render of those rows.
+        if app.is_directory_picker() {
+            return;
+        }
+        app.search(window, cx)
+    });
+}
+
+/// Fold file-index events into the launcher.
+///
+/// Two different kinds of news arrive on the same poll tick: index lifecycle
+/// (a build finished, a USN pass applied) and the answer to the file search the
+/// launcher asked for. Both end in the same place — the visible query is re-run
+/// so the drop-down matches the current index.
+///
+/// The re-run is gated on [`RenderSignature`](crate::launcher::RenderSignature),
+/// a summary of everything a render depends on. Without that gate this function
+/// ran on all ten ticks a second and each run pushed a fresh row list, which
+/// reset the highlighted row: the window flickered, and the arrow keys looked
+/// broken because any selection the user made was overwritten before the next
+/// repaint.
+fn drain_file_index(
+    state: &Rc<RefCell<LauncherState>>,
+    cx: &mut AsyncApp,
+    i18n: &Rc<Localization>,
+) {
+    let changed = state.borrow_mut().file_index.poll_events();
+    if changed {
+        // A finished build is worth writing back: the next cold start then
+        // loads the snapshot instead of walking the disk again.
+        persist_file_index(state);
+    }
+    update_tray_status(state, i18n);
+
+    let reply = {
+        let index = state.borrow();
+        match index.file_index.replies.try_recv() {
+            Ok(reply) => Some(reply),
+            Err(crossbeam_channel::TryRecvError::Empty) => None,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => None,
+        }
+    };
+    let new_hits = match reply {
+        Some(reply) => {
+            let mut index = state.borrow_mut();
+            let hits_changed = index.file_hits != reply.hits;
+            // Late replies for a superseded query are dropped by generation.
+            index.file_hits = reply.hits;
+            index.file_hits_generation = reply.generation;
+            index.file_search_ms = reply.elapsed.as_millis();
+            hits_changed
+        }
+        None => false,
+    };
+
+    if !changed && !new_hits {
+        return;
+    }
+
+    let Some(window) = state.borrow().window else {
+        return;
+    };
+    let Some(app) = window.downcast::<StewardApp>() else {
+        return;
+    };
+    let _ = app.update(cx, |app, window, cx| {
+        // While the directory picker owns the box, file-index news is not part
+        // of any visible query: the picker answers folder-path searches only.
+        // The hits stored above are picked up when the ordinary launcher's
+        // search runs again (the session ends, or the user types).
+        if app.is_directory_picker() {
+            return;
+        }
+        // Nothing a render would show has changed: leave the rows — and the
+        // selection the user is moving — exactly as they are.
+        let before = crate::launcher::RenderSignature::capture(app);
+        if *app.rendered.borrow() == before {
+            return;
+        }
+        // `search` re-runs the app and plugin halves too, which are cheap; the
+        // file half is served from the hits just stored, so this cannot loop.
+        app.search(window, cx);
+        *app.rendered.borrow_mut() = crate::launcher::RenderSignature::capture(app);
+    });
+}
+
+/// Report the file index in the tray's status line.
+///
+/// A full-volume build is the one long-running thing the app does, and the only
+/// place it can be watched from is the tray: the launcher bar is hidden most of
+/// the time, and the build's own log goes to stderr, which a normal launch has no
+/// console for.
+fn update_tray_status(state: &Rc<RefCell<LauncherState>>, i18n: &Rc<Localization>) {
+    // The shared handle is taken out first: the `Rc` clone (and the borrow that
+    // follows) keep the item alive independently of the launcher state, so the
+    // status can be read and the item updated without overlapping borrows.
+    let handle = state.borrow().tray_status.clone();
+    let borrowed = handle.borrow();
+    let Some(item) = borrowed.as_ref() else {
+        return;
+    };
+    let (building, ready, records) = {
+        let state = state.borrow();
+        (
+            state.file_index.is_building(),
+            state.file_index.is_ready(),
+            state.file_index.records,
+        )
+    };
+    let status = if building {
+        crate::tray::TrayStatus::Indexing
+    } else if ready {
+        crate::tray::TrayStatus::Indexed(records)
+    } else {
+        crate::tray::TrayStatus::Idle
+    };
+    item.update(status, i18n);
+}
+
+/// Write the pending snapshot, if the index produced one.
+fn persist_file_index(state: &Rc<RefCell<LauncherState>>) {
+    let mut index = state.borrow_mut();
+    let Some(snapshot) = index.file_index.take_pending_snapshot() else {
+        return;
+    };
+    let storage = index.storage.clone();
+    if let Err(error) = crate::file_index::store_snapshot(&storage, &snapshot) {
+        eprintln!("file index: failed to persist the snapshot: {error:#}");
+    }
 }
 
 /// Bridge native tray/hotkey events into the GPUI event loop. Runs only after
@@ -318,8 +450,12 @@ pub(crate) fn spawn_event_poll_task(
         // Background icon extractions for below-the-fold results finish
         // asynchronously; apply them as they arrive.
         drain_icon_batches(&state, cx);
+        // File index: build progress, finished builds, USN catch-up, and the
+        // answers to file searches. A finished build or a fresh set of file hits
+        // re-runs the visible query so the drop-down reflects them.
+        drain_file_index(&state, cx, &i18n);
         #[cfg(target_os = "windows")]
-        crate::quick_switch::poll(&state, i18n.clone(), cx);
+        crate::file_continuum::poll(&state, i18n.clone(), cx);
 
         while let Ok(event) = hotkey_events.try_recv() {
             if event.state != HotKeyState::Pressed {
@@ -399,7 +535,7 @@ pub(crate) fn spawn_event_poll_task(
                             // session poll, including returning focus to that
                             // dialog after editing a directory query.
                             let picker_attached =
-                                state.borrow().quick_switch.borrow().target.is_some();
+                                state.borrow().file_continuum.borrow().target.is_some();
                             if !picker_attached
                                 && foreground != hwnd
                                 && !platform::cursor_hits_window(hwnd)

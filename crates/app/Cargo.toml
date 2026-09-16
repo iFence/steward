@@ -5,6 +5,18 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+# The shipped executable is `steward-app.exe`, matching the package name.
+#
+# Keep the two names equal. The MSI definition and the bench scripts all address
+# the binary by its package name (`crates/app/wix/main.wxs`,
+# `scripts/{package-msi,bench-resident}.ps1`, `scripts/bench.sh`), so a
+# differing `[[bin]]` name silently breaks packaging and benchmarking. Equal
+# names mean `-p steward-app` selects the only binary, and no script has to know
+# a product name.
+[[bin]]
+name = "steward-app"
+path = "src/main.rs"
+
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -15,7 +27,6 @@ raw-window-handle = "0.6"
 dirs.workspace = true
 crossbeam-channel.workspace = true
 i18n-embed.workspace = true
-i18n-embed-fl.workspace = true
 rust-embed.workspace = true
 unic-langid.workspace = true
 steward-core-engine = { path = "../core-engine" }

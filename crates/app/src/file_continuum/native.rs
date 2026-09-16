@@ -203,11 +203,11 @@ impl DialogTarget {
     /// The only injected shortcut is Alt+D; subsequent messages target the
     /// verified address edit, never the dialog's Open/Save button.
     pub(crate) fn focus_address(self) -> Result<()> {
-        ensure!(self.restore_focus(), "quick-switch-target-unavailable");
+        ensure!(self.restore_focus(), "file-continuum-target-unavailable");
         for key in [VK_CONTROL, VK_SHIFT, VK_MENU] {
             ensure!(
                 unsafe { GetAsyncKeyState(key as i32) } >= 0,
-                "quick-switch-release-modifiers"
+                "file-continuum-release-modifiers"
             );
         }
         let key = |vk, flags| INPUT {
@@ -228,7 +228,7 @@ impl DialogTarget {
         ];
         // Recheck after inspecting modifiers: a user can change focus while
         // Steward is returning to the original dialog.
-        ensure!(self.is_foreground(), "quick-switch-target-unavailable");
+        ensure!(self.is_foreground(), "file-continuum-target-unavailable");
         ensure!(
             unsafe {
                 SendInput(
@@ -237,7 +237,7 @@ impl DialogTarget {
                     std::mem::size_of::<INPUT>() as i32,
                 )
             } == keys.len() as u32,
-            "quick-switch-target-unavailable"
+            "file-continuum-target-unavailable"
         );
         Ok(())
     }
@@ -246,14 +246,17 @@ impl DialogTarget {
     pub(crate) fn navigate(self, path: &Path, cancelled: &AtomicBool) -> Result<()> {
         ensure!(
             path.is_absolute() && path.is_dir(),
-            "quick-switch-invalid-directory"
+            "file-continuum-invalid-directory"
         );
         let mut text: Vec<u16> = path.as_os_str().encode_wide().collect();
-        ensure!(!text.contains(&0), "quick-switch-invalid-directory");
+        ensure!(!text.contains(&0), "file-continuum-invalid-directory");
         text.push(0);
         for _ in 0..20 {
-            ensure!(!cancelled.load(Ordering::Acquire), "quick-switch-cancelled");
-            ensure!(self.is_foreground(), "quick-switch-target-unavailable");
+            ensure!(
+                !cancelled.load(Ordering::Acquire),
+                "file-continuum-cancelled"
+            );
+            ensure!(self.is_foreground(), "file-continuum-target-unavailable");
             if let Some(edit) = self.focused_address_edit() {
                 let mut result = 0;
                 ensure!(
@@ -269,12 +272,15 @@ impl DialogTarget {
                         )
                     } != 0
                         && result != 0,
-                    "quick-switch-target-unavailable"
+                    "file-continuum-target-unavailable"
                 );
-                ensure!(!cancelled.load(Ordering::Acquire), "quick-switch-cancelled");
+                ensure!(
+                    !cancelled.load(Ordering::Acquire),
+                    "file-continuum-cancelled"
+                );
                 ensure!(
                     self.focused_address_edit() == Some(edit),
-                    "quick-switch-target-unavailable"
+                    "file-continuum-target-unavailable"
                 );
                 // Send directly to the address edit's subclass. Posting an
                 // Enter into the dialog message loop could instead invoke its
@@ -291,7 +297,7 @@ impl DialogTarget {
                             &mut result,
                         )
                     } != 0,
-                    "quick-switch-target-unavailable"
+                    "file-continuum-target-unavailable"
                 );
                 if self.focused_address_edit() == Some(edit) {
                     unsafe {
@@ -310,7 +316,7 @@ impl DialogTarget {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        bail!("quick-switch-target-unavailable")
+        bail!("file-continuum-target-unavailable")
     }
 }
 
@@ -612,7 +618,7 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         assert_eq!(
             target.navigate(&path, &cancelled).unwrap_err().to_string(),
-            "quick-switch-cancelled"
+            "file-continuum-cancelled"
         );
         cancelled.store(false, Ordering::Release);
         assert!(!target.is_foreground());

@@ -3,6 +3,8 @@ app-settings = Paramètres
 app-autostart = Lancer au démarrage
 app-quit = Quitter
 application = Application
+# Shortcut hints shown on the right of the result rows (Ctrl+N)
+row-shortcut-modifier = Ctrl
 open-in-browser = Ouvrir dans le navigateur
 command = Commande
 settings-general = Général
@@ -25,14 +27,14 @@ settings-about-description = Steward – un lanceur rapide et économe en mémoi
 settings-version = Version
 
 # Automatic directory picker for open/save dialogs
-quick-switch-placeholder = Saisir un chemin ou rechercher un dossier récent
-quick-switch-hint = Entrée : ouvrir le dossier · Échap : annuler
-quick-switch-searching = Recherche de dossiers…
-quick-switch-no-results = Aucun dossier trouvé — saisir un chemin complet
-quick-switch-navigating = Accès au dossier…
-quick-switch-directory = Dossier
-quick-switch-target-unavailable = La boîte de dialogue est indisponible ou incompatible. Appuyez sur Échap et réessayez.
-quick-switch-release-modifiers = Relâchez Ctrl / Alt / Maj et réessayez.
-quick-switch-invalid-directory = Ce dossier est introuvable ou inaccessible.
-quick-switch-cancelled = Annulé
-quick-switch-passive = Cliquez dans le champ de recherche pour saisir du texte
+file-continuum-no-results = Aucun dossier trouvé — saisir un chemin complet
+file-continuum-navigating = Accès au dossier…
+file-continuum-target-unavailable = La boîte de dialogue est indisponible ou incompatible. Appuyez sur Échap et réessayez.
+file-continuum-release-modifiers = Relâchez Ctrl / Alt / Maj et réessayez.
+file-continuum-invalid-directory = Ce dossier est introuvable ou inaccessible.
+file-continuum-cancelled = Annulé
+file-continuum-passive = Cliquez dans le champ de recherche pour saisir du texte
+# Full-disk file index
+files-indexing = Indexation des fichiers…
+files-no-index = L'index des fichiers n'est pas disponible. Saisissez file: suivi d'un nom une fois l'index construit.
+files-indexed = Fichiers indexés

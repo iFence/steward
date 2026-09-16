@@ -64,6 +64,7 @@ Steward 不仅运行插件，而是管理：
 | M1 Launcher MVP | DONE |
 | M2 Plugin System v1 | DONE |
 | M3 Plugin UI Framework & API Coverage | DONE |
+| M3.5 全盘文件索引与检索 | DONE（真机 MFT 验收待补） |
 
 ## 总体架构
 
@@ -177,6 +178,22 @@ Raycast / Vicinae Extension
 - [x] 覆盖 20–30 个常用 Node 内置模块 polyfill（fs / path / buffer / http 等），明确不支持 native binding
 - [x] 第二个官方插件 `clipboard-history` 验证 API 可用性
 - [x] 主题 / 深色模式 / 动画细节打磨（深色优先 + accent 一致性 + 启动器入场动画；浅色主题与更多过渡动画后续补齐）
+
+### M3.5 - 全盘文件索引与检索（DONE，2026-09-12）
+
+依据仓库根目录 `Everything_索引与检索逆向报告.md` 复刻 Everything 的结构性做法，实现在
+`crates/core-engine/src/file_index/`（决策记录见 `docs/architecture.md`）。
+
+- [x] 紧凑内存索引：父记录索引 + UTF-8 名 + 尾部元数据，`0xff` 转义存 `u32` 真长（报告 §3.3／§4）
+- [x] 构建流程：父 FRN 暂存 → `finalize` 解析为记录索引 → 清孤儿 → 按路径排序 → 块索引（报告 §4）
+- [x] NTFS 快路径：引导扇区几何 + `$MFT` mapping pairs 按 run 批量解析，跳过 DOS 命名空间别名（报告 §3）
+- [x] 降级路径：`FindFirstFileExW` 递归遍历，产出相同记录格式（读裸卷需要管理员权限）
+- [x] 查询语言：`case:`/`path:`/`regex:`/`wildcards:`/`wholeword:`/`ext:`/`size:`/`dm:`/`type:`/`folder:`、`!` 取反、`< >` 分组
+- [x] 并行检索：`ceil(block_count / 16)` 个工作线程分块扫描 + 查询取消（报告 §6.3）
+- [x] USN Journal 增量：新建／删除（含子树）／改名与移动／元数据刷新，Journal ID 变化判定重建（报告 §5）
+- [x] 持久化快照与不变量校验（报告 §7）
+- [x] 启动器接入：`file:` 前缀限定文件检索、文件结果行与 shell 打开、7 语言文案
+- [ ] 真机验收：提权下的 `$MFT` 全盘枚举实测；4 个手工构造 MFT 记录的 fixture 测试仍标注 `#[ignore]`，需用真机记录替换
 
 ### M4 - Windows Support（TODO）
 

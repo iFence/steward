@@ -31,15 +31,17 @@
 mod autostart;
 mod clipboard_history;
 mod config;
+mod directory_status;
 mod events;
+#[cfg(target_os = "windows")]
+mod file_continuum;
+mod file_index;
 mod hotkeys;
 mod i18n;
 mod launch;
 mod launcher;
 mod platform;
 mod plugin_panel_window;
-#[cfg(target_os = "windows")]
-mod quick_switch;
 mod search_input;
 mod settings;
 mod theme;
@@ -141,6 +143,18 @@ fn main() {
     // Plugin host: resolves the `steward-plugin-runtime` binary (env override
     // `STEWARD_PLUGIN_RUNTIME_BIN` or the sibling of this executable). A
     // missing binary degrades to "no plugins" instead of failing startup.
+    #[cfg(target_os = "windows")]
+    {
+        crate::file_continuum::debug_start();
+        // Route the results list's confirmation decisions into the same trace: a
+        // Ctrl+number that appears to do nothing is otherwise indistinguishable
+        // from a keybinding that never fired.
+        if crate::file_continuum::debug_enabled() {
+            steward_ui_components::set_confirm_trace(Some(std::rc::Rc::new(|message: &str| {
+                crate::file_continuum::debug_log(&format!("confirm {message}"));
+            })));
+        }
+    }
     let plugin_host_config = match HostConfig::from_env() {
         Ok(config) => config,
         Err(error) => {
@@ -149,13 +163,23 @@ fn main() {
         }
     };
     let plugin_host = Rc::new(RefCell::new(PluginHost::new(plugin_host_config)));
+    // Full-disk file index: the persisted snapshot comes up synchronously (one
+    // SQLite read plus a decode) so a cold start can already search files; the
+    // build itself runs on the index worker when the snapshot is missing.
+    let file_index = crate::file_index::FileIndex::start(
+        crate::file_index::load_snapshot(&storage.borrow()),
+        &[],
+    );
+    // The tray's status line is created together with the tray icon (in the boot
+    // closure) and then updated from the poll task, so the field starts empty.
+    let tray_status: Rc<RefCell<Option<crate::tray::TrayStatusItem>>> = Rc::new(RefCell::new(None));
     let state = Rc::new(RefCell::new(LauncherState {
         window: None,
         settings_window: None,
         #[cfg(target_os = "windows")]
-        quick_switch: RefCell::new(crate::quick_switch::QuickSwitch::new()),
+        file_continuum: RefCell::new(crate::file_continuum::FileContinuum::new()),
         focus: None,
-        result_count: 0,
+        result_count: std::cell::Cell::new(0),
         scrim_alpha: steward_ui_components::palette::SCRIM_ALPHA,
         last_applied_height: 0.0,
         storage,
@@ -180,7 +204,13 @@ fn main() {
         hotkey_manager: None,
         summon_hotkey: None,
         settings_hotkey: None,
+        tray_status: tray_status.clone(),
         clipboard_rx: RefCell::new(Some(clipboard_rx)),
+        file_index,
+        file_hits: Vec::new(),
+        file_search_ms: 0,
+        file_hits_generation: 0,
+        file_search_generation: 0,
         _clipboard_watcher: Some(clipboard_watcher),
     }));
 
@@ -198,12 +228,20 @@ fn main() {
         // Seed the plugin host from the metadata cache (cold path: SQLite
         // only); a background scan reconciles new/changed plugins.
         state.borrow().ensure_plugin_index();
+        // Full-disk file index. A loaded snapshot is already searchable; a cold
+        // start asks for a build instead, which walks the volumes on the index
+        // worker while the launcher stays responsive. Rebuilding on every start
+        // is deliberate: the USN journal only catches up changes since the build,
+        // so a build doubles as the periodic reconciliation for files that were
+        // created or deleted while Steward was not running.
+        state.borrow_mut().start_file_index();
         let window = open_launcher_window(cx, &focus, i18n.clone(), &state);
         state.borrow_mut().window = Some(window);
 
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        if let Err(error) = setup_tray(&i18n) {
-            eprintln!("failed to create tray icon: {error:#}");
+        match setup_tray(&i18n) {
+            Ok(handle) => *tray_status.borrow_mut() = Some(handle),
+            Err(error) => eprintln!("failed to create tray icon: {error:#}"),
         }
         if let Err(error) = setup_global_hotkey(&state) {
             eprintln!("failed to register global hotkey: {error:#}");

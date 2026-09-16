@@ -3,6 +3,8 @@ app-settings = 설정
 app-autostart = 로그인 시 실행
 app-quit = 종료
 application = 앱
+# Shortcut hints shown on the right of the result rows (Ctrl+N)
+row-shortcut-modifier = ^
 open-in-browser = 브라우저에서 열기
 command = 명령
 settings-general = 일반
@@ -25,14 +27,14 @@ settings-about-description = Steward – 빠르고 메모리 사용량이 낮은
 settings-version = 버전
 
 # Automatic directory picker for open/save dialogs
-quick-switch-placeholder = 폴더 경로 입력 또는 최근 폴더 검색
-quick-switch-hint = Enter: 폴더 이동 · Esc: 취소
-quick-switch-searching = 폴더 검색 중…
-quick-switch-no-results = 폴더가 없습니다. 전체 경로를 입력하세요
-quick-switch-navigating = 폴더로 이동 중…
-quick-switch-directory = 폴더
-quick-switch-target-unavailable = 원래 대화 상자를 사용할 수 없습니다. Esc를 누르고 다시 시도하세요.
-quick-switch-release-modifiers = Ctrl / Alt / Shift를 놓고 다시 시도하세요.
-quick-switch-invalid-directory = 폴더가 없거나 접근할 수 없습니다.
-quick-switch-cancelled = 취소됨
-quick-switch-passive = 검색창을 클릭하여 입력하세요
+file-continuum-no-results = 폴더가 없습니다. 전체 경로를 입력하세요
+file-continuum-navigating = 폴더로 이동 중…
+file-continuum-target-unavailable = 원래 대화 상자를 사용할 수 없습니다. Esc를 누르고 다시 시도하세요.
+file-continuum-release-modifiers = Ctrl / Alt / Shift를 놓고 다시 시도하세요.
+file-continuum-invalid-directory = 폴더가 없거나 접근할 수 없습니다.
+file-continuum-cancelled = 취소됨
+file-continuum-passive = 검색창을 클릭하여 입력하세요
+# Full-disk file index
+files-indexing = 파일 인덱스 생성 중…
+files-no-index = 파일 인덱스를 사용할 수 없습니다. 인덱스가 만들어지면 file: 뒤에 이름을 입력하세요.
+files-indexed = 인덱싱된 파일

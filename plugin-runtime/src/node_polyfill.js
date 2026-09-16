@@ -934,7 +934,7 @@
     },
   };
   function fsUnsupported(name) {
-    throw new Error("Steward: 'fs." + name + "' is not supported in this phase");
+    throw new Error("Steward: 'fs." + name + "' is not supported in M3");
   }
   ["readFileSync", "writeFileSync", "readdir", "readdirSync", "stat", "statSync",
     "existsSync", "mkdir", "mkdirSync", "rm", "rmSync", "unlink", "appendFile"].forEach(function (name) {

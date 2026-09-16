@@ -185,6 +185,20 @@ mod windows {
         unsafe { GetForegroundWindow() }
     }
 
+    /// A window's screen rectangle in physical pixels. Used by the picker's
+    /// opt-in placement trace, where the bar's own rect next to the dialog's is
+    /// what tells a stale anchor from a placement that never applied.
+    pub fn window_rect(hwnd: HWND) -> Rect {
+        let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut rect) };
+        Rect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }
+    }
+
     /// Whether the cursor currently sits inside `hwnd`'s window frame. The
     /// foreground watch uses this to keep the launcher up while the user is
     /// still interacting with it (clicking it, dragging it, or composing IME
