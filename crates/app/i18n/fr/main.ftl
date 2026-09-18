@@ -3,6 +3,8 @@ app-settings = Paramètres
 app-autostart = Lancer au démarrage
 app-quit = Quitter
 application = Application
+# Shortcut hints shown on the right of the result rows (Ctrl+N)
+row-shortcut-modifier = Ctrl
 open-in-browser = Ouvrir dans le navigateur
 command = Commande
 settings-general = Général
@@ -23,3 +25,16 @@ settings-theme-amber = Ambre
 settings-about = À propos
 settings-about-description = Steward – un lanceur rapide et économe en mémoire et une plateforme de plugins
 settings-version = Version
+
+# Automatic directory picker for open/save dialogs
+file-continuum-no-results = Aucun dossier trouvé — saisir un chemin complet
+file-continuum-navigating = Accès au dossier…
+file-continuum-target-unavailable = La boîte de dialogue est indisponible ou incompatible. Appuyez sur Échap et réessayez.
+file-continuum-release-modifiers = Relâchez Ctrl / Alt / Maj et réessayez.
+file-continuum-invalid-directory = Ce dossier est introuvable ou inaccessible.
+file-continuum-cancelled = Annulé
+file-continuum-passive = Cliquez dans le champ de recherche pour saisir du texte
+# Full-disk file index
+files-indexing = Indexation des fichiers…
+files-no-index = L'index des fichiers n'est pas disponible. Saisissez file: suivi d'un nom une fois l'index construit.
+files-indexed = Fichiers indexés

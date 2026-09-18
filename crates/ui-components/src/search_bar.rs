@@ -147,15 +147,6 @@ impl SearchBar {
         }
     }
 
-    pub fn set_value<C: gpui::AppContext>(&self, value: impl Into<String>, cx: &mut C) {
-        if let Some(state) = self.state.borrow().as_ref() {
-            state.update(cx, |this, cx| {
-                this.value = value.into();
-                cx.notify();
-            });
-        }
-    }
-
     pub fn render<C>(&self, _cx: &mut Context<C>) -> impl IntoElement {
         if let Some(state) = self.state.borrow().as_ref() {
             state.clone().into_any_element()

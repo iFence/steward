@@ -19,11 +19,12 @@ use gpui::{
     UTF16Selection, Window,
 };
 use gpui_component::ActiveTheme;
+use steward_core_engine::MatchTier;
 use steward_plugin_host::{PluginHost, RouteHit};
 use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
 use steward_ui_components::{
-    calendar_grid_height, days_in_month, iso_date, month_week_rows, CalendarData, CalendarView,
-    ResultItem, ResultList,
+    calendar_grid_height, days_in_month, iso_date, month_week_rows, shortcut_digit_index,
+    CalendarData, CalendarView, ResultItem, ResultList,
 };
 
 use crate::config::{
@@ -53,6 +54,211 @@ const POP_OUT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" widt
 /// `MAX_RESULT_ROWS` so the window stops growing once the list scrolls.
 fn result_height(count: usize) -> f32 {
     RESULT_ROW_HEIGHT * count.min(MAX_RESULT_ROWS) as f32
+}
+
+/// Shortest gap between two file-index searches, in milliseconds.
+///
+/// A keystroke burst is answered by re-ranking the app and plugin rows
+/// immediately (they are in memory) while the file index catches up at this
+/// cadence: fast enough to feel live, slow enough that a typed word does not
+/// queue one full index scan per character.
+const FILE_SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// What a render was built from, for "did anything change?" checks.
+/// Compared on every poll tick (10 ms). Cheap to compute and cheap to compare:
+/// the query string, what the file index would contribute, and whether the index
+/// is still being built (which is what the empty-list hint depends on).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct RenderSignature {
+    query: String,
+    file_ready: bool,
+    file_building: bool,
+    file_records: usize,
+    file_hits: Vec<(std::path::PathBuf, i32)>,
+}
+
+impl RenderSignature {
+    /// Capture the state a render depends on.
+    pub(crate) fn capture(app: &StewardApp) -> Self {
+        let state = app.state.borrow();
+        Self {
+            query: app.active_input().query.clone(),
+            file_ready: state.file_index.is_ready(),
+            file_building: state.file_index.is_building(),
+            file_records: state.file_index.records,
+            file_hits: state
+                .file_hits
+                .iter()
+                .map(|hit| (hit.path.clone(), hit.score))
+                .collect(),
+        }
+    }
+}
+
+/// A result row together with what it takes to rank it against rows of every
+/// other kind.
+///
+/// Icons travel with the row because the merged list is sorted after the icons
+/// are resolved, so the two must move together or the icons would belong to the
+/// wrong names.
+pub(crate) struct RankedRow {
+    pub(crate) item: ResultItem,
+    pub(crate) icon: Option<Arc<gpui::Image>>,
+    pub(crate) rank: RowRank,
+}
+
+/// Sorting key for a result row: how well it matches, then how good that match
+/// is, then how short and how shallow the name is.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RowRank {
+    pub(crate) tier: MatchTier,
+    /// Within a tier: higher first, so the ordering is reversed before use.
+    pub(crate) relevance: i64,
+    /// Within a tier: shorter names first (they are usually the better answer).
+    pub(crate) name_len: usize,
+    /// Stable tie-break so the list does not reshuffle between identical rows.
+    pub(crate) path: Vec<u8>,
+}
+
+impl RowRank {
+    /// Rank for a row whose text is `name`, matched against `needle`.
+    ///
+    /// `relevance` is a within-tier tie-break (nucleo's fuzzy score for an
+    /// application, the file index's own score for a file); it is scaled down so
+    /// it can order rows inside a tier but never promote one past a better tier.
+    pub(crate) fn new(needle: &str, name: &str, relevance: i64, path: &std::path::Path) -> Self {
+        Self {
+            tier: steward_core_engine::match_tier(needle, name, path.to_str()),
+            relevance: relevance.clamp(-1_000_000, 1_000_000),
+            name_len: name.chars().count(),
+            path: path.to_string_lossy().to_lowercase().into_bytes(),
+        }
+    }
+
+    /// Best-first ordering.
+    pub(crate) fn compare(&self, other: &Self) -> std::cmp::Ordering {
+        self.tier
+            .cmp(&other.tier)
+            .then_with(|| other.relevance.cmp(&self.relevance))
+            .then_with(|| self.name_len.cmp(&other.name_len))
+            .then_with(|| self.path.cmp(&other.path))
+    }
+}
+
+/// Order rows best-first for the drop-down.
+///
+/// Sorting by match quality across *all* kinds is the fix for the launcher
+/// looking like it only matches from the first letter: rows used to be appended
+/// kind by kind (builtins, plugins, apps, files) and the drop-down shows eight,
+/// so any file hit after eight app hits was invisible no matter how exact it was.
+fn rank_rows(rows: &mut [RankedRow]) {
+    rows.sort_by(|left, right| left.rank.compare(&right.rank));
+}
+
+/// Split a plugin command title out of a query for tiering: a plugin that
+/// declares `keywords` matches a localized alias, so the title is the best
+/// available signal for "how directly did the user ask for this".
+fn plugin_row_rank(needle: &str, title: &str, command: &str) -> RowRank {
+    let tier = steward_core_engine::match_tier(needle, title, None)
+        .min(steward_core_engine::match_tier(needle, command, None));
+    RowRank {
+        tier,
+        relevance: 0,
+        name_len: title.chars().count(),
+        path: command.as_bytes().to_vec(),
+    }
+}
+
+/// The file generation the index worker is currently on. Used by the render
+/// paths that are not answering a search (a plugin view landing): they render
+/// whatever hits are in hand, so "the current generation" is the honest label.
+fn current_file_generation(app: &StewardApp) -> u64 {
+    app.state.borrow().file_hits_generation
+}
+
+/// Secondary text for a file row: the containing folder, so the row answers
+/// "where is it". The size is *not* folded in here — the widget renders it as
+/// its own right-aligned column, pinning it to the row's edge; appending it to
+/// the path is what used to leave "…\Verifier · 120.6 KB" reading as if the size
+/// were part of the folder name.
+fn file_subtitle(hit: &steward_core_engine::file_index::FileHit) -> String {
+    hit.path
+        .parent()
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The size column for a file row: the formatted byte count, or empty for a
+/// folder (which has no meaningful size of its own).
+fn file_size(hit: &steward_core_engine::file_index::FileHit) -> String {
+    match (hit.is_dir, hit.size) {
+        (true, _) | (false, None) => String::new(),
+        (false, Some(size)) => human_size(size),
+    }
+}
+
+/// Byte count for a result row, e.g. `1.4 MB`. Binary units, matching what
+/// Explorer reports for the same file.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Parse the launcher's routing prefixes out of a raw query.
+///
+/// - `file:<query>` (or `f:`) searches only the file index
+/// - `app:<query>` searches only applications and plugins
+/// - anything else searches everything
+///
+/// Returns the scope plus the query with the prefix removed.
+fn route_query(query: &str) -> (QueryScope, &str) {
+    let trimmed = query.trim_start();
+    for (prefix, scope) in [
+        ("file:", QueryScope::Files),
+        ("f:", QueryScope::Files),
+        ("app:", QueryScope::Apps),
+    ] {
+        if let Some(rest) = trimmed
+            .strip_prefix(prefix)
+            .or_else(|| trimmed.strip_prefix(&prefix.to_uppercase()))
+        {
+            // `file:` with nothing after it still routes: the user is about to
+            // type a file query, so showing app rows in the meantime is noise.
+            return (scope, rest.trim_start());
+        }
+    }
+    (QueryScope::All, query)
+}
+
+/// What a query should be matched against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueryScope {
+    /// Applications, plugins and files.
+    All,
+    /// Only the file index.
+    Files,
+    /// Only applications and plugins.
+    Apps,
+}
+
+/// Whether a routed query is a search at all.
+///
+/// The launcher's home page is an empty query (the most-used applications). The
+/// file index answers `""` with its first records in path order, so an empty
+/// query must never reach the index or produce file rows — otherwise files take
+/// the home page over. Any non-whitespace term is a real search.
+fn is_file_search(query: &str) -> bool {
+    !query.trim().is_empty()
 }
 
 /// Total launcher window height for a given number of visible result rows:
@@ -88,6 +294,18 @@ pub(crate) struct ActiveCalendar {
 pub(crate) struct StewardApp {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) input: SearchInput,
+    /// The directory picker's own query buffer.
+    ///
+    /// The picker and the ordinary launcher are two boxes that must not share
+    /// text or caret state: attaching a dialog over a half-typed launcher query
+    /// must not replace what the user was typing, and committing a folder path
+    /// must not clear the launcher's box. The active one is selected by
+    /// [`StewardApp::active_input`] from the picker session state.
+    ///
+    /// The picker box only ever searches folder paths (see
+    /// `file_continuum::search`), so keeping it apart from `input` also keeps
+    /// launcher route prefixes (`file:`, `app:`) out of a path query.
+    pub(crate) picker_input: SearchInput,
     pub(crate) i18n: Rc<crate::i18n::Localization>,
     /// Shared search index, rebuilt at startup from a scan / cache.
     pub(crate) engine: Rc<RefCell<steward_core_engine::Engine>>,
@@ -102,14 +320,48 @@ pub(crate) struct StewardApp {
     pub(crate) calendar: CalendarView,
     /// Keyboard-selected date inside the calendar grid (ISO `YYYY-MM-DD`).
     pub(crate) calendar_selected: String,
-    /// Base rows of the current query (builtin actions + app matches) and the
-    /// icons aligned with them, kept separate from the plugin rows so a late
-    /// plugin response can re-merge without re-running the search.
-    pub(crate) base_items: Vec<ResultItem>,
-    pub(crate) base_icons: Vec<Option<Arc<gpui::Image>>>,
-    /// Number of leading builtin rows (calculator/link) inside `base_items`;
-    /// plugin rows are spliced in after these and before the app matches.
+    /// Base rows of the current query (builtin actions + app and file matches),
+    /// ranked together and each carrying its own icon, kept separate from the
+    /// plugin rows so a late plugin response can be re-merged without re-running
+    /// the search.
+    pub(crate) base_rows: Vec<RankedRow>,
+    /// Number of leading builtin rows (calculator/link) inside `base_rows`;
+    /// plugin rows are inserted after the builtins' tier but never above them,
+    /// so Enter still hits a calculator answer first.
     pub(crate) builtin_count: usize,
+    /// The query text the current rows were ranked against, so a re-merge ranks
+    /// plugin rows with the same needle.
+    pub(crate) ranked_query: String,
+    /// What the last render was built from: the query, the file rows and the
+    /// file-index state. The poll task compares against this so a tick that
+    /// changes nothing does not re-run the search — re-rendering on a timer reset
+    /// the highlighted row ten times a second, which both flickered the window and
+    /// made the arrow keys look broken.
+    pub(crate) rendered: RefCell<RenderSignature>,
+    /// When the last file-index search was dispatched, so a burst of keystrokes
+    /// does not queue one search per character. The generation the worker gave
+    /// that request lives in `LauncherState::file_search_generation`, because it
+    /// is what the *reply* has to be matched against.
+    pub(crate) file_search_at: Cell<Option<std::time::Instant>>,
+    /// The input the displayed rows were actually produced for.
+    ///
+    /// Both the picker and the file index keep the previous rows on screen while
+    /// a new search runs (blanking them flashed the drop-down on every
+    /// keystroke), so "are these rows still the answer to what is in the box"
+    /// has to be tracked explicitly: the producer records it, and `render_merged`
+    /// re-enables confirmation only when it matches the current input. Without it
+    /// a stale row could be launched, and — the bug this replaced — a *fresh* row
+    /// could be refused, because the flag was only ever set on the typing path.
+    ///
+    /// It is deliberately **not** written by `render_merged`: a render happens
+    /// while results are still in flight (the picker's reply lags the keystroke
+    /// that asked for it), so "I just rendered" is not evidence that the rows
+    /// answer what the user has typed.
+    pub(crate) results_query: String,
+    /// The directory picker's status line, as its own entity so it repaints only
+    /// when its text changes (as a plain child of this view it was rebuilt on
+    /// every keystroke-driven repaint, which made it blink).
+    pub(crate) directory_status_bar: gpui::Entity<crate::directory_status::DirectoryStatusBar>,
     /// Result count is published here so the tray/hotkey path can size the
     /// window when it is summoned.
     pub(crate) state: Rc<RefCell<LauncherState>>,
@@ -140,12 +392,18 @@ type PluginScan = (ScanReport, Vec<PluginMeta>);
 /// time the bar is summoned, and the current result count so the drop-down
 /// height can be computed at show time.
 pub(crate) struct LauncherState {
+    #[cfg(target_os = "windows")]
+    pub(crate) file_continuum: RefCell<crate::file_continuum::FileContinuum>,
     pub(crate) window: Option<gpui::AnyWindowHandle>,
     pub(crate) settings_window: Option<gpui::AnyWindowHandle>,
     /// Created together with GPUI (a `FocusHandle` can only be allocated from
     /// an application context); `None` before the first summon.
     pub(crate) focus: Option<FocusHandle>,
-    pub(crate) result_count: usize,
+    /// Number of rows the drop-down last rendered. A `Cell` because the picker
+    /// clears it from the poll task (a `&self` context) when a session attaches,
+    /// so the bar is placed at the right height straight away rather than one
+    /// stale result list too tall.
+    pub(crate) result_count: std::cell::Cell<usize>,
     /// Scrim opacity painted over the blurred backdrop, adapted at show time
     /// to the luminance of what sits behind the bar (see
     /// [`crate::theme::adaptive_scrim_alpha`]) so white ink stays readable
@@ -235,14 +493,75 @@ pub(crate) struct LauncherState {
     /// foreground poll task and forwarded to the plugin host.
     pub(crate) clipboard_rx:
         RefCell<Option<crossbeam_channel::Receiver<Vec<steward_ipc_protocol::ClipboardEntry>>>>,
+    /// Full-disk file index: persisted snapshot, background build, USN catch-up
+    /// and off-thread search.
+    pub(crate) file_index: crate::file_index::FileIndex,
+    /// Hits from the most recent file search, merged into the drop-down.
+    pub(crate) file_hits: Vec<steward_core_engine::file_index::FileHit>,
+    /// The generation whose hits are in [`Self::file_hits`] right now — not the
+    /// generation of the last request. Emptying the hits counts as a new set, so
+    /// this can be trusted to say "these are the rows for request N".
+    pub(crate) file_hits_generation: u64,
+    /// How long the last file search took, for the diagnostics line.
+    pub(crate) file_search_ms: u128,
+    /// The index worker's generation for the last *dispatched* search. The reply
+    /// carries it back, and it is what makes the rows confirmable — see the gate
+    /// at the end of `render_merged`.
+    pub(crate) file_search_generation: u64,
+    /// The tray's status line, so the poll task can report file-index progress
+    /// where the user can see it without summoning the launcher. Empty until the
+    /// tray icon exists (and on platforms without one).
+    pub(crate) tray_status: Rc<RefCell<Option<crate::tray::TrayStatusItem>>>,
     /// Keeps the host-side clipboard watcher alive (its thread owns a private
     /// SQLite connection and the arboard clipboard).
     pub(crate) _clipboard_watcher: Option<crate::clipboard_history::ClipboardWatcher>,
 }
 
 impl LauncherState {
+    /// The screen rect of the open/save dialog the directory picker is attached
+    /// to, so the launcher bar can sit flush under it. `None` in the normal
+    /// centred mode (and on platforms without the picker).
+    pub(crate) fn dialog_anchor(&self) -> Option<crate::platform::Rect> {
+        #[cfg(target_os = "windows")]
+        {
+            self.file_continuum
+                .borrow()
+                .target
+                .and_then(|target| target.rect())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
+    /// Width of the launcher bar in logical px. The directory picker matches the
+    /// width of the dialog it is attached to (so the bar lines up with the
+    /// dialog's edges); every other mode uses the design width.
+    pub(crate) fn width(&self) -> f32 {
+        #[cfg(target_os = "windows")]
+        {
+            self.file_continuum
+                .borrow()
+                .target
+                .and_then(|target| target.logical_width())
+                .unwrap_or(LAUNCHER_WIDTH)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            LAUNCHER_WIDTH
+        }
+    }
+
     /// Total launcher window height for the current result count: the input
     /// bar plus the result drop-down.
+    ///
+    /// The picker's status line is deliberately **not** part of this: it belongs
+    /// to the view, not to the shared state, and only the view knows whether the
+    /// line is currently rendering anything. `render_merged` adds it, which is
+    /// also the only place that has to stay correct — counting it here as well
+    /// gave the same box two heights, one line apart, depending on whether the
+    /// result list was empty (which is when the line speaks up).
     pub(crate) fn height(&self) -> f32 {
         let calendar = self.plugin_calendar.borrow();
         if let Some(active) = calendar.as_ref() {
@@ -250,7 +569,20 @@ impl LauncherState {
                 return calendar_height(&active.data);
             }
         }
-        launcher_height(self.result_count)
+        launcher_height(self.result_count.get())
+    }
+
+    /// Drop the row count and the plugin views the *previous* session left
+    /// behind, so the next show is sized from an empty list instead of the last
+    /// session's. Called as a picker session attaches, right before the bar is
+    /// placed: the count feeds [`Self::height`], and a stale one put the bar a
+    /// whole result list too tall over the dialog it is anchored to.
+    pub(crate) fn clear_picker_results(&self) {
+        self.result_count.set(0);
+        self.plugin_hits.borrow_mut().clear();
+        self.plugin_views.borrow_mut().clear();
+        self.plugin_pending.borrow_mut().clear();
+        *self.plugin_calendar.borrow_mut() = None;
     }
 
     /// Whether a plugin view is currently popped out into its own window.
@@ -336,6 +668,27 @@ impl LauncherState {
                     break;
                 }
             }
+        }
+    }
+
+    /// Ask the file index for a build, or for a journal catch-up when a snapshot
+    /// was already loaded and the index is usable.
+    pub(crate) fn start_file_index(&mut self) {
+        if !self.file_index.is_ready() {
+            self.file_index.request_build();
+            return;
+        }
+        if self.file_index.supports_journal() {
+            // The snapshot is searchable already; a catch-up pass folds in
+            // whatever each volume's USN journal recorded since it was written,
+            // including while Steward was closed.
+            self.file_index.request_catch_up();
+        } else {
+            // A directory-walk index has no journal: the only way to pick up
+            // changes made while Steward was closed is a fresh background pass.
+            // The live watcher handles everything from here on, and the loaded
+            // snapshot stays searchable throughout the rebuild.
+            self.file_index.request_build();
         }
     }
 
@@ -599,7 +952,7 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<usize> {
-        Some(self.input.utf16_len())
+        Some(self.active_input().utf16_len())
     }
 
     fn selected_text_range(
@@ -610,22 +963,22 @@ impl EntityInputHandler for StewardApp {
     ) -> Option<UTF16Selection> {
         // Report the active selection (the caret is its head); a plain caret
         // is a zero-length selection.
-        let range = match &self.input.selection {
+        let input = self.active_input();
+        let range = match &input.selection {
             Some(range) => {
-                let start = self.input.char_to_utf16(range.start);
-                let end = self.input.char_to_utf16(range.end);
+                let start = input.char_to_utf16(range.start);
+                let end = input.char_to_utf16(range.end);
                 start..end
             }
             None => {
-                let caret = self.input.char_to_utf16(self.input.cursor);
+                let caret = input.char_to_utf16(input.cursor);
                 caret..caret
             }
         };
-        let reversed = self
-            .input
+        let reversed = input
             .selection
             .as_ref()
-            .is_some_and(|range| self.input.cursor == range.start);
+            .is_some_and(|range| input.cursor == range.start);
         Some(UTF16Selection { range, reversed })
     }
 
@@ -634,10 +987,11 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<Range<usize>> {
-        self.input
+        let input = self.active_input();
+        input
             .marked
             .as_ref()
-            .map(|range| self.input.char_to_utf16(range.start)..self.input.char_to_utf16(range.end))
+            .map(|range| input.char_to_utf16(range.start)..input.char_to_utf16(range.end))
     }
 
     fn text_for_range(
@@ -647,13 +1001,11 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<String> {
-        let chars = self.input.utf16_to_chars(range_utf16.clone())?;
-        *adjusted_range =
-            Some(self.input.char_to_utf16(chars.start)..self.input.char_to_utf16(chars.end));
+        let input = self.active_input();
+        let chars = input.utf16_to_chars(range_utf16.clone())?;
+        *adjusted_range = Some(input.char_to_utf16(chars.start)..input.char_to_utf16(chars.end));
         Some(
-            self.input.query
-                [self.input.byte_at_char(chars.start)..self.input.byte_at_char(chars.end)]
-                .to_string(),
+            input.query[input.byte_at_char(chars.start)..input.byte_at_char(chars.end)].to_string(),
         )
     }
 
@@ -664,8 +1016,8 @@ impl EntityInputHandler for StewardApp {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.input.replace_utf16(range, text);
-        self.search(window, cx);
+        self.active_input_mut().replace_utf16(range, text);
+        self.search_unless_composing(window, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -676,13 +1028,22 @@ impl EntityInputHandler for StewardApp {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.input
+        self.active_input_mut()
             .replace_and_mark_utf16(range, new_text, new_selected_range);
-        self.search(window, cx);
+        self.search_unless_composing(window, cx);
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) {
-        self.input.marked = None;
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.active_input_mut().marked = None;
+        // A composition can end without a commit callback (an IME that cancels,
+        // or a platform that only unmarks). If the query moved on since the last
+        // search, catch up now instead of leaving the rows stale. The picker
+        // always catches up: `rendered` tracks the ordinary launcher's file
+        // index, not the picker's folder searches.
+        if self.is_directory_picker() || self.rendered.borrow().query != self.active_input().query {
+            self.search(window, cx);
+            return;
+        }
         cx.notify();
     }
 
@@ -695,7 +1056,10 @@ impl EntityInputHandler for StewardApp {
     ) -> Option<Bounds<Pixels>> {
         // Approximate the caret position for the IME candidate window: input
         // padding plus an estimated glyph width per character.
-        let chars = self.input.utf16_to_chars(range_utf16).unwrap_or(0..0);
+        let chars = self
+            .active_input()
+            .utf16_to_chars(range_utf16)
+            .unwrap_or(0..0);
         let x = 12.0 + 9.0 * chars.start as f32;
         Some(Bounds::new(
             point(element_bounds.origin.x + px(x), element_bounds.origin.y),
@@ -713,7 +1077,7 @@ impl EntityInputHandler for StewardApp {
         // `bounds_for_range` and the mouse-selection handlers.
         let relative = point.x - px(INPUT_TEXT_X);
         let index = (relative / px(GLYPH_WIDTH)).round().max(0.0) as usize;
-        Some(index.min(self.input.char_count()))
+        Some(index.min(self.active_input().char_count()))
     }
 
     fn set_selected_text_range(
@@ -724,12 +1088,13 @@ impl EntityInputHandler for StewardApp {
     ) {
         // Platforms move the selection on the application's behalf (e.g. a
         // system selection handle); mirror it into the query's own model.
+        let input = self.active_input_mut();
         if range_utf16.start == range_utf16.end {
-            if let Some(index) = self.input.utf16_to_char_index(range_utf16.start) {
-                self.input.set_cursor(index);
+            if let Some(index) = input.utf16_to_char_index(range_utf16.start) {
+                input.set_cursor(index);
             }
-        } else if let Some(range) = self.input.utf16_to_chars(range_utf16) {
-            self.input.set_selection(range);
+        } else if let Some(range) = input.utf16_to_chars(range_utf16) {
+            input.set_selection(range);
         }
         cx.notify();
     }
@@ -842,7 +1207,11 @@ impl LauncherInputElement {
                 return;
             }
             view.update(cx, |app, cx| {
-                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
+                let index = char_index_at_x(
+                    input_bounds,
+                    app.active_input().char_count(),
+                    event.position.x,
+                );
                 app.begin_mouse_selection(index, cx);
             });
         });
@@ -857,7 +1226,11 @@ impl LauncherInputElement {
                 if !app.mouse_selecting {
                     return;
                 }
-                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
+                let index = char_index_at_x(
+                    input_bounds,
+                    app.active_input().char_count(),
+                    event.position.x,
+                );
                 app.update_mouse_selection(index, cx);
             });
         });
@@ -874,6 +1247,7 @@ impl LauncherInputElement {
 
 impl gpui::Render for StewardApp {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        self.sync_directory_status(cx);
         // GPUI's Windows platform disables the IME context from its WM_PAINT
         // path whenever the input handler is momentarily unavailable (taken
         // during the draw). Re-associating every frame keeps composition input
@@ -905,11 +1279,9 @@ impl gpui::Render for StewardApp {
         let primary = cx.theme().primary;
         let root = div()
             .track_focus(&self.focus_handle)
-            .on_action({
-                // Esc dismisses the launcher. Detached plugin-view windows are
-                // independent and remain open.
-                move |_: &HideWindow, window, cx| hide_window(window, cx)
-            })
+            .on_action(cx.listener(|this, _: &HideWindow, window, cx| {
+                this.dismiss_launcher(window, cx);
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.handle_key(event, window, cx);
             }))
@@ -948,7 +1320,8 @@ impl gpui::Render for StewardApp {
                                 div()
                                     .flex_1()
                                     .child(
-                                        if self.input.query.is_empty() && self.input.marked.is_none()
+                                        if self.active_input().query.is_empty()
+                                            && self.active_input().marked.is_none()
                                         {
                                             div()
                                                 .flex()
@@ -961,7 +1334,7 @@ impl gpui::Render for StewardApp {
                                                             steward_ui_components::palette::MUTED_FOREGROUND,
                                                         ))
                                                         .child(self.i18n.translate(
-                                                            "search-placeholder",
+                                                            self.search_placeholder(),
                                                         )),
                                                 )
                                         } else {
@@ -992,18 +1365,22 @@ impl gpui::Render for StewardApp {
                 let drop_height = result_height(result_count);
                 this.child(div().w_full().h(px(1.0)).bg(rgb(0xffffff).opacity(0.10)))
                     // Pin the drop-down to exactly its result height so it never
-                    // grows into the input bar, and inset it by the same margin as
-                    // the drag strips so rows align with the bar content.
+                    // grows into the input bar. It spans the full launcher width
+                    // (no side margin): the selected row's highlight then runs
+                    // edge to edge instead of stopping short of the rounded
+                    // window corners with a gap on each side. The rows keep their
+                    // own inner padding, so their text still lines up with the
+                    // query above them.
                     .child(
-                        div()
-                            .h(px(drop_height))
-                            .mx(px(LAUNCHER_MARGIN))
-                            .child(self.results.render(
-                                drop_height,
-                                adaptive_selection_wash(self.state.borrow().scrim_alpha),
-                                cx,
-                            )),
+                        div().h(px(drop_height)).child(self.results.render(
+                            drop_height,
+                            adaptive_selection_wash(self.state.borrow().scrim_alpha),
+                            cx,
+                        )),
                     )
+            })
+            .when(self.directory_status_bar.read(cx).is_visible(), |this| {
+                this.child(self.directory_status_bar.clone())
             })
             .child(drag_strip().h(px(LAUNCHER_MARGIN)));
 
@@ -1031,6 +1408,112 @@ impl gpui::Render for StewardApp {
 }
 
 impl StewardApp {
+    pub(crate) fn is_directory_picker(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            self.state.borrow().file_continuum.borrow().target.is_some()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
+    /// The query box the current mode edits: the picker's own buffer while a
+    /// dialog is attached, the ordinary launcher's otherwise. Every reading or
+    /// editing path goes through this so the two boxes stay independent (see
+    /// [`StewardApp::picker_input`]).
+    pub(crate) fn active_input(&self) -> &SearchInput {
+        if self.is_directory_picker() {
+            &self.picker_input
+        } else {
+            &self.input
+        }
+    }
+
+    /// Mutable counterpart of [`StewardApp::active_input`].
+    pub(crate) fn active_input_mut(&mut self) -> &mut SearchInput {
+        if self.is_directory_picker() {
+            &mut self.picker_input
+        } else {
+            &mut self.input
+        }
+    }
+
+    /// Placeholder for the query box.
+    ///
+    /// One message for both modes: the picker searches folder **paths and names**
+    /// against the recent-folder history, and the generic "search or type a
+    /// command" wording covers that without a second string that says less. The
+    /// picker-specific placeholder ("type a folder path or search recent
+    /// folders") was dropped for the same reason the picker's own rows now show
+    /// the path: the box already shows a path, so the hint does not need to.
+    fn search_placeholder(&self) -> &'static str {
+        "search-placeholder"
+    }
+
+    /// Whether the picker's status line is currently occupying a row of the
+    /// window. See `LauncherState::height` for why the line is not counted there:
+    /// the answer lives with the view that renders it.
+    pub(crate) fn status_row_height(&self, cx: &App) -> f32 {
+        if self.directory_status_bar.read(cx).occupies_space() {
+            crate::file_continuum::STATUS_HEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    /// Push the picker's current status into its status line.
+    ///
+    /// Called from `render`, and every call is cheap: the entity compares the
+    /// text and only repaints when it actually differs, so a launcher repaint
+    /// driven by the input box cannot make the line flicker.
+    fn sync_directory_status(&self, cx: &mut gpui::Context<Self>) {
+        let (attached, passive, navigating, status) = {
+            #[cfg(target_os = "windows")]
+            {
+                let state = self.state.borrow();
+                let picker = state.file_continuum.borrow();
+                (
+                    picker.target.is_some(),
+                    picker.passive,
+                    picker.navigating,
+                    picker.status.clone(),
+                )
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                (false, false, false, String::new())
+            }
+        };
+        let bar = self.directory_status_bar.clone();
+        let key = crate::directory_status::status_key(attached, passive, navigating, &status);
+        match key {
+            Some(key) => {
+                let text = crate::directory_status::status_text(key, &self.i18n);
+                bar.update(cx, |bar, cx| {
+                    bar.set_text(text, cx);
+                    bar.set_visible(true, cx);
+                });
+            }
+            None => bar.update(cx, |bar, cx| bar.set_visible(false, cx)),
+        }
+    }
+
+    fn dismiss_launcher(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        #[cfg(target_os = "windows")]
+        if self.is_directory_picker() {
+            // The picker belongs to the dialog: it appears with it and goes away
+            // with it (or when a path is committed). Esc is inert here on purpose
+            // — closing the box only for the dialog's own foreground to re-attach
+            // it on the next tick is the loop this replaced, and re-summoning it
+            // by hotkey is gone with it.
+            self.picker_ignores_escape();
+            return;
+        }
+        hide_window(window, cx);
+    }
+
     /// The launcher's generic "pop out" control for the currently displayed
     /// detachable `list` plugin view. Rendered only when [`Self::detachable_list_target`]
     /// is set (exactly one detachable list panel), so the target is
@@ -1084,14 +1567,15 @@ impl StewardApp {
     /// (underlined), the active text selection (washed), the caret and the
     /// trailing text.
     fn render_query_text(&self, primary: Hsla) -> Div {
-        let query = &self.input.query;
+        let input = self.active_input();
+        let query = &input.query;
         let mut children: Vec<AnyElement> = Vec::new();
 
         // The active IME composition owns the rendering (underlined text plus
         // caret); a separate selection cannot coexist with a composition.
-        if let Some(range) = &self.input.marked {
-            let start = self.input.byte_at_char(range.start);
-            let end = self.input.byte_at_char(range.end);
+        if let Some(range) = &input.marked {
+            let start = input.byte_at_char(range.start);
+            let end = input.byte_at_char(range.end);
             if start > 0 {
                 children.push(div().child(query[..start].to_string()).into_any_element());
             }
@@ -1108,12 +1592,12 @@ impl StewardApp {
             return div().flex().flex_row().items_center().children(children);
         }
 
-        if let Some(range) = self.input.selection.clone() {
+        if let Some(range) = input.selection.clone() {
             // The caret sits at the selection head; the selected span is
             // painted with the same adaptive white wash as the result rows.
-            let sel_start = self.input.byte_at_char(range.start);
-            let sel_end = self.input.byte_at_char(range.end);
-            let caret = self.input.byte_at_char(self.input.cursor);
+            let sel_start = input.byte_at_char(range.start);
+            let sel_end = input.byte_at_char(range.end);
+            let caret = input.byte_at_char(input.cursor);
             let wash = adaptive_selection_wash(self.state.borrow().scrim_alpha);
             let selection_span = |text: &str| {
                 div()
@@ -1141,7 +1625,7 @@ impl StewardApp {
             }
         } else {
             // Plain caret between the leading and trailing text.
-            let caret = self.input.byte_at_char(self.input.cursor);
+            let caret = input.byte_at_char(input.cursor);
             if caret > 0 {
                 children.push(div().child(query[..caret].to_string()).into_any_element());
             }
@@ -1167,7 +1651,7 @@ impl StewardApp {
         // keys (including Enter/Escape/arrows used to pick candidates); leave
         // the query alone and let the platform drive the composition through
         // `EntityInputHandler` callbacks.
-        if self.input.marked.is_some() {
+        if self.active_input().marked.is_some() {
             cx.stop_propagation();
             return;
         }
@@ -1177,7 +1661,7 @@ impl StewardApp {
         if !modifiers.control && !modifiers.alt && !modifiers.platform {
             if let Some(ch) = keystroke.key_char.as_deref().and_then(|s| s.chars().next()) {
                 if !ch.is_control() {
-                    self.input.insert_char(ch);
+                    self.active_input_mut().insert_char(ch);
                     self.search(window, cx);
                     cx.stop_propagation();
                     return;
@@ -1185,10 +1669,39 @@ impl StewardApp {
             }
         }
 
+        // Ctrl+number acts on a row outright, starting at the second row
+        // (Ctrl+1): the first row is Enter's, so the digit a row advertises on
+        // its left is always the digit that acts on it.
+        //
+        // Inside the directory picker the action is to **fill the query with the
+        // row's path**, not to navigate: the picker is the "type a path" box, so
+        // the useful thing a shortcut can do is put the path in it, ready to be
+        // edited or extended into a subfolder. Enter (or a click) is still what
+        // navigates.
+        //
+        // The key is read from `keystroke.key`, not `key_char`: Windows
+        // translates Ctrl+1 to the control character U+0001 and gpui drops
+        // control characters, so `key_char` is `None` whenever Ctrl is held —
+        // matching on it is why these shortcuts did nothing. `key` carries the
+        // unmodified character gpui normalised the virtual key to.
+        if modifiers.control && !modifiers.alt && !modifiers.platform {
+            let digit = keystroke.key.chars().next();
+            if let Some(index) = digit.and_then(shortcut_digit_index) {
+                self.results.set_selected(index, cx);
+                if !self.fill_query_from_row(index, window, cx)
+                    && self.results.confirm_selected(window, cx)
+                {
+                    self.after_confirm(window, cx);
+                }
+                cx.stop_propagation();
+                return;
+            }
+        }
+
         // Select all (Ctrl+A). The launcher's hand-rolled input owns its
         // selection model, so the standard shortcut has no built-in handler.
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "a" {
-            self.input.select_all();
+            self.active_input_mut().select_all();
             cx.notify();
             cx.stop_propagation();
             return;
@@ -1197,7 +1710,7 @@ impl StewardApp {
         // Copy / cut the selected query (Ctrl+C / Ctrl+X), like the paste
         // handler below: read/write the platform clipboard directly.
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "c" {
-            if let Some(text) = self.input.selected_text() {
+            if let Some(text) = self.active_input().selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             cx.stop_propagation();
@@ -1205,9 +1718,9 @@ impl StewardApp {
         }
 
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "x" {
-            if let Some(text) = self.input.selected_text() {
+            if let Some(text) = self.active_input().selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                self.input.delete_selection();
+                self.active_input_mut().delete_selection();
                 self.search(window, cx);
             }
             cx.stop_propagation();
@@ -1222,7 +1735,7 @@ impl StewardApp {
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-                self.input.insert_str(&text);
+                self.active_input_mut().insert_str(&text);
                 self.search(window, cx);
             }
             cx.stop_propagation();
@@ -1275,17 +1788,17 @@ impl StewardApp {
 
         match keystroke.key.as_str() {
             "space" => {
-                self.input.insert_char(' ');
+                self.active_input_mut().insert_char(' ');
                 self.search(window, cx);
                 cx.stop_propagation();
             }
             "backspace" => {
-                self.input.backspace();
+                self.active_input_mut().backspace();
                 self.search(window, cx);
                 cx.stop_propagation();
             }
             "delete" => {
-                self.input.delete();
+                self.active_input_mut().delete();
                 self.search(window, cx);
                 cx.stop_propagation();
             }
@@ -1307,22 +1820,23 @@ impl StewardApp {
                 cx.stop_propagation();
             }
             "left" => {
-                self.input.move_cursor(-1);
+                self.active_input_mut().move_cursor(-1);
                 cx.notify();
                 cx.stop_propagation();
             }
             "right" => {
-                self.input.move_cursor(1);
+                self.active_input_mut().move_cursor(1);
                 cx.notify();
                 cx.stop_propagation();
             }
             "home" => {
-                self.input.set_cursor(0);
+                self.active_input_mut().set_cursor(0);
                 cx.notify();
                 cx.stop_propagation();
             }
             "end" => {
-                self.input.set_cursor(self.input.char_count());
+                let count = self.active_input().char_count();
+                self.active_input_mut().set_cursor(count);
                 cx.notify();
                 cx.stop_propagation();
             }
@@ -1330,11 +1844,34 @@ impl StewardApp {
             // this is more robust than relying on action dispatch when the
             // window just went through a drag or was re-activated.
             "escape" => {
-                hide_window(window, cx);
+                self.dismiss_launcher(window, cx);
                 cx.stop_propagation();
             }
             _ => {}
         }
+    }
+
+    /// Run the query only when no IME composition is in progress.
+    ///
+    /// While a composition is marked, the query holds the *in-line pre-edit*
+    /// text — the pinyin being typed before a candidate is chosen — and it
+    /// changes on every keystroke (`z` → `zh` → `zho` → `zhong`). Searching each
+    /// of those produced a result list nobody asked for, discarded moments later,
+    /// which is what made CJK input flicker. The pre-edit text stays visible in
+    /// the box (it is underlined, and that is what the user is looking at), the
+    /// drop-down keeps the rows from the last completed query, and the search
+    /// runs once on the committed characters.
+    ///
+    /// Those kept rows are not actionable in the meantime: confirming one would
+    /// launch something the pre-edit text does not name.
+    fn search_unless_composing(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        if self.active_input().marked.is_some() {
+            self.results.set_confirmable(false, cx);
+            cx.notify();
+            return;
+        }
+        self.results.set_confirmable(true, cx);
+        self.search(window, cx);
     }
 
     /// Run the current input through the engine and refresh the results list,
@@ -1343,29 +1880,141 @@ impl StewardApp {
     /// complete arithmetic expression additionally gets a calculator row on
     /// top showing the computed value.
     pub(crate) fn search(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        let query = self.input.query.clone();
+        #[cfg(target_os = "windows")]
+        if self.is_directory_picker() {
+            self.search_directory_picker(window, cx);
+            return;
+        }
+        // `file:` / `f:` / `app:` route the query, and the routed text is what
+        // every downstream stage matches against.
+        let (scope, query) = {
+            let (scope, rest) = route_query(&self.input.query);
+            (scope, rest.to_owned())
+        };
 
         let mut items: Vec<ResultItem> = Vec::new();
-        if let Some(value) = steward_core_engine::calc::try_evaluate(&query) {
-            items.push(ResultItem::Action {
-                title: steward_core_engine::calc::format_value(value),
-                subtitle: query.trim().to_owned(),
-            });
+        if scope != QueryScope::Files {
+            if let Some(value) = steward_core_engine::calc::try_evaluate(&query) {
+                items.push(ResultItem::Action {
+                    title: steward_core_engine::calc::format_value(value),
+                    subtitle: query.trim().to_owned(),
+                });
+            }
+            // A URL query (scheme URL, bare domain, IPv4[:port], localhost) is a
+            // command: offer an "open in browser" row above any app matches.
+            if let Some(url) = steward_core_engine::try_openable(&query) {
+                items.push(ResultItem::Link {
+                    url,
+                    label: self.i18n.translate("open-in-browser"),
+                    command_label: self.i18n.translate("command"),
+                });
+            }
         }
-        // A URL query (scheme URL, bare domain, IPv4[:port], localhost) is a
-        // command: offer an "open in browser" row above any app matches.
-        if let Some(url) = steward_core_engine::try_openable(&query) {
-            items.push(ResultItem::Link {
-                url,
-                label: self.i18n.translate("open-in-browser"),
-                command_label: self.i18n.translate("command"),
-            });
+
+        // File matches come from the index worker: request them for the current
+        // query and render whatever arrived last, then re-render when the reply
+        // lands (`drain_file_index`). The index is built in the background on
+        // first run, so an empty result here is expected until it is ready.
+        //
+        // A burst of keystrokes would otherwise queue one search per character,
+        // each answered with a full re-rank; only the first and then at most one
+        // per `FILE_SEARCH_DEBOUNCE` are dispatched.
+        if scope != QueryScope::Apps {
+            if !is_file_search(&query) {
+                // An empty query is the launcher's home page (top applications),
+                // not a search: the index answers "" with its first records, and
+                // showing those would let the file index take the home page over.
+                // Drop the hits in hand so rows from the previous query go away
+                // with the text, and don't dispatch — files and folders appear
+                // only once a term has been typed.
+                self.clear_file_hits();
+                // Nothing is in flight for the emptied box, so the next real
+                // query must not wait out the debounce of the search the text
+                // just replaced.
+                self.file_search_at.set(None);
+            } else {
+                let now = std::time::Instant::now();
+                let due = self
+                    .file_search_at
+                    .get()
+                    .is_none_or(|last| now.duration_since(last) >= FILE_SEARCH_DEBOUNCE);
+                if due {
+                    self.file_search_at.set(Some(now));
+                    {
+                        let mut state = self.state.borrow_mut();
+                        // The generation `search` is about to give this request. The
+                        // reply carries it back, which is how the rows it produces
+                        // are recognised as answering *this* query and no later one.
+                        let generation = state.file_index.generation + 1;
+                        state.file_search_generation = generation;
+                    }
+                    self.state.borrow_mut().file_index.search(
+                        query.trim(),
+                        steward_core_engine::file_index::KindFilter::Any,
+                    );
+                }
+            }
+        } else {
+            // An app-only query shows no file rows, so whatever hits are in hand
+            // are not part of these rows: empty them and remember that this is a
+            // fresh (empty) set, so the rows stay confirmable.
+            self.clear_file_hits();
+        }
+        // The generation whose hits are about to be rendered. Every write to the
+        // hit list records it, so this is the only thing that can prove the file
+        // rows on screen were dispatched for the query in the box — `search` is
+        // debounced, and a reply in hand may belong to a query the user has
+        // already typed past.
+        let file_generation = self.state.borrow().file_hits_generation;
+        // With no file half in play (an app-only scope) the rows are complete as
+        // they stand. In file-only scope the base rows are exactly those hits, so
+        // they are fresh under the same condition as reproduced below.
+        if scope == QueryScope::Apps || scope == QueryScope::Files {
+            self.results_query = self.input.query.clone();
+        }
+        if scope == QueryScope::Files {
+            // File-only scope: no app rows, and a hint while the index is still
+            // being built so an empty list is explained rather than looking like
+            // "the search does not work".
+            let hint = self.index_hint();
+            if let Some(hint) = hint {
+                items.push(ResultItem::Action {
+                    title: hint,
+                    subtitle: String::new(),
+                });
+            }
+            let builtin_rows = items
+                .into_iter()
+                .map(|item| RankedRow {
+                    item,
+                    icon: None,
+                    // Commands the user typed as a keyword always lead, so they
+                    // occupy the best tier.
+                    rank: RowRank::new(&query, "", i64::MAX, std::path::Path::new("")),
+                })
+                .collect::<Vec<_>>();
+            let builtin_count = builtin_rows.len();
+            let mut rows = builtin_rows;
+            rows.extend(self.file_rows(&query));
+            self.base_rows = rows;
+            self.builtin_count = builtin_count;
+            self.ranked_query = query.clone();
+            // Plugin routing is skipped in file-only scope; the router state is
+            // reset so stale plugin rows cannot linger.
+            {
+                let state = self.state.borrow();
+                *state.plugin_hits.borrow_mut() = Vec::new();
+                *state.plugin_views.borrow_mut() = Vec::new();
+                state.plugin_pending.borrow_mut().clear();
+            }
+            self.render_merged(file_generation, window, cx);
+            return;
         }
 
         let apps = self
             .engine
             .borrow()
-            .query(&query, &|path| self.storage.borrow().frequency_str(path));
+            .query_scored(&query, &|path| self.storage.borrow().frequency_str(path));
 
         // Resolve an icon per result, reusing the cache so only new paths pay
         // the (cheap) Win32 extraction cost. The first `MAX_RESULT_ROWS` are
@@ -1384,24 +2033,24 @@ impl StewardApp {
             let state = self.state.borrow();
             apps.iter()
                 .enumerate()
-                .map(|(index, app)| {
+                .map(|(index, hit)| {
                     // `let` ends the temporary borrow before the miss path,
                     // so it can `borrow_mut` again.
                     let cached = state
                         .icon_cache
                         .borrow_mut()
-                        .get(&app.path)
+                        .get(&hit.app.path)
                         .cloned()
                         .flatten();
                     if cached.is_some() {
                         return cached;
                     }
                     if index < MAX_RESULT_ROWS {
-                        let icon = crate::app_icons::app_icon_image(&app.path);
+                        let icon = crate::app_icons::app_icon_image(&hit.app.path);
                         state
                             .icon_cache
                             .borrow_mut()
-                            .insert(app.path.clone(), icon.clone());
+                            .insert(hit.app.path.clone(), icon.clone());
                         icon
                     } else {
                         None
@@ -1419,8 +2068,8 @@ impl StewardApp {
             if apps.len() > MAX_RESULT_ROWS {
                 let pending = apps[MAX_RESULT_ROWS..]
                     .iter()
-                    .filter(|app| !state.icon_cache.borrow().contains_key(&app.path))
-                    .map(|app| app.path.clone())
+                    .filter(|hit| !state.icon_cache.borrow().contains_key(&hit.app.path))
+                    .map(|hit| hit.app.path.clone())
                     .collect::<Vec<_>>();
                 if !pending.is_empty() {
                     let (tx, rx) = crossbeam_channel::bounded(1);
@@ -1439,21 +2088,49 @@ impl StewardApp {
             }
         }
 
-        // Prepend the builtin rows (calculator/link, no icon) ahead of the
-        // apps; action rows always sit above any fuzzy matches so Enter hits
-        // the answer. These base rows are kept so a late plugin view can be
-        // spliced in without re-running the search.
-        let builtin_count = items.len();
-        items.extend(apps.into_iter().map(ResultItem::App));
-        let base_icons = std::iter::repeat_n(None, builtin_count)
-            .chain(icons)
+        // Build the base rows: the builtin commands (calculator/link) first, then
+        // applications and files ranked against each other by how well they
+        // match. The builtins sit in the best tier because a typed command is
+        // never ambiguous with a name match.
+        let mut rows = items
+            .into_iter()
+            .map(|item| RankedRow {
+                item,
+                icon: None,
+                rank: RowRank::new(&query, "", i64::MAX, std::path::Path::new("")),
+            })
             .collect::<Vec<_>>();
-        self.base_items = items;
-        self.base_icons = base_icons;
+        let builtin_count = rows.len();
+        rows.extend(apps.into_iter().zip(icons).map(|(hit, icon)| RankedRow {
+            rank: RowRank::new(&query, &hit.app.name, i64::from(hit.score), &hit.app.path),
+            item: ResultItem::App(hit.app),
+            icon,
+        }));
+        rows.extend(self.file_rows(&query));
+        // The hint goes last so it can never outrank a real match, and only when
+        // there is nothing else to show.
+        if rows.len() == builtin_count {
+            if let Some(hint) = self.index_hint() {
+                rows.push(RankedRow {
+                    item: ResultItem::Action {
+                        title: hint,
+                        subtitle: String::new(),
+                    },
+                    icon: None,
+                    rank: RowRank {
+                        tier: MatchTier::Weak,
+                        relevance: i64::MIN,
+                        name_len: usize::MAX,
+                        path: Vec::new(),
+                    },
+                });
+            }
+        }
+        self.base_rows = rows;
         self.builtin_count = builtin_count;
+        self.ranked_query = query.clone();
 
-        // Route the query to the matching plugins and invoke only those
-        // (capped to MAX_PLUGIN_ROWS) under a fresh generation. Views arrive
+        // Route the query to the matching plugins and invoke only those        // (capped to MAX_PLUGIN_ROWS) under a fresh generation. Views arrive
         // asynchronously; `render_merged` splices them in as they land and
         // stale generations are dropped by the poll task.
         let plugin_gen = {
@@ -1487,13 +2164,100 @@ impl StewardApp {
             }
         }
 
-        self.render_merged(window, cx);
+        self.render_merged(current_file_generation(self), window, cx);
     }
 
-    /// Splice the current plugin rows between the builtin rows and the app
-    /// matches, push the merged list to the results view and resize the
-    /// window. Used by `search` and by the poll task when a plugin view lands.
-    fn render_merged(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+    /// Drop the file-index hits in hand and mark the resulting empty set as
+    /// the current one.
+    ///
+    /// Bumping the generation past the worker's is what makes a reply for a
+    /// superseded query unrecognisable as "the answer to the query in the box":
+    /// such a reply must not put file rows back under a query that no longer
+    /// has any (an emptied box, or an `app:` scope).
+    fn clear_file_hits(&self) {
+        let mut state = self.state.borrow_mut();
+        state.file_hits.clear();
+        state.file_hits_generation = state.file_index.generation + 1;
+    }
+
+    /// Localized hint explaining an empty list: the file index is still being
+    /// built, or unavailable. `None` when an index is ready, because then an
+    /// empty list genuinely means "no match".
+    fn index_hint(&self) -> Option<String> {
+        let state = self.state.borrow();
+        if state.file_index.is_ready() {
+            None
+        } else if state.file_index.is_building() {
+            Some(self.i18n.translate("files-indexing").to_owned())
+        } else {
+            Some(self.i18n.translate("files-no-index").to_owned())
+        }
+    }
+
+    /// The current file hits as ranked rows, each with its shell icon.
+    ///
+    /// An empty needle yields no rows whatever the hit list says: the home page
+    /// is apps and commands, and files/folders appear only once something has
+    /// been typed. This is the second half of the guarantee `search` makes when
+    /// it clears the hits — a late reply cannot leak rows into the home page.
+    fn file_rows(&self, needle: &str) -> Vec<RankedRow> {
+        if !is_file_search(needle) {
+            return Vec::new();
+        }
+        let state = self.state.borrow();
+        state
+            .file_hits
+            .iter()
+            .take(crate::file_index::FILE_RESULT_LIMIT)
+            .map(|hit| {
+                // Files share the app icon cache: extraction is a shell call
+                // keyed by path, so a file that is also a launchable app reuses
+                // its entry.
+                let icon = {
+                    let cached = state
+                        .icon_cache
+                        .borrow_mut()
+                        .get(&hit.path)
+                        .cloned()
+                        .flatten();
+                    if cached.is_some() {
+                        cached
+                    } else {
+                        let icon = crate::app_icons::app_icon_image(&hit.path);
+                        state
+                            .icon_cache
+                            .borrow_mut()
+                            .insert(hit.path.clone(), icon.clone());
+                        icon
+                    }
+                };
+                RankedRow {
+                    icon,
+                    rank: RowRank::new(needle, &hit.name, i64::from(hit.score), &hit.path),
+                    item: ResultItem::File {
+                        path: hit.path.clone(),
+                        name: hit.name.clone(),
+                        subtitle: file_subtitle(hit),
+                        size: file_size(hit),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Merge the plugin rows with the base rows, push the result to the list view
+    /// and resize the window. Used by `search` and by the poll task when a plugin
+    /// view lands.
+    /// ile_generation is the index worker generation whose hits are being
+    /// rendered; it decides whether the file rows answer the query in the box
+    /// (see the confirmation gate at the end). Callers that are not rendering a
+    /// search pass the current generation, which is a no-op there.
+    pub(crate) fn render_merged(
+        &mut self,
+        file_generation: u64,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
         // The displayed calendar survives only while the current query still
         // yields its view: a new search resets `plugin_views` to `None`, so
         // the grid falls back to the row-based list.
@@ -1616,25 +2380,102 @@ impl StewardApp {
                 })
                 .collect::<Vec<_>>()
         };
-        let mut items = Vec::with_capacity(self.base_items.len() + plugin_count);
-        items.extend_from_slice(&self.base_items[..builtin_count]);
-        let has_loading = pending_command.is_some();
-        if let Some(command) = pending_command {
-            items.push(ResultItem::Loading { command });
+        // Merge and rank. Commands the user typed (calculator, link, a plugin
+        // keyword) occupy the best tier because they are unambiguous; everything
+        // else — applications, plugin list items and indexed files — is ordered
+        // purely by how well it matches, so an exactly-named file can lead the
+        // list even when applications also contain the query's letters.
+        let needle = self.ranked_query.clone();
+        let mut rows = Vec::with_capacity(self.base_rows.len() + plugin_count);
+        for (offset, row) in self.base_rows.iter().enumerate() {
+            if offset == builtin_count {
+                if let Some(command) = pending_command.clone() {
+                    rows.push(RankedRow {
+                        item: ResultItem::Loading { command },
+                        icon: None,
+                        rank: RowRank {
+                            tier: MatchTier::NameSubstring,
+                            relevance: i64::MAX,
+                            name_len: 0,
+                            path: Vec::new(),
+                        },
+                    });
+                }
+            }
+            rows.push(RankedRow {
+                item: row.item.clone(),
+                icon: row.icon.clone(),
+                rank: row.rank.clone(),
+            });
         }
-        items.extend(plugin_rows);
-        items.extend(calendar_rows);
-        items.extend_from_slice(&self.base_items[builtin_count..]);
-        let mut icons = Vec::with_capacity(self.base_icons.len() + plugin_count);
-        icons.extend_from_slice(&self.base_icons[..builtin_count]);
-        if has_loading {
-            icons.push(None);
+        if builtin_count >= self.base_rows.len() {
+            if let Some(command) = pending_command {
+                rows.push(RankedRow {
+                    item: ResultItem::Loading { command },
+                    icon: None,
+                    rank: RowRank {
+                        tier: MatchTier::NameSubstring,
+                        relevance: i64::MAX,
+                        name_len: 0,
+                        path: Vec::new(),
+                    },
+                });
+            }
         }
-        icons.extend(plugin_icons);
-        icons.extend_from_slice(&self.base_icons[builtin_count..]);
+        for (row, icon) in plugin_rows
+            .into_iter()
+            .chain(calendar_rows)
+            .zip(plugin_icons)
+        {
+            let (title, command) = match &row {
+                ResultItem::Command { title, command, .. }
+                | ResultItem::Calendar { title, command, .. } => (title.clone(), command.clone()),
+                _ => (String::new(), String::new()),
+            };
+            rows.push(RankedRow {
+                item: row,
+                icon,
+                rank: plugin_row_rank(&needle, &title, &command),
+            });
+        }
+        rank_rows(&mut rows);
+
+        let mut items = Vec::with_capacity(rows.len());
+        let mut icons = Vec::with_capacity(rows.len());
+        for row in rows {
+            items.push(row.item);
+            icons.push(row.icon);
+        }
 
         *self.last_results.borrow_mut() = items.clone();
         self.results.set_results(items, icons, cx);
+
+        // These rows are actionable only when they answer what is in the box.
+        //
+        // For a search render the evidence is the file generation: `search` is
+        // debounced, so a reply in hand may belong to a query the user has typed
+        // past, and only a generation match proves the hits on screen were
+        // dispatched for the input as it stands. A render that is not answering a
+        // search (a plugin view landing) passes the current generation, which is
+        // honest — it renders whatever is in hand — and `results_query`, which the
+        // producer sets, is what vouches for those rows.
+        //
+        // An IME composition suspends confirmation entirely: the pre-edit text in
+        // the box is not what any of these rows answer.
+        let file_fresh = file_generation == self.state.borrow().file_hits_generation;
+        let active_query = self.active_input().query.clone();
+        let query_fresh = self.results_query == active_query;
+        let composing = self.active_input().marked.is_some();
+        let fresh = (file_fresh || query_fresh) && !composing;
+        // Which of the three terms decided it, so "the key did nothing" can be
+        // read off the trace instead of guessed at.
+        crate::file_continuum::debug_log(&format!(
+            "confirmable={fresh} (file_generation={file_generation} \
+             hits_generation={} query_match={query_fresh} composing={composing} rows={})",
+            self.state.borrow().file_hits_generation,
+            self.results.visible_count(cx)
+        ));
+        self.results.set_confirmable(fresh, cx);
 
         let count = self.results.visible_count(cx);
         let height = if show_calendar_grid {
@@ -1645,8 +2486,29 @@ impl StewardApp {
         } else {
             launcher_height(count)
         };
+        // The picker's status line is part of the window only while it is
+        // rendering something (see `LauncherState::height`), so the view adds it
+        // here — and syncs the line's own text first, since this is also what
+        // decides whether the line is showing at all.
+        let height = height
+            + if self.is_directory_picker() {
+                self.sync_directory_status(cx);
+                self.status_row_height(cx)
+            } else {
+                0.0
+            };
         let mut state = self.state.borrow_mut();
-        state.result_count = count;
+        state.result_count.set(count);
+        #[cfg(target_os = "windows")]
+        if state.file_continuum.borrow().target.is_some() {
+            state.last_applied_height = height;
+            drop(state);
+            // Apply height and the live dialog rectangle in one queued native
+            // resize; GPUI's generic resize can restore an old position/width.
+            crate::window::queue_directory_picker_bounds(&self.state, window, cx);
+            cx.notify();
+            return;
+        }
         // Resize through GPUI's own window API, which runs the native
         // SetWindowPos asynchronously on the foreground executor. A
         // synchronous platform-layer resize while the launcher is visible
@@ -1660,7 +2522,7 @@ impl StewardApp {
         // redundant resizes.
         if (height - state.last_applied_height).abs() > 0.5 {
             state.last_applied_height = height;
-            window.resize(size(px(LAUNCHER_WIDTH), px(height)));
+            window.resize(size(px(state.width()), px(height)));
         }
         cx.notify();
     }
@@ -1669,7 +2531,10 @@ impl StewardApp {
     /// the foreground poll task after the view was stored in the shared state;
     /// never re-invokes plugins.
     pub(crate) fn apply_plugin_views(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        self.render_merged(window, cx);
+        if self.is_directory_picker() {
+            return;
+        }
+        self.render_merged(current_file_generation(self), window, cx);
     }
 
     /// Move the calendar selection by `delta` days (clamped to the displayed
@@ -1708,13 +2573,65 @@ impl StewardApp {
         }
     }
 
+    /// Put the row at `index` into the query box and re-search, returning
+    /// whether that is what the row's shortcut should do.
+    ///
+    /// Only inside the directory picker, and only for a directory row: the
+    /// picker *is* a path box, so the useful action of a row shortcut there is to
+    /// fill it with the row's path — ready to be edited, extended into a
+    /// subfolder, or confirmed with Enter — rather than to navigate away from the
+    /// list the user is looking at. Everywhere else (and for any other row kind)
+    /// the shortcut keeps confirming, which is what launches things.
+    ///
+    /// The follow-up search runs through [`Self::search_unless_composing`], the
+    /// same path as typing, so the picker debounce, the stale-row gate and the
+    /// status line all behave exactly as if the path had been typed by hand.
+    fn fill_query_from_row(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            if !self.is_directory_picker() {
+                return false;
+            }
+            let Some(ResultItem::Directory { path, .. }) =
+                self.last_results.borrow().get(index).cloned()
+            else {
+                return false;
+            };
+            let path = path.to_string_lossy().into_owned();
+            if path == self.active_input().query {
+                // Already what the box says: nothing to fill, and re-running the
+                // search would only cost a round trip.
+                return true;
+            }
+            let input = self.active_input_mut();
+            input.query = path;
+            input.marked = None;
+            input.set_cursor(input.char_count());
+            input.selection = None;
+            self.search_unless_composing(window, cx);
+            cx.notify();
+            true
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (index, window, cx);
+            false
+        }
+    }
+
     /// Reset the launcher to its idle (bar-only) state and hide it. Called
     /// after the delegate's confirm callback has launched the selected app.
     fn after_confirm(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        self.input.query.clear();
-        self.input.cursor = 0;
-        self.input.marked = None;
-        self.input.selection = None;
+        let input = self.active_input_mut();
+        input.query.clear();
+        input.cursor = 0;
+        input.marked = None;
+        input.selection = None;
         self.mouse_selecting = false;
         self.mouse_anchor = 0;
         // Re-run the empty query so the next summon opens with the most-used
@@ -1728,7 +2645,7 @@ impl StewardApp {
     /// Start a mouse-driven selection: place the caret at `index` (collapsing
     /// any prior selection) and anchor the drag there.
     fn begin_mouse_selection(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
-        self.input.set_cursor(index);
+        self.active_input_mut().set_cursor(index);
         self.mouse_selecting = true;
         self.mouse_anchor = index;
         cx.notify();
@@ -1737,7 +2654,8 @@ impl StewardApp {
     /// Extend the mouse selection from the anchor to `index`, the caret
     /// following the pointer.
     fn update_mouse_selection(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
-        self.input.select_anchor_to(self.mouse_anchor, index);
+        let anchor = self.mouse_anchor;
+        self.active_input_mut().select_anchor_to(anchor, index);
         cx.notify();
     }
 
@@ -1868,5 +2786,63 @@ mod tests {
         assert_eq!(monday_first, ["一", "二", "三", "四", "五", "六", "日"]);
         let sunday_first = calendar_weekday_labels("en", 0);
         assert_eq!(sunday_first, ["S", "M", "T", "W", "T", "F", "S"]);
+    }
+
+    #[test]
+    fn queries_route_to_the_right_scope() {
+        // A prefix selects one source; anything else searches everything.
+        assert_eq!(route_query("file:report"), (QueryScope::Files, "report"));
+        assert_eq!(route_query("f:report"), (QueryScope::Files, "report"));
+        assert_eq!(route_query("app:calc"), (QueryScope::Apps, "calc"));
+        assert_eq!(route_query("FILE:report"), (QueryScope::Files, "report"));
+        // A bare `file:` still routes: the user is about to type a file query.
+        assert_eq!(route_query("file:"), (QueryScope::Files, ""));
+        assert_eq!(route_query("report"), (QueryScope::All, "report"));
+        // Leading space is not a prefix.
+        assert_eq!(route_query(" report"), (QueryScope::All, " report"));
+        // A word that merely starts with the same letters is not a prefix.
+        assert_eq!(route_query("files"), (QueryScope::All, "files"));
+        assert_eq!(route_query("apply"), (QueryScope::All, "apply"));
+    }
+
+    #[test]
+    fn a_file_name_match_outranks_a_weaker_app_match() {
+        // The launcher's whole reason for ranking across kinds: a file whose name
+        // *is* the query must lead, even though applications are matched fuzzily
+        // and used to be listed first unconditionally.
+        let app = RowRank::new(
+            "report",
+            "Repository Tools",
+            900,
+            std::path::Path::new("C:/apps/repo-tools.exe"),
+        );
+        let file = RowRank::new(
+            "report",
+            "report.pdf",
+            0,
+            std::path::Path::new("D:/report.pdf"),
+        );
+        assert_eq!(file.tier, steward_core_engine::MatchTier::ExactName);
+        assert_eq!(app.tier, steward_core_engine::MatchTier::Weak);
+        // Tier dominates the fuzzy score.
+        assert_eq!(file.compare(&app), std::cmp::Ordering::Less);
+
+        // Within a tier the relevance decides, so a stronger fuzzy hit still wins.
+        let strong = RowRank::new("report", "zzz", 900, std::path::Path::new("C:/a.exe"));
+        let weak = RowRank::new("report", "zzz", 100, std::path::Path::new("C:/b.exe"));
+        assert_eq!(strong.compare(&weak), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn the_home_page_is_not_a_file_search() {
+        // An empty (or whitespace-only) query is the launcher's home page: it
+        // must not reach the file index or produce file rows, or the index's
+        // "list everything" answer would take the page over.
+        assert!(!is_file_search(""));
+        assert!(!is_file_search("   "));
+        assert!(!is_file_search("\t"));
+        // Any real term is a search, in either script.
+        assert!(is_file_search("report"));
+        assert!(is_file_search("报告"));
     }
 }

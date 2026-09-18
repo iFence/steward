@@ -3,6 +3,17 @@
 //! user clicked away from the launcher. Non-Windows targets get a functional
 //! stub so the app still builds (a future milestone adds the native guests).
 
+/// Screen-space rectangle in physical pixels: either a monitor work area or the
+/// placement anchor the launcher bar hugs (the open/save dialog that asked for a
+/// directory). Cross-platform so the stub keeps the same signatures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
 #[cfg(target_os = "windows")]
 pub use windows::*;
 
@@ -15,8 +26,8 @@ mod windows {
         Foundation::{HWND, POINT},
         Graphics::Gdi::{
             BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-            GetMonitorInfoW, GetPixel, MonitorFromPoint, MonitorFromWindow, ReleaseDC,
-            SelectObject, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
+            GetMonitorInfoW, GetPixel, MonitorFromPoint, MonitorFromRect, MonitorFromWindow,
+            ReleaseDC, SelectObject, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
         },
         System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
@@ -25,11 +36,25 @@ mod windows {
             GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
             GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
             SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WS_THICKFRAME,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+            SW_SHOWNOACTIVATE, WS_THICKFRAME,
         },
     };
 
-    use crate::config::LAUNCHER_WIDTH;
+    use super::Rect;
+
+    impl Rect {
+        /// Monitor the rect sits on (the nearest one when it straddles two).
+        unsafe fn monitor(self) -> HMONITOR {
+            let rect = windows_sys::Win32::Foundation::RECT {
+                left: self.left,
+                top: self.top,
+                right: self.right,
+                bottom: self.bottom,
+            };
+            MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST)
+        }
+    }
 
     /// Declare PerMonitorV2 DPI awareness (Windows 10 1703+). Without this the
     /// OS virtualizes the process at 96 DPI and upscales the window, which
@@ -160,6 +185,20 @@ mod windows {
         unsafe { GetForegroundWindow() }
     }
 
+    /// A window's screen rectangle in physical pixels. Used by the picker's
+    /// opt-in placement trace, where the bar's own rect next to the dialog's is
+    /// what tells a stale anchor from a placement that never applied.
+    pub fn window_rect(hwnd: HWND) -> Rect {
+        let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut rect) };
+        Rect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }
+    }
+
     /// Whether the cursor currently sits inside `hwnd`'s window frame. The
     /// foreground watch uses this to keep the launcher up while the user is
     /// still interacting with it (clicking it, dragging it, or composing IME
@@ -189,32 +228,52 @@ mod windows {
 
     /// Show the launcher and return the sampled luminance of the backdrop
     /// behind it (`None` when it could not be sampled, e.g. the screen DC
-    /// failed). The caller adapts the scrim to that value. `height` is the
-    /// intended logical client height in GPUI pixels, identical to what
+    /// failed). The caller adapts the scrim to that value. `width`/`height` are
+    /// the intended logical client size in GPUI pixels, identical to what
     /// `resize` was given. Sampling runs *before* `ShowWindow` (so the pixels
     /// read are the backdrop, never the launcher itself), at the rect where
     /// the bar will sit.
-    pub fn show(window: &Window, height: f32) -> Option<f32> {
+    ///
+    /// `activate` picks the summon style: `true` takes the foreground (the
+    /// hotkey path, so the user can type immediately), `false` shows the bar
+    /// under `anchor` while the dialog it belongs to keeps focus.
+    pub fn show(
+        window: &Window,
+        width: f32,
+        height: f32,
+        anchor: Option<Rect>,
+        activate: bool,
+    ) -> Option<f32> {
         let hwnd = hwnd(window)?;
         unsafe {
-            // Where the bar will sit: monitor under the cursor, sized for that
-            // monitor's DPI, centered horizontally and in the upper third of
-            // its work area.
-            let (x, y, width, height_px, target_dpi) = launcher_rect_for_cursor(hwnd, height);
-
+            // Where the bar will sit: flush under `anchor` (the file dialog that
+            // asked for a directory) when given, otherwise on the monitor under
+            // the cursor. The window is created hidden on the primary display,
+            // so `MonitorFromWindow` would always report that monitor; the
+            // cursor query picks the one the user summoned from instead.
             let current_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-            let mut cursor: POINT = std::mem::zeroed();
-            let target_monitor = if GetCursorPos(&mut cursor) != 0 {
-                MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
-            } else {
-                current_monitor
+            let target_monitor = match anchor {
+                Some(anchor) => anchor.monitor(),
+                None => {
+                    let mut cursor: POINT = std::mem::zeroed();
+                    if GetCursorPos(&mut cursor) != 0 {
+                        MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+                    } else {
+                        current_monitor
+                    }
+                }
             };
+            let (x, y, width_px, height_px, target_dpi) =
+                launcher_rect(hwnd, width, height, target_monitor, anchor);
             let cross = target_monitor != current_monitor;
 
             // Sample the backdrop *there* while the window is still hidden.
-            let backdrop = sample_backdrop_brightness(x, y, width, height_px);
+            let backdrop = sample_backdrop_brightness(x, y, width_px, height_px);
 
-            dbg_dpi("before", hwnd, target_dpi, cross, x, y, width, height_px);
+            dbg_dpi("before", hwnd, target_dpi, cross, x, y, width_px, height_px);
+            // A passive bar must not steal the dialog's focus: show and move it
+            // without activating (`SW_SHOWNOACTIVATE` / `SWP_NOACTIVATE`).
+            let show_command = if activate { SW_SHOW } else { SW_SHOWNOACTIVATE };
             if cross {
                 // Cross-monitor summon. Windows does not re-evaluate a
                 // *hidden* window's DPI when it is moved, so a hidden move
@@ -225,21 +284,39 @@ mod windows {
                 // visible cross-DPI move reliably delivers WM_DPICHANGED,
                 // which updates GPUI's scale factor and resizes the window to
                 // the system-suggested rect.
-                ShowWindow(hwnd, SW_SHOW);
-                SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
-                dbg_dpi("moved", hwnd, target_dpi, cross, x, y, width, height_px);
+                ShowWindow(hwnd, show_command);
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    width_px,
+                    height_px,
+                    SWP_NOACTIVATE,
+                );
+                dbg_dpi("moved", hwnd, target_dpi, cross, x, y, width_px, height_px);
             } else {
-                SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
-                ShowWindow(hwnd, SW_SHOW);
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    width_px,
+                    height_px,
+                    SWP_NOACTIVATE,
+                );
+                ShowWindow(hwnd, show_command);
             }
             // Self-heal: now that the window is visible, `GetDpiForWindow`
             // reflects its real DPI. Re-apply the exact geometry so any
             // position drift from the system-suggested rect in
             // `WM_DPICHANGED` is corrected and the client area is exactly
             // on-design on this monitor.
-            apply_exact(hwnd, height);
+            apply_exact(hwnd, width, height, anchor);
             dbg_dpi("after", hwnd, target_dpi, cross, 0, 0, 0, 0);
-            force_foreground(hwnd);
+            if activate {
+                force_foreground(hwnd);
+            }
             backdrop
         }
     }
@@ -373,24 +450,39 @@ mod windows {
         )
     }
 
-    /// Resize the launcher window so its client area is `LAUNCHER_WIDTH` x
-    /// `height` logical pixels, keeping the current top-left corner so the
-    /// drop-down grows downward. `height` is the same DPI-aware unit GPUI's
-    /// layout uses; physical pixels are derived from the window's own DPI.
-    pub fn resize(window: &Window, height: f32) {
+    /// Resize the launcher window so its client area is `width` x `height`
+    /// logical pixels. Without an anchor the current top-left corner is kept so
+    /// the drop-down grows downward; with one the window stays pinned under the
+    /// dialog as the drop-down grows. `width`/`height` are the same DPI-aware
+    /// units GPUI's layout uses; physical pixels are derived from the window's
+    /// own DPI.
+    pub fn resize(window: &Window, width: f32, height: f32, anchor: Option<Rect>) {
         let Some(hwnd) = hwnd(window) else {
             return;
         };
         unsafe {
-            let (width_px, height_px) =
-                client_to_window_px(hwnd, LAUNCHER_WIDTH, height, GetDpiForWindow(hwnd));
-            let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-            GetWindowRect(hwnd, &mut rect);
+            let (width_px, height_px) = anchored_size(
+                client_to_window_px(hwnd, width, height, GetDpiForWindow(hwnd)),
+                anchor,
+            );
+            let (x, y) = match anchor {
+                Some(anchor) => place(
+                    work_area(anchor.monitor()),
+                    width_px,
+                    height_px,
+                    Some(anchor),
+                ),
+                None => {
+                    let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+                    GetWindowRect(hwnd, &mut rect);
+                    (rect.left, rect.top)
+                }
+            };
             SetWindowPos(
                 hwnd,
                 std::ptr::null_mut(),
-                rect.left,
-                rect.top,
+                x,
+                y,
                 width_px,
                 height_px,
                 SWP_NOZORDER | SWP_NOACTIVATE,
@@ -410,25 +502,21 @@ mod windows {
         }
     }
 
-    /// Compute where the launcher should sit for the monitor under the cursor:
-    /// sized for `height` logical px at that monitor's DPI (borders included),
-    /// centered horizontally and in the upper third of its work area. Returns
-    /// `(x, y, width_px, height_px, dpi)`.
+    /// Compute where the launcher should sit on `monitor`: sized for `height`
+    /// logical px at that monitor's DPI (borders included) and placed by
+    /// [`place`]. Returns `(x, y, width_px, height_px, dpi)`.
     ///
-    /// The window is created hidden on the primary display, so
-    /// `MonitorFromWindow` would always report that monitor; pick the one
-    /// under the cursor instead (falling back to the window's own monitor when
-    /// the cursor query fails). Likewise `GetDpiForWindow` is read only as a
-    /// fallback: at this point the window still sits on the monitor it was
-    /// last shown on, so on mixed-DPI setups it would size the bar for the
-    /// wrong scale — read the *target* monitor's DPI instead.
-    unsafe fn launcher_rect_for_cursor(hwnd: HWND, height: f32) -> (i32, i32, i32, i32, u32) {
-        let mut cursor: POINT = std::mem::zeroed();
-        let monitor = if GetCursorPos(&mut cursor) != 0 {
-            MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
-        } else {
-            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-        };
+    /// `GetDpiForWindow` is read only as a fallback: before a cross-monitor
+    /// move the window still sits on the monitor it was last shown on, so on
+    /// mixed-DPI setups it would size the bar for the wrong scale — read the
+    /// *target* monitor's DPI instead.
+    unsafe fn launcher_rect(
+        hwnd: HWND,
+        width: f32,
+        height: f32,
+        monitor: HMONITOR,
+        anchor: Option<Rect>,
+    ) -> (i32, i32, i32, i32, u32) {
         let mut dpi_x: u32 = 0;
         let mut dpi_y: u32 = 0;
         let dpi = if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) >= 0
@@ -440,35 +528,111 @@ mod windows {
             GetDpiForWindow(hwnd)
         }
         .max(96);
-        let (width, height_px) = client_to_window_px(hwnd, LAUNCHER_WIDTH, height, dpi);
+        let (width, height_px) =
+            anchored_size(client_to_window_px(hwnd, width, height, dpi), anchor);
+        let (x, y) = place(work_area(monitor), width, height_px, anchor);
+        (x, y, width, height_px, dpi)
+    }
 
+    /// Work area of `monitor`: the part of it not covered by the taskbar.
+    unsafe fn work_area(monitor: HMONITOR) -> Rect {
         let mut info: MONITORINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(monitor, &mut info);
-        let work = info.rcWork;
-        let x = work.left + ((work.right - work.left) - width) / 2;
-        // Horizontally centered; vertically in the upper third of the screen.
-        let y = work.top + ((work.bottom - work.top) - height_px) / 3;
-        (x, y, width, height_px, dpi)
+        Rect {
+            left: info.rcWork.left,
+            top: info.rcWork.top,
+            right: info.rcWork.right,
+            bottom: info.rcWork.bottom,
+        }
+    }
+
+    /// Match the dialog's physical outer width, independent of either window's
+    /// DPI or non-client borders. The unanchored launcher keeps its design size.
+    fn anchored_size(size: (i32, i32), anchor: Option<Rect>) -> (i32, i32) {
+        (
+            anchor.map_or(size.0, |rect| (rect.right - rect.left).max(1)),
+            size.1,
+        )
+    }
+
+    /// Keep the attached bar flush below the dialog, including near screen
+    /// edges. Clamping upward would cover the dialog as search results grow.
+    /// Without an anchor the launcher stays centered in the upper third.
+    fn place(work: Rect, width: i32, height_px: i32, anchor: Option<Rect>) -> (i32, i32) {
+        match anchor {
+            Some(anchor) => (anchor.left, anchor.bottom),
+            None => (
+                work.left + ((work.right - work.left) - width) / 2,
+                work.top + ((work.bottom - work.top) - height_px) / 3,
+            ),
+        }
     }
 
     /// Re-apply the launcher's exact geometry on the monitor it currently sits
     /// on, using the window's own DPI. Called after `ShowWindow`, when
     /// `GetDpiForWindow` is truthful: it self-heals any position drift or size
     /// rounding introduced by the system-suggested rect in `WM_DPICHANGED`.
-    unsafe fn apply_exact(hwnd: HWND, height: f32) {
+    unsafe fn apply_exact(hwnd: HWND, width: f32, height: f32, anchor: Option<Rect>) {
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let (width, height_px) = client_to_window_px(hwnd, LAUNCHER_WIDTH, height, dpi);
+        let (width, height_px) =
+            anchored_size(client_to_window_px(hwnd, width, height, dpi), anchor);
 
-        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let mut info: MONITORINFO = std::mem::zeroed();
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        GetMonitorInfoW(monitor, &mut info);
-        let work = info.rcWork;
-        let x = work.left + ((work.right - work.left) - width) / 2;
-        let y = work.top + ((work.bottom - work.top) - height_px) / 3;
+        let monitor = match anchor {
+            Some(anchor) => anchor.monitor(),
+            None => MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+        };
+        let (x, y) = place(work_area(monitor), width, height_px, anchor);
 
         SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
+    }
+
+    /// Run outside a GPUI window update so WM_SIZE can update the renderer's
+    /// viewport without re-entering a borrowed GPUI window. Unchanged geometry
+    /// costs only a rect query; tracking never activates the search window.
+    pub(crate) fn sync_dialog_bounds(hwnd: HWND, height: f32, anchor: Rect) {
+        unsafe {
+            if IsWindowVisible(hwnd) == 0 {
+                return;
+            }
+            let (x, y) = (anchor.left, anchor.bottom);
+            let (width, height_px) = anchored_size(
+                client_to_window_px(hwnd, 0.0, height, GetDpiForWindow(hwnd)),
+                Some(anchor),
+            );
+            let mut current: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+            if GetWindowRect(hwnd, &mut current) != 0
+                && (
+                    current.left,
+                    current.top,
+                    current.right - current.left,
+                    current.bottom - current.top,
+                ) == (x, y, width, height_px)
+            {
+                return;
+            }
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                width,
+                height_px,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            // A cross-DPI move may apply Windows' suggested rectangle. Correct
+            // that using the committed DPI after the first move has returned.
+            let (_, height_px) = client_to_window_px(hwnd, 0.0, height, GetDpiForWindow(hwnd));
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                width,
+                height_px,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
     }
 
     /// Append a one-line snapshot of the summon-time DPI state to
@@ -553,6 +717,50 @@ mod windows {
             AttachThreadInput(current_thread, foreground_thread, 0);
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A 1920x1080 work area with the taskbar at the bottom.
+        fn work() -> Rect {
+            Rect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1040,
+            }
+        }
+
+        #[test]
+        fn anchored_placement_aligns_with_the_dialog_left_and_bottom() {
+            let anchor = Rect {
+                left: 500,
+                top: 200,
+                right: 1500,
+                bottom: 700,
+            };
+            assert_eq!(place(work(), 760, 60, Some(anchor)), (500, 700));
+            assert_eq!(anchored_size((1140, 90), Some(anchor)), (1000, 90));
+        }
+
+        #[test]
+        fn growing_results_do_not_move_the_bar_over_the_dialog() {
+            let anchor = Rect {
+                left: 1900,
+                top: 1000,
+                right: 1920,
+                bottom: 1040,
+            };
+            assert_eq!(place(work(), 760, 400, Some(anchor)), (1900, 1040));
+            assert_eq!(place(work(), 760, 60, Some(anchor)), (1900, 1040));
+        }
+
+        #[test]
+        fn unanchored_placement_stays_centered_in_the_upper_third() {
+            assert_eq!(place(work(), 760, 60, None), (580, 326));
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -565,6 +773,8 @@ mod stub {
 
     use gpui::Window;
 
+    use super::Rect;
+
     static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
 
     pub fn is_visible(_window: &Window) -> bool {
@@ -575,13 +785,19 @@ mod stub {
         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
     }
 
-    pub fn show(_window: &Window, _height: f32) -> Option<f32> {
+    pub fn show(
+        _window: &Window,
+        _width: f32,
+        _height: f32,
+        _anchor: Option<Rect>,
+        _activate: bool,
+    ) -> Option<f32> {
         WINDOW_VISIBLE.store(true, Ordering::Relaxed);
         None
     }
 
     /// Resizing is a Windows-specific launcher behavior for now.
-    pub fn resize(_window: &Window, _height: f32) {}
+    pub fn resize(_window: &Window, _width: f32, _height: f32, _anchor: Option<Rect>) {}
 
     /// Native titlebar dark-mode forcing is Windows-only; other platforms
     /// already follow the app theme.

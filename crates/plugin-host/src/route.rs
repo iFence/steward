@@ -122,6 +122,7 @@ impl RouteIndex {
         self.commands.len() + self.prefixes.len() + self.regexes.len() + self.dynamics.len()
     }
 
+    /// Whether no routes are registered at all.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -214,17 +215,6 @@ impl RouteIndex {
             deadline_ms: DYNAMIC_DEADLINE_MS,
         }));
         hits
-    }
-
-    /// All routes as hits, regardless of query (used by tests / debugging).
-    pub fn all_routes(&self) -> Vec<RouteHit> {
-        self.commands
-            .iter()
-            .chain(&self.prefixes)
-            .chain(&self.regexes)
-            .chain(&self.dynamics)
-            .map(hit_for)
-            .collect()
     }
 }
 

@@ -145,17 +145,31 @@ pub fn run_service(config: &ServiceConfig) -> Result<()> {
                 Ok(line) => line,
                 Err(_) => break,
             };
-            if let Some(message) = decode_line(&line).ok().flatten() {
-                if tx.send(message).is_err() {
-                    break;
-                }
+            if tx.send(line).is_err() {
+                break;
             }
         }
     });
 
     loop {
         match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(message) => handle_message(&mut pool, message, &mut out)?,
+            Ok(line) => match decode_line(&line) {
+                // Blank lines are framing, not content (see `decode_line`).
+                Ok(None) => {}
+                Ok(Some(message)) => handle_message(&mut pool, message, &mut out)?,
+                Err(_) => {
+                    // Malformed input gets a JSON-RPC error rather than being
+                    // dropped silently: a host that sent something bad would
+                    // otherwise wait forever for an answer that never comes.
+                    // `id: 0` is the conventional placeholder used when the id
+                    // could not be recovered; the host drops replies whose id it
+                    // is not waiting on, so an unknown id is harmless.
+                    write_line(
+                        &mut out,
+                        &Message::Response(Response::error(0, framing_error(&line))),
+                    )?;
+                }
+            },
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 for response in pool.expire_parked() {
                     write_line(&mut out, &Message::Response(response))?;
@@ -165,6 +179,23 @@ pub fn run_service(config: &ServiceConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Classify a line that [`decode_line`] could not decode.
+///
+/// The two JSON-RPC codes are distinct on purpose: a line that is not JSON at
+/// all is a parse error, while well-formed JSON that is not a valid message is
+/// an invalid request. The distinction is what tells a host whether its framing
+/// or its payload is wrong.
+fn framing_error(line: &str) -> RpcError {
+    if serde_json::from_str::<Value>(line).is_ok() {
+        RpcError::new(
+            code::INVALID_REQUEST,
+            "line is not a valid JSON-RPC message",
+        )
+    } else {
+        RpcError::new(code::PARSE_ERROR, "invalid JSON in request line")
+    }
 }
 
 /// Handle one inbound protocol frame (a host request, a host reply to a
@@ -490,6 +521,24 @@ mod tests {
         };
         assert_eq!(response.error.unwrap().code, code::METHOD_NOT_FOUND);
         assert_eq!(response.jsonrpc, JSONRPC_VERSION);
+    }
+
+    #[test]
+    fn undecodable_lines_are_classified_by_the_spec() {
+        // Not JSON at all.
+        assert_eq!(framing_error("not json").code, code::PARSE_ERROR);
+        assert_eq!(framing_error("{ unbalanced").code, code::PARSE_ERROR);
+        // Well-formed JSON, but not a Request / Response / Notification: it has
+        // no `jsonrpc` field, so the untagged envelope rejects it.
+        assert_eq!(framing_error("{}").code, code::INVALID_REQUEST);
+        assert_eq!(framing_error("[1, 2]").code, code::INVALID_REQUEST);
+        // And the decoder agrees these are all undecodable in the first place.
+        for line in ["not json", "{ unbalanced", "{}", "[1, 2]"] {
+            assert!(
+                decode_line(line).is_err(),
+                "{line} should not decode to a message"
+            );
+        }
     }
 
     #[test]

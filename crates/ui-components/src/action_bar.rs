@@ -97,22 +97,6 @@ impl ActionBar {
         Self { state }
     }
 
-    /// Replace the actions and the optional currently-selected item.
-    pub fn set_actions<C: AppContext>(&self, actions: Vec<ActionRef>, cx: &mut C) {
-        self.state.update(cx, |state, cx| {
-            state.actions = actions;
-            cx.notify();
-        });
-    }
-
-    /// Update the selected item id (passed to the plugin when an action runs).
-    pub fn set_selected_item<C: AppContext>(&self, selected: Option<String>, cx: &mut C) {
-        self.state.update(cx, |state, cx| {
-            state.selected_item = selected;
-            cx.notify();
-        });
-    }
-
     /// The actions currently shown (for the app to read before rendering).
     pub fn actions(&self, cx: &App) -> Vec<ActionRef> {
         self.state.read(cx).actions.clone()

@@ -3,6 +3,8 @@ app-settings = Настройки
 app-autostart = Запуск при входе в систему
 app-quit = Выйти
 application = Приложение
+# Shortcut hints shown on the right of the result rows (Ctrl+N)
+row-shortcut-modifier = Ctrl
 open-in-browser = Открыть в браузере
 command = Команда
 settings-general = Общие
@@ -23,3 +25,16 @@ settings-theme-amber = Янтарь
 settings-about = О программе
 settings-about-description = Steward — быстрый, экономный по памяти лаунчер и платформа плагинов
 settings-version = Версия
+
+# Automatic directory picker for open/save dialogs
+file-continuum-no-results = Папки не найдены — введите полный путь
+file-continuum-navigating = Переход к папке…
+file-continuum-target-unavailable = Исходный диалог недоступен или не поддерживается. Нажмите Esc и повторите попытку.
+file-continuum-release-modifiers = Отпустите Ctrl / Alt / Shift и повторите попытку.
+file-continuum-invalid-directory = Папка не существует или недоступна.
+file-continuum-cancelled = Отменено
+file-continuum-passive = Нажмите на поле поиска, чтобы начать ввод
+# Full-disk file index
+files-indexing = Индексация файлов…
+files-no-index = Индекс файлов недоступен. Введите file: и имя после его построения.
+files-indexed = Проиндексировано файлов

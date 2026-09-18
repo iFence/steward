@@ -1,0 +1,47 @@
+// Win32 version resource for the shipped executable.
+//
+// This is what Explorer's Details tab, Task Manager and the installer read, so
+// the fields are worth filling in rather than leaving blank: a blank
+// ProductName makes the binary show up as a naked file name, and the MSI's
+// "Apps & features" entry takes its name from ProductName here rather than from
+// `wix/main.wxs`. Every field therefore tracks the shipped binary name
+// (`steward-app.exe`, see `Cargo.toml`).
+//
+// `040904B0` is the standard `0409` (US English) / `04B0` (Unicode) translation,
+// and every string therefore has to be `L"..."`: a non-wide string inside a
+// `040904B0` block produces an empty value.
+//
+// This file is deliberately ASCII: the resource compiler reads it in the build
+// machine's ANSI code page, so a UTF-8 dash or quote (an em dash, a typographic
+// apostrophe) turns into mojibake on a non-Latin system. Comments are read too,
+// so the rule covers the whole file and not just the string values.
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      L"Steward contributors"
+            VALUE "FileDescription",  L"Steward (launcher and plugin platform)"
+            VALUE "FileVersion",      L"0.1.0"
+            VALUE "InternalName",     L"steward-app"
+            VALUE "LegalCopyright",   L"MIT License"
+            VALUE "OriginalFilename", L"steward-app.exe"
+            VALUE "ProductName",      L"Steward"
+            VALUE "ProductVersion",   L"0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

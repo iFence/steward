@@ -94,6 +94,7 @@ mod tests {
         assert_eq!(localization.translate("app-autostart"), "Launch at Startup");
         assert_eq!(localization.translate("open-in-browser"), "Open in Browser");
         assert_eq!(localization.translate("command"), "Command");
+        assert_eq!(localization.translate("row-shortcut-modifier"), "Ctrl");
 
         // Switching at runtime affects every shared handle immediately.
         localization.select_language("zh");

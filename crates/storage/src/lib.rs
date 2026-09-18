@@ -40,10 +40,17 @@ pub struct Storage {
 impl Storage {
     /// Open (creating if needed) the database at the OS data directory, e.g.
     /// `%APPDATA%\Steward\steward.db` on Windows.
+    ///
+    /// `STEWARD_DATA_DIR` overrides that location, which the benchmarks and the
+    /// tests use to run against a writable scratch directory instead of the
+    /// real profile.
     pub fn open() -> Result<Self> {
-        let data_dir = dirs::data_dir()
-            .context("no OS data directory available")?
-            .join("Steward");
+        let data_dir = match std::env::var_os("STEWARD_DATA_DIR") {
+            Some(dir) => PathBuf::from(dir),
+            None => dirs::data_dir()
+                .context("no OS data directory available")?
+                .join("Steward"),
+        };
         Self::open_at(&data_dir)
     }
 

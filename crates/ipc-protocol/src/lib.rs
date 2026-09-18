@@ -151,8 +151,6 @@ pub mod code {
     pub const PLUGIN_NOT_FOUND: i64 = -32002;
     /// The requested command does not exist on the plugin.
     pub const COMMAND_NOT_FOUND: i64 = -32003;
-    /// The manifest declared a permission M2 does not implement.
-    pub const UNSUPPORTED_PERMISSION: i64 = -32004;
 }
 
 /// Main process -> runtime methods.
@@ -235,8 +233,6 @@ pub fn decode_line(line: &str) -> serde_json::Result<Option<Message>> {
     }
     serde_json::from_str(trimmed).map(Some)
 }
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]
 mod tests {

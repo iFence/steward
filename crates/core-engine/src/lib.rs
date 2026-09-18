@@ -5,6 +5,7 @@
 //! M1 adds application scanning (Windows-first) and `nucleo`-based fuzzy
 //! matching with usage-frequency weighting.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::PathBuf;
 
@@ -17,9 +18,13 @@ pub use nucleo;
 mod scanner;
 
 pub mod calc;
+pub mod file_index;
 pub mod link;
 
 pub use calc::{format_value, try_evaluate};
+pub use file_index::{
+    match_tier, EntryInfo, FileDb, FileDbBuilder, FileHit, Filter, MatchTier, SearchOptions,
+};
 pub use link::try_openable;
 pub use scanner::{platform_scanner, AppScanner};
 
@@ -41,6 +46,14 @@ const FREQ_WEIGHT: f64 = 20.0;
 struct ScoredApp {
     app: AppEntry,
     score: u16,
+}
+
+/// An application match with the fuzzy score that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppHit {
+    pub app: AppEntry,
+    /// nucleo's score for the best-matching haystack variant; higher is better.
+    pub score: u16,
 }
 
 /// The search engine: an immutable index of applications plus a reusable
@@ -81,11 +94,34 @@ impl Engine {
     /// `freq` resolves the usage count for an app path; pass a no-op closure
     /// when usage is unknown.
     pub fn query(&self, query: &str, freq: &dyn Fn(&str) -> u32) -> Vec<AppEntry> {
+        self.query_scored(query, freq)
+            .into_iter()
+            .map(|hit| hit.app)
+            .collect()
+    }
+
+    /// [`Engine::query`] with the raw fuzzy score kept alongside each entry.
+    ///
+    /// The launcher needs the score to rank applications against *other* result
+    /// kinds (files, plugin items) instead of always listing applications first:
+    /// a file whose name is an exact match should be able to outrank an
+    /// application that merely fuzzily contains the query's letters.
+    pub fn query_scored(&self, query: &str, freq: &dyn Fn(&str) -> u32) -> Vec<AppHit> {
         // nucleo's default config is case-insensitive with latin normalization,
-        // which is well suited to launcher search.
+        // which is well suited to launcher search. It only normalizes the
+        // haystack though, so the needle has to be case-folded here (as the
+        // plugin router does): a mixed-case needle otherwise misses on
+        // non-ASCII haystacks and trips nucleo's ASCII prefilter assertion.
+        // Borrow the query when it is already lower case so the common
+        // per-keystroke path stays allocation-free.
+        let query: Cow<'_, str> = if query.chars().any(char::is_uppercase) {
+            Cow::Owned(query.to_lowercase())
+        } else {
+            Cow::Borrowed(query)
+        };
         let mut matcher = self.matcher.borrow_mut();
         let mut needle_buf = Vec::new();
-        let needle = Utf32Str::new(query, &mut needle_buf);
+        let needle = Utf32Str::new(&query, &mut needle_buf);
         let haystacks = self.haystacks.borrow();
 
         let mut scored: Vec<ScoredApp> = if query.trim().is_empty() {
@@ -131,7 +167,13 @@ impl Engine {
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        scored.into_iter().map(|s| s.app).collect()
+        scored
+            .into_iter()
+            .map(|scored| AppHit {
+                app: scored.app,
+                score: scored.score,
+            })
+            .collect()
     }
 
     fn path_key(&self, app: &AppEntry) -> String {
@@ -320,6 +362,16 @@ mod tests {
         engine.set_entries(entries());
         // nucleo default config is case-insensitive.
         assert_eq!(engine.query("firefox", &NO_FREQ).len(), 1);
+    }
+
+    #[test]
+    fn mixed_case_query_matches_like_its_lowercase_form() {
+        let mut engine = Engine::new();
+        engine.set_entries(entries());
+        // A mixed-case needle used to silently miss (non-ASCII haystack) or
+        // panic inside nucleo's `should have been caught by prefilter` assert.
+        assert_eq!(engine.query("FireFox", &NO_FREQ).len(), 1);
+        assert_eq!(engine.query("Terminl", &NO_FREQ).len(), 1);
     }
 
     #[test]
