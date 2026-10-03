@@ -348,10 +348,11 @@ mod tests {
             .iter_ordered()
             .map(|record| restored.path_of(record).to_string_lossy().into_owned())
             .collect();
-        // Index order is case-insensitive by path, so `readme.md` precedes `Users`.
+        // Index order is grouped by parent record index (roots last), with
+        // entries under one parent keeping their creation order.
         assert_eq!(
             paths,
-            vec!["C:\\", "C:\\readme.md", "C:\\Users", "C:\\Users\\notes.txt"]
+            vec!["C:\\Users", "C:\\readme.md", "C:\\Users\\notes.txt", "C:\\"]
         );
         let notes = restored
             .iter_ordered()

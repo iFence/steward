@@ -88,6 +88,39 @@
                             Source='$(var.CargoTargetBinDir)\steward-plugin-runtime.exe'
                             KeyPath='yes'/>
                     </Component>
+
+                    <!-- Optional privileged enumerator: the app connects to it
+                         over a named pipe when it is running, and falls back to
+                         its own directory walk otherwise. -->
+                    <Component Id='helper0' Guid='*'>
+                        <File
+                            Id='helper0exe'
+                            Name='steward-index-helper.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\steward-index-helper.exe'
+                            KeyPath='yes'/>
+                        <!-- Auto-start LocalSystem service: reads $MFT and
+                             streams records to the app over a named pipe.
+                             `Vital='no'` keeps a service failure from aborting
+                             the whole install; the app then uses its own walk. -->
+                        <ServiceInstall
+                            Id='StewardIndexHelperInstall'
+                            Name='StewardIndexHelper'
+                            DisplayName='Steward Index Helper'
+                            Description='Reads the NTFS $MFT so Steward file search starts fast.'
+                            Type='ownProcess'
+                            Start='auto'
+                            ErrorControl='normal'
+                            Arguments='--service'
+                            Vital='no'/>
+                        <ServiceControl
+                            Id='StewardIndexHelperControl'
+                            Name='StewardIndexHelper'
+                            Start='install'
+                            Stop='both'
+                            Remove='uninstall'
+                            Wait='yes'/>
+                    </Component>
                 </Directory>
             </Directory>
 
@@ -121,6 +154,7 @@
             <ComponentRef Id='License'/>
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='runtime0'/>
+            <ComponentRef Id='helper0'/>
             <ComponentRef Id='ApplicationShortcut'/>
         </Feature>
 
@@ -168,6 +202,12 @@
             ExeCommand='taskkill.exe /IM steward-plugin-runtime.exe /F /T'
             Execute='immediate'
             Return='ignore'/>
+        <CustomAction
+            Id='StopRunningStewardHelper'
+            Directory='SystemFolder'
+            ExeCommand='taskkill.exe /IM steward-index-helper.exe /F /T'
+            Execute='immediate'
+            Return='ignore'/>
 
         <!-- Graceful fallback: a normal close and an end-session message are
              tried first; TerminateProcess is the fallback after the timeout. -->
@@ -184,6 +224,15 @@
             Id='CloseStewardRuntime'
             Target='steward-plugin-runtime.exe'
             Description='The Steward plugin runtime is running and will be closed to install the update.'
+            CloseMessage='yes'
+            EndSessionMessage='yes'
+            RebootPrompt='no'
+            TerminateProcess='1'
+            Timeout='5'/>
+        <util:CloseApplication
+            Id='CloseStewardHelper'
+            Target='steward-index-helper.exe'
+            Description='The Steward index helper is running and will be closed to install the update.'
             CloseMessage='yes'
             EndSessionMessage='yes'
             RebootPrompt='no'
@@ -211,6 +260,7 @@
         <InstallExecuteSequence>
             <Custom Action='StopRunningSteward' Before='RemoveExistingProducts'>VersionNT &gt; 400</Custom>
             <Custom Action='StopRunningStewardRuntime' After='StopRunningSteward'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardHelper' After='StopRunningStewardRuntime'>VersionNT &gt; 400</Custom>
             <Custom Action='SyncAutostart' After='InstallFiles'>NOT REMOVE</Custom>
             <Custom Action='UnregisterAutostart' Before='RemoveFiles'>(REMOVE="ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
         </InstallExecuteSequence>

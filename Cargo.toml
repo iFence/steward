@@ -8,6 +8,7 @@ members = [
     "crates/storage",
     "crates/ui-components",
     "crates/ipc-protocol",
+    "crates/index-helper",
     "plugin-runtime",
 ]
 
@@ -28,6 +29,7 @@ gpui-component = { version = "=0.7.0" }
 global-hotkey = "0.8"
 tray-icon = "0.24"
 nucleo = "0.5"
+roaring = "0.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rquickjs = "0.12"
 regex = "1"

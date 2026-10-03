@@ -37,6 +37,7 @@ mod events;
 #[cfg(target_os = "windows")]
 mod file_continuum;
 mod file_index;
+mod file_index_helper;
 mod hotkeys;
 mod i18n;
 mod launch;

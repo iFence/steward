@@ -10,12 +10,13 @@
 //! | `0x1000` / `0x2000` | rename old / new name: remember, then move |
 //! | `0x8000` and data bits | refresh size/time/attributes |
 //!
-//! After applying a batch the name array is re-sorted once, which is O(n log n)
-//! on a batch boundary rather than per record and keeps one code path for "the
-//! index is in index order".
+//! After applying a batch the name array is regrouped by parent with an O(n)
+//! integer counting sort 鈥?no path strings and no comparisons. A record rename
+//! replaces the record slot and re-points its direct children, so a moved
+//! directory keeps its subtree; deletes tombstone the whole subtree in one walk.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 
 use super::db::{unix_to_mtime, EntryInfo, FileDb, JournalState, ROOT_PARENT};
 use super::ntfs::UsnRecord;
@@ -91,16 +92,27 @@ pub fn apply_usn_records(db: &mut FileDb, volume_root: u32, records: &[UsnRecord
             // the record also drops its `id → record` entry, and a move into a
             // different directory still needs the new parent to be reachable.
             let parent = resolve_parent(db, volume_root, record.parent_id);
-            if let Some(index) = db.index_of_id(record.file_id) {
-                db.remove_subtree(index);
-                outcome.removed += 1;
-            }
-            match parent.and_then(|parent| db.insert_child(parent, &record.to_entry())) {
-                Some(_) => {
+            let entry = record.to_entry();
+            let replaced = db.index_of_id(record.file_id).map(|index| {
+                // Keep the subtree: a renamed directory's descendants are
+                // re-pointed at the new slot instead of being dropped.
+                parent.and_then(|parent| db.replace_record(index, parent, &entry))
+            });
+            match replaced {
+                Some(Some(_)) => {
                     outcome.renamed += 1;
                     changed = true;
                 }
-                None => outcome.skipped += 1,
+                // Not indexed (a replayed journal window): the new name is a
+                // plain create.
+                None => match parent.and_then(|parent| db.insert_child(parent, &entry)) {
+                    Some(_) => {
+                        outcome.renamed += 1;
+                        changed = true;
+                    }
+                    None => outcome.skipped += 1,
+                },
+                Some(None) => outcome.skipped += 1,
             }
             continue;
         }
@@ -236,6 +248,11 @@ impl FsOutcome {
 pub fn apply_fs_changes(db: &mut FileDb, changes: &[FsChange]) -> FsOutcome {
     let mut outcome = FsOutcome::default();
     let mut changed = false;
+    // "rename old" halves whose new half has not arrived yet in this batch.
+    // They are removed only after the whole batch: a directory rename keeps its
+    // subtree by moving the old record, and a cross-volume move (whose new half
+    // lands on another volume's watcher) still ends up removed.
+    let mut pending_renames: VecDeque<(PathBuf, u32)> = VecDeque::new();
     for change in changes {
         match change.action {
             FsAction::Created | FsAction::Modified => {
@@ -248,23 +265,42 @@ pub fn apply_fs_changes(db: &mut FileDb, changes: &[FsChange]) -> FsOutcome {
                     changed = true;
                 }
             }
-            // A rename arrives as old-name then new-name. Removing the old and
-            // inserting the new works whether the two halves land in one batch
-            // or in two (a cross-volume move is reported by each volume's own
-            // watch, so they are never paired) and whether the move changed
-            // directories.
-            FsAction::RenamedOld => {
-                if remove_path(db, &change.path, &mut outcome) {
-                    changed = true;
-                }
-            }
+            FsAction::RenamedOld => match resolve_entry(db, &change.path) {
+                Some(index) => pending_renames.push_back((change.path.clone(), index)),
+                None => outcome.skipped += 1,
+            },
             FsAction::RenamedNew => {
-                if upsert_path(db, &change.path, &mut outcome) {
+                // A rename arrives as old-name then new-name. Pair the new half
+                // with the oldest waiting old half; that covers both the
+                // interleaved and the back-to-back event orders.
+                let paired = pending_renames.pop_front().map(|(_, old_index)| old_index);
+                let moved = paired.is_some_and(|old_index| {
+                    rename_record(db, old_index, &change.path, &mut outcome)
+                });
+                if moved {
+                    outcome.renamed += 1;
                     changed = true;
+                    continue;
                 }
-                outcome.renamed += 1;
+                if let Some(old_index) = paired {
+                    // The new name could not be linked (its parent is not
+                    // indexed yet, or the file vanished): the old entry is gone
+                    // either way, so drop it now.
+                    db.remove_subtree(old_index);
+                    outcome.removed += 1;
+                    changed = true;
+                } else if upsert_path(db, &change.path, &mut outcome) {
+                    changed = true;
+                    outcome.renamed += 1;
+                }
             }
         }
+    }
+    // Any old half without a matching new half moved away from this volume.
+    for (_path, index) in pending_renames {
+        db.remove_subtree(index);
+        outcome.removed += 1;
+        changed = true;
     }
     if changed {
         db.finish_incremental();
@@ -335,6 +371,48 @@ fn resolve_entry(db: &FileDb, path: &Path) -> Option<u32> {
         };
     }
     Some(current)
+}
+
+/// Build the index record for a path from its current on-disk metadata.
+fn entry_info(path: &Path) -> Option<EntryInfo> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let is_dir = metadata.is_dir();
+    let size = (!is_dir).then_some(metadata.len());
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| unix_to_mtime(duration.as_secs() as i64));
+    Some(EntryInfo {
+        // A watcher cannot supply an NTFS file id; `replace_record` preserves
+        // the old record's id when this one is unknown.
+        id: 0,
+        parent_id: 0,
+        size,
+        mtime,
+        attributes: if is_dir { 0x10 } else { 0 },
+        name: path.file_name()?.to_string_lossy().into_owned(),
+        is_dir,
+    })
+}
+
+/// Move `old_index` to `path`, keeping its subtree (a same-batch rename).
+fn rename_record(db: &mut FileDb, old_index: u32, path: &Path, outcome: &mut FsOutcome) -> bool {
+    let (Some(parent_path), Some(info)) = (path.parent(), entry_info(path)) else {
+        outcome.skipped += 1;
+        return false;
+    };
+    let Some(parent) = resolve_dir(db, parent_path) else {
+        outcome.skipped += 1;
+        return false;
+    };
+    match db.replace_record(old_index, parent, &info) {
+        Some(_) => true,
+        None => {
+            outcome.skipped += 1;
+            false
+        }
+    }
 }
 
 /// Insert a created path, or refresh the metadata of one already indexed.
@@ -744,6 +822,124 @@ mod tests {
         );
         assert_eq!(outcome.created, 0);
         assert_eq!(outcome.skipped, 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A whole batch of nested edits, then a directory rename and a subtree
+    /// delete. Locks in the two properties the old fixpoint orphan sweep used
+    /// to paper over: `remove_subtree` really visits the descendants, and
+    /// child lookups stay correct while a batch is still being applied.
+    #[test]
+    fn nested_batches_keep_child_lookups_correct_and_leave_no_orphans() {
+        let root = scratch_dir("nested-batch");
+        let mut builder = FileDbBuilder::new();
+        let root_index = builder.add_root(&root.to_string_lossy(), 0);
+        let mut db = builder.finalize();
+
+        let dir_a = root.join("dir_a");
+        let deep = dir_a.join("deep");
+        let file = deep.join("file.txt");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(&file, b"x").unwrap();
+        let dir_b = root.join("dir_b");
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[
+                FsChange {
+                    action: FsAction::Created,
+                    path: dir_a.clone(),
+                },
+                FsChange {
+                    action: FsAction::Created,
+                    path: deep.clone(),
+                },
+                FsChange {
+                    action: FsAction::Created,
+                    path: file.clone(),
+                },
+                FsChange {
+                    action: FsAction::Created,
+                    path: dir_b.clone(),
+                },
+            ],
+        );
+        assert_eq!(outcome.created, 4);
+
+        let dir_a_index = db.child_by_name(root_index, "dir_a", true).unwrap();
+        let deep_index = db.child_by_name(dir_a_index, "deep", true).unwrap();
+        let file_index = db.child_by_name(deep_index, "file.txt", false).unwrap();
+        assert_eq!(db.children(dir_a_index), vec![deep_index]);
+        assert_eq!(db.children(deep_index), vec![file_index]);
+        assert_eq!(
+            db.path_of(file_index).to_string_lossy(),
+            file.to_string_lossy()
+        );
+
+        // Move the whole subtree by renaming its top directory: the record's
+        // descendants keep their parent pointers, so only the top entry moves.
+        let moved = root.join("dir_c");
+        std::fs::rename(&dir_a, &moved).unwrap();
+        apply_fs_changes(
+            &mut db,
+            &[
+                FsChange {
+                    action: FsAction::RenamedOld,
+                    path: dir_a.clone(),
+                },
+                FsChange {
+                    action: FsAction::RenamedNew,
+                    path: moved.clone(),
+                },
+            ],
+        );
+        let moved_index = db.child_by_name(root_index, "dir_c", true).unwrap();
+        let moved_file = moved.join("deep").join("file.txt");
+        assert_eq!(
+            db.path_of(db.child_by_name(moved_index, "deep", true).unwrap())
+                .to_string_lossy(),
+            moved.join("deep").to_string_lossy()
+        );
+        let file_index = db
+            .child_by_name(
+                db.child_by_name(moved_index, "deep", true).unwrap(),
+                "file.txt",
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            db.path_of(file_index).to_string_lossy(),
+            moved_file.to_string_lossy()
+        );
+
+        // Delete the renamed tree: the directory record and every descendant go.
+        std::fs::remove_dir_all(&moved).unwrap();
+        let outcome = apply_fs_changes(
+            &mut db,
+            &[FsChange {
+                action: FsAction::Removed,
+                path: moved.clone(),
+            }],
+        );
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(db.len(), 2, "root and dir_b survive");
+        assert!(db.child_by_name(root_index, "dir_c", true).is_none());
+        assert!(db.child_by_name(root_index, "dir_b", true).is_some());
+
+        // No orphan may stay live: every record's parent is a live directory.
+        for index in db.iter_ordered() {
+            let parent = db.parent_of(index);
+            if parent == crate::file_index::db::ROOT_PARENT {
+                continue;
+            }
+            assert!(
+                db.is_dir(parent),
+                "record {} points at dead parent {parent}",
+                db.entry(index).unwrap().name
+            );
+        }
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 

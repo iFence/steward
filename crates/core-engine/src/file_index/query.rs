@@ -172,6 +172,27 @@ pub enum Filter {
     Any(Vec<Filter>),
 }
 
+impl Filter {
+    /// The needle that the name trigram index can answer this filter with.
+    ///
+    /// Only exactly one folded substring term on the name qualifies: the index
+    /// stores ASCII-folded name trigrams, so `case:`, `path:`, `regex:`,
+    /// `wildcards:`, `wholeword:` and grouped/negated queries must keep using
+    /// the exact scan.
+    pub fn indexed_needle(&self) -> Option<&str> {
+        match self {
+            Filter::Pred(Predicate::Text(text))
+                if text.mode == MatchMode::Substring
+                    && text.scope == Scope::Name
+                    && text.case == CaseMode::Folded =>
+            {
+                Some(text.text.as_str())
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Flatten a conjunction into its members, descending through nested `All`
 /// nodes but not through `Any` groups (an alternative is not a conjunct).
 fn collect_conjuncts<'a>(filter: &'a Filter, out: &mut Vec<&'a Filter>) {

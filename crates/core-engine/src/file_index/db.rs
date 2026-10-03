@@ -24,6 +24,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::name_index::{NameIndex, MIN_RECORDS};
+
 /// Parent index marking a record whose parent is not itself indexed (a root).
 pub const ROOT_PARENT: u32 = u32::MAX;
 /// Records per search block. Worker count derives from *block* count
@@ -187,9 +189,18 @@ pub struct FileDb {
     pub(crate) parent: Vec<u32>,
     pub(crate) ids: Vec<u64>,
     /// Records sorted by (parent path, name). A parent always precedes its
-    /// descendants, so serving a folder listing is a contiguous slice and path
-    /// construction walks over records that are already neighbours.
+    /// descendants. Ordered by parent record index, so a directory's children
+    /// are a contiguous slice (`partition_point` over `parent`) and a child
+    /// lookup never scans the whole index.
+    ///
+    /// Appends go to the tail: `grouped` is the length of the prefix that is
+    /// still in parent order, and `children` / `child_by_name` consult the tail
+    /// linearly until the next [`FileDb::finish_incremental`] folds it in.
     pub(crate) name_index: Vec<u32>,
+    /// Number of leading `name_index` entries covered by the parent-grouped
+    /// order. `name_index[grouped..]` holds records appended since the last
+    /// reorder.
+    pub(crate) grouped: u32,
     /// Position in `name_index` where each block starts.
     pub(crate) blocks: Vec<u32>,
     pub(crate) removed: Vec<u8>,
@@ -200,6 +211,9 @@ pub struct FileDb {
     /// `file id → record index`, kept for incremental (USN) updates.
     pub(crate) key_map: HashMap<u64, u32>,
     pub(crate) journals: HashMap<u8, JournalState>,
+    /// Optional 3-gram accelerator over names. Derived state: built on demand
+    /// by the app after a build, never persisted.
+    pub(crate) trigram_index: Option<NameIndex>,
 }
 
 impl FileDb {
@@ -212,6 +226,7 @@ impl FileDb {
             parent: Vec::new(),
             ids: Vec::new(),
             name_index: Vec::new(),
+            grouped: 0,
             blocks: Vec::new(),
             removed: Vec::new(),
             depths: Vec::new(),
@@ -220,6 +235,7 @@ impl FileDb {
             max_depth: 1,
             key_map: HashMap::new(),
             journals: HashMap::new(),
+            trigram_index: None,
         }
     }
 
@@ -426,23 +442,34 @@ impl FileDb {
         start..out.len()
     }
 
-    /// Children of `index` in index order. Returns an empty vector for a record
-    /// that is not a live directory.
+    /// Children of `index`. Returns an empty vector for a record that is not a
+    /// live directory.
+    ///
+    /// The parent-grouped prefix is a contiguous slice; records appended since
+    /// the last reorder live in the tail and are scanned linearly. Both parts
+    /// are correct while a batch is still being applied, not only after
+    /// [`FileDb::finish_incremental`].
     pub fn children(&self, index: u32) -> Vec<u32> {
         if !self.is_dir(index) {
             return Vec::new();
         }
-        let start = self
-            .name_index
+        let (grouped, _) = self.split_grouped();
+        let start = self.name_index[..grouped]
             .partition_point(|record| self.parent[*record as usize] < index);
-        let end = self
-            .name_index
+        let end = self.name_index[..grouped]
             .partition_point(|record| self.parent[*record as usize] <= index);
-        self.name_index[start..end]
+        let mut children: Vec<u32> = self.name_index[start..end]
             .iter()
             .copied()
             .filter(|child| self.is_live(*child))
-            .collect()
+            .collect();
+        children.extend(
+            self.name_index[grouped..]
+                .iter()
+                .copied()
+                .filter(|child| self.is_live(*child) && self.parent[*child as usize] == index),
+        );
+        children
     }
 
     /// Find a live child of `parent` by name (case-insensitive), used by USN
@@ -451,17 +478,38 @@ impl FileDb {
         if !self.is_dir(parent) {
             return None;
         }
-        let start = self
-            .name_index
+        let (grouped, tail_len) = self.split_grouped();
+        let start = self.name_index[..grouped]
             .partition_point(|record| self.parent[*record as usize] < parent);
-        let end = self
-            .name_index
+        let end = self.name_index[..grouped]
             .partition_point(|record| self.parent[*record as usize] <= parent);
-        self.name_index[start..end].iter().copied().find(|record| {
+        let matches = |record: &u32| {
             self.is_live(*record)
                 && self.is_dir(*record) == is_dir
                 && String::from_utf8_lossy(self.name_bytes(*record)).eq_ignore_ascii_case(name)
-        })
+        };
+        self.name_index[start..end]
+            .iter()
+            .find(|record| matches(record))
+            .copied()
+            .or_else(|| {
+                self.name_index[grouped..grouped + tail_len]
+                    .iter()
+                    .find(|record| {
+                        // Parent first: the tail can hold every record appended
+                        // in this batch, and comparing an integer skips the
+                        // name decode for all but this parent's children.
+                        self.parent[**record as usize] == parent && matches(record)
+                    })
+                    .copied()
+            })
+    }
+
+    /// Split `name_index` into its parent-grouped prefix length and the tail
+    /// length. The tail holds records appended since the last reorder.
+    fn split_grouped(&self) -> (usize, usize) {
+        let grouped = (self.grouped as usize).min(self.name_index.len());
+        (grouped, self.name_index.len() - grouped)
     }
 
     /// Record index for a file reference number, via the `id → record` map.
@@ -516,17 +564,71 @@ impl FileDb {
             if !self.is_live(current) {
                 continue;
             }
-            self.removed[current as usize] = 1;
-            self.live -= 1;
-            if self.status(current) & bits::DIRECTORY != 0 {
-                self.dirs -= 1;
+            // Collect the children *before* tombstoning `current`: `children`
+            // requires the parent to still be a live directory, and this is the
+            // only reason `remove_subtree` never needed a separate orphan sweep.
+            let children = self.children(current);
+            self.tombstone(current);
+            stack.extend(children);
+        }
+    }
+
+    /// Move a record to `new_parent`, keeping its subtree.
+    ///
+    /// A record stores its name inline, so a rename cannot patch the old arena
+    /// bytes: the old slot is tombstoned and a fresh record is appended under
+    /// the new parent. The old record's *direct children* are then re-pointed
+    /// at the new slot, so a renamed or moved directory keeps its descendants
+    /// without rewriting their records. Returns the new record index, or `None`
+    /// when the move is impossible (parent gone, invalid name, or a live
+    /// sibling already owns the name), in which case nothing is changed.
+    pub fn replace_record(&mut self, index: u32, new_parent: u32, info: &EntryInfo) -> Option<u32> {
+        if !self.is_live(index) || !self.is_dir(new_parent) {
+            return None;
+        }
+        if info.name.is_empty() || info.name == "." || info.name == ".." {
+            return None;
+        }
+        // A different live sibling with the same name would make the insert
+        // fail after the old record was already gone; reject it up front.
+        if let Some(existing) = self.child_by_name(new_parent, &info.name, info.is_dir) {
+            if existing != index {
+                return None;
             }
-            if let Some(id) = self.ids.get(current as usize).copied() {
-                if id != NO_ID {
-                    self.key_map.remove(&id);
-                }
+        }
+        let old_id = self.ids.get(index as usize).copied().unwrap_or(NO_ID);
+        let children = self.children(index);
+        self.tombstone(index);
+        let new_index = self.insert_child(new_parent, info)?;
+        // A filesystem-watch rename carries no file id; keep the old record's
+        // id so USN-driven updates can still find the moved entry.
+        if info.id == NO_ID && old_id != NO_ID {
+            self.ids[new_index as usize] = old_id;
+            self.key_map.insert(old_id, new_index);
+        }
+        for child in children {
+            if self.is_live(child) {
+                self.parent[child as usize] = new_index;
             }
-            stack.extend(self.children(current));
+        }
+        Some(new_index)
+    }
+
+    /// Tombstone one record, leaving its children in place for the caller to
+    /// re-point ([`Self::replace_record`]) or remove ([`Self::remove_subtree`]).
+    fn tombstone(&mut self, index: u32) {
+        if !self.is_live(index) {
+            return;
+        }
+        self.removed[index as usize] = 1;
+        self.live -= 1;
+        if self.status(index) & bits::DIRECTORY != 0 {
+            self.dirs -= 1;
+        }
+        if let Some(id) = self.ids.get(index as usize).copied() {
+            if id != NO_ID {
+                self.key_map.remove(&id);
+            }
         }
     }
 
@@ -557,12 +659,13 @@ impl FileDb {
         true
     }
 
-    /// Recompute the index order, block boundaries and counters after a batch
-    /// of incremental edits. One re-sort per batch, not per record.
+    /// Fold a batch of incremental edits back into the index order and refresh
+    /// the derived arrays. One O(n) integer reorder per batch 鈥?no path strings
+    /// are built, no comparisons run, and no orphan sweep is needed because
+    /// [`Self::remove_subtree`] tombstones descendants as it descends.
     pub fn finish_incremental(&mut self) {
-        self.prune_orphans();
         self.max_depth = self.compute_depths();
-        self.resort();
+        self.reorder_by_parent();
         self.blocks = (0..self.name_index.len())
             .step_by(BLOCKS)
             .map(|position| position as u32)
@@ -570,42 +673,28 @@ impl FileDb {
         if self.blocks.is_empty() {
             self.blocks.push(0);
         }
-    }
-
-    /// Tombstone records whose parent is gone or is no longer a directory,
-    /// repeatedly, until nothing more can be pruned.
-    ///
-    /// A USN delete removes the top of a subtree; its descendants arrive as
-    /// their own delete records, so leaving them behind would leak orphan
-    /// records into the index until the next full rebuild.
-    fn prune_orphans(&mut self) {
-        loop {
-            let mut changed = false;
-            for index in 0..self.offsets.len() as u32 {
-                if !self.is_live(index) {
-                    continue;
-                }
-                let parent = self.parent[index as usize];
-                if parent == ROOT_PARENT {
-                    continue;
-                }
-                let parent_ok = (parent as usize) < self.offsets.len() && self.is_dir(parent);
-                if !parent_ok {
-                    self.removed[index as usize] = 1;
-                    self.live -= 1;
-                    if self.status(index) & bits::DIRECTORY != 0 {
-                        self.dirs -= 1;
+        // Fold names appended since the accelerator was built into its
+        // overflow, so postings never under-include. Removed/renamed records
+        // may stay in old bitmaps; the search verifies every candidate against
+        // its current name, so over-inclusion is harmless.
+        if self.trigram_index.is_some() {
+            let from = self
+                .trigram_index
+                .as_ref()
+                .map_or(0, NameIndex::built_slots);
+            let slots = self.offsets.len() as u32;
+            if from < slots {
+                let mut added: Vec<(u32, Vec<u8>)> = Vec::new();
+                for record in from..slots {
+                    if self.is_live(record) {
+                        added.push((record, self.name_bytes(record).to_vec()));
                     }
-                    if let Some(id) = self.ids.get(index as usize).copied() {
-                        if id != NO_ID {
-                            self.key_map.remove(&id);
-                        }
-                    }
-                    changed = true;
                 }
-            }
-            if !changed {
-                break;
+                if let Some(accelerator) = self.trigram_index.as_mut() {
+                    for (record, name) in added {
+                        accelerator.note(record, &name);
+                    }
+                }
             }
         }
     }
@@ -703,6 +792,7 @@ impl FileDb {
             parent,
             ids,
             name_index,
+            grouped: 0,
             blocks,
             removed,
             depths,
@@ -717,8 +807,13 @@ impl FileDb {
             // each delete/rename/metadata change as `skipped` and dropped it.
             key_map: HashMap::new(),
             journals,
+            trigram_index: None,
         };
         db.rebuild_key_map();
+        // `grouped` is derived, not persisted: the snapshot on disk may predate
+        // the parent-grouped order, so normalise it once here.
+        db.grouped = 0;
+        db.reorder_by_parent();
         db
     }
 }
@@ -982,16 +1077,14 @@ impl FileDbBuilder {
             .filter(|index| db.status(*index as u32) & bits::DIRECTORY != 0)
             .count();
 
-        // 4. Sort the name array by (parent path, name). This also makes the
-        //    array a topological order (every parent before its children),
-        //    which `compute_depths` relies on.
-        db.name_index = (0..db.offsets.len() as u32).collect();
-        let mut order = std::mem::take(&mut db.name_index);
-        sort_by_path(&mut order, &db);
-        db.name_index = order;
+        // 4. Group the name array by parent record index. A directory's
+        //    children become a contiguous slice, which is what `children` and
+        //    `child_by_name` binary-search; depth is computed from the parent
+        //    chain, so no topological order is required.
+        db.reorder_by_parent();
         db.max_depth = db.compute_depths();
 
-        // 5. Block entry points over the sorted array.
+        // 5. Block entry points over the grouped array.
         db.blocks = (0..db.name_index.len())
             .step_by(BLOCKS)
             .map(|position| position as u32)
@@ -1006,61 +1099,6 @@ impl FileDbBuilder {
 impl Default for FileDbBuilder {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Sort record indices by (parent path, name).
-///
-/// The keys are materialised once per record into an explicit vector and sorted
-/// on that, which is O(n) parent-path builds instead of one per comparison and
-/// keeps the order completely deterministic: `sort_unstable_by_key` on
-/// `(path, name, index)` has no ties to break arbitrarily.
-fn sort_by_path(indices: &mut [u32], db: &FileDb) {
-    let mut path_cache: HashMap<u32, String> = HashMap::new();
-    let mut keyed: Vec<(String, u32)> = Vec::with_capacity(indices.len());
-    for index in indices.iter().copied() {
-        let parent = db.parent[index as usize];
-        let parent_path = if let Some(cached) = path_cache.get(&parent) {
-            cached.clone()
-        } else {
-            let computed = if parent == ROOT_PARENT {
-                String::new()
-            } else {
-                let mut buffer = String::new();
-                db.path_into(parent, &mut buffer);
-                buffer
-            };
-            path_cache.insert(parent, computed.clone());
-            computed
-        };
-        let name = String::from_utf8_lossy(db.name_bytes(index)).into_owned();
-        keyed.push((join_path(&parent_path, &name), index));
-    }
-    // Compare full paths byte-wise (case-insensitively first, then exactly), so
-    // the order is a plain total order with no locale surprises. Records under
-    // the same directory are adjacent — the parent path is a common prefix — and
-    // a directory precedes the entries whose names start with its own name.
-    keyed.sort_by(|left, right| {
-        left.0
-            .to_ascii_lowercase()
-            .cmp(&right.0.to_ascii_lowercase())
-            .then_with(|| left.0.cmp(&right.0))
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    for (slot, (_, index)) in indices.iter_mut().zip(keyed) {
-        *slot = index;
-    }
-}
-
-/// `parent\name`, without doubling a separator the parent already ends with.
-fn join_path(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
-        return name.to_owned();
-    }
-    if parent.ends_with('\\') || parent.ends_with('/') {
-        format!("{parent}{name}")
-    } else {
-        format!("{parent}\\{name}")
     }
 }
 
@@ -1137,36 +1175,125 @@ impl FileDbBuilder {
 impl FileDb {
     /// Directory nesting level per record (0 for a root).
     ///
-    /// One pass over `name_index`, which is a topological order because every
-    /// parent precedes its children, so a single forward sweep suffices.
+    /// Walks each record's parent chain with memoisation, so it does not depend
+    /// on any ordering: a moved directory (whose parent index may be larger
+    /// than its own) still resolves. Each slot is filled once, so one batch is
+    /// O(n) with no per-record queue.
     fn compute_depths(&mut self) -> u32 {
-        let mut depths = vec![0u32; self.offsets.len()];
-        let mut max_depth = 0;
-        for record in self.name_index.iter().copied() {
-            let parent = self.parent[record as usize];
-            depths[record as usize] = if parent == ROOT_PARENT || parent as usize >= depths.len() {
-                0
-            } else {
-                depths[parent as usize] + 1
-            };
-            max_depth = max_depth.max(depths[record as usize]);
+        const UNKNOWN: u32 = u32::MAX;
+        let count = self.offsets.len();
+        let mut depths = std::mem::take(&mut self.depths);
+        depths.clear();
+        depths.resize(count, UNKNOWN);
+        let mut chain: Vec<u32> = Vec::new();
+        for start in 0..count {
+            if depths[start] != UNKNOWN {
+                continue;
+            }
+            chain.clear();
+            let mut current = start as u32;
+            loop {
+                if depths[current as usize] != UNKNOWN {
+                    break;
+                }
+                chain.push(current);
+                // A corrupt index with a parent cycle must not spin forever;
+                // the cycle is broken and treated as a root.
+                if chain.len() > count {
+                    break;
+                }
+                let parent = self.parent[current as usize];
+                if parent == ROOT_PARENT || parent as usize >= count {
+                    break;
+                }
+                current = parent;
+            }
+            while let Some(record) = chain.pop() {
+                let parent = self.parent[record as usize];
+                let parent_depth = depths.get(parent as usize).copied().unwrap_or(UNKNOWN);
+                depths[record as usize] =
+                    if parent == ROOT_PARENT || parent as usize >= count || parent_depth == UNKNOWN
+                    {
+                        0
+                    } else {
+                        parent_depth.saturating_add(1)
+                    };
+            }
         }
+        let max_depth = depths.iter().copied().max().unwrap_or(0);
         self.depths = depths;
         max_depth.max(1)
     }
 
-    /// Sort the name array in place. Used after incremental edits that changed
-    /// paths (a directory rename moves a whole subtree in the order).
-    pub(crate) fn resort(&mut self) {
-        let mut order = std::mem::take(&mut self.name_index);
-        sort_by_path(&mut order, self);
+    /// Rebuild `name_index` grouped by parent record index.
+    ///
+    /// This is a counting sort on integer keys: roots (and any other
+    /// out-of-range parent) land in the final bucket, so the prefix stays
+    /// ascending and `partition_point` can binary-search it. Order inside a
+    /// parent's bucket follows record creation, which keeps the result
+    /// deterministic. O(n), with no path strings and no comparisons.
+    pub(crate) fn reorder_by_parent(&mut self) {
+        let count = self.offsets.len();
+        self.name_index.clear();
+        if count == 0 {
+            self.grouped = 0;
+            return;
+        }
+        // Bucket `count` collects ROOT_PARENT (and any corrupt out-of-range
+        // parent), which sort last because every real record index is < count.
+        let mut counts = vec![0u32; count + 1];
+        for parent in &self.parent {
+            let bucket = if (*parent as usize) < count {
+                *parent as usize
+            } else {
+                count
+            };
+            counts[bucket] += 1;
+        }
+        let mut starts = vec![0u32; count + 2];
+        for bucket in 0..=count {
+            starts[bucket + 1] = starts[bucket] + counts[bucket];
+        }
+        let mut order = vec![0u32; count];
+        let mut cursor = starts.clone();
+        for record in 0..count as u32 {
+            let parent = self.parent[record as usize];
+            let bucket = if (parent as usize) < count {
+                parent as usize
+            } else {
+                count
+            };
+            order[cursor[bucket] as usize] = record;
+            cursor[bucket] += 1;
+        }
         self.name_index = order;
+        self.grouped = count as u32;
     }
 
     /// Number of record slots, live plus tombstoned. Equals the index count
     /// between `finalize` calls and is what incremental updates iterate.
     pub fn slot_count(&self) -> usize {
         self.offsets.len()
+    }
+
+    /// Build the 3-gram name accelerator. Returns whether one was built (the
+    /// index must be large enough for it to pay off).
+    pub fn build_name_index(&mut self) -> bool {
+        self.build_name_index_with_min(MIN_RECORDS)
+    }
+
+    /// [`Self::build_name_index`] with an explicit size gate (tests build small
+    /// indexes through it).
+    pub(crate) fn build_name_index_with_min(&mut self, min_records: usize) -> bool {
+        let built = NameIndex::build_with_threshold(self, min_records);
+        let built_ok = built.is_some();
+        self.trigram_index = built;
+        built_ok
+    }
+
+    /// The 3-gram name accelerator, when one has been built.
+    pub fn name_index(&self) -> Option<&NameIndex> {
+        self.trigram_index.as_ref()
     }
 
     /// An independent copy of the index.
@@ -1182,6 +1309,7 @@ impl FileDb {
             parent: self.parent.clone(),
             ids: self.ids.clone(),
             name_index: self.name_index.clone(),
+            grouped: self.grouped,
             blocks: self.blocks.clone(),
             removed: self.removed.clone(),
             depths: self.depths.clone(),
@@ -1190,6 +1318,7 @@ impl FileDb {
             max_depth: self.max_depth,
             key_map: self.key_map.clone(),
             journals: self.journals.clone(),
+            trigram_index: None,
         }
     }
 }
@@ -1322,31 +1451,37 @@ mod tests {
     }
 
     #[test]
-    fn records_sort_by_parent_path_then_name() {
+    fn records_are_grouped_by_parent_with_roots_last() {
         let mut builder = FileDbBuilder::new();
         let root = builder.add_root("C:\\", 1);
         let b_dir = builder.add_child(root, &EntryInfo::dir("b"));
         let a_dir = builder.add_child(root, &EntryInfo::dir("a"));
-        builder.add_child(b_dir, &EntryInfo::file("inside-b.txt"));
-        builder.add_child(a_dir, &EntryInfo::file("inside-a.txt"));
-        builder.add_child(root, &EntryInfo::file("top.txt"));
+        let inside_b = builder.add_child(b_dir, &EntryInfo::file("inside-b.txt"));
+        let inside_a = builder.add_child(a_dir, &EntryInfo::file("inside-a.txt"));
+        let top = builder.add_child(root, &EntryInfo::file("top.txt"));
         let db = builder.finalize();
 
-        let names: Vec<String> = db
-            .iter_ordered()
-            .map(|index| db.path_of(index).to_string_lossy().into_owned())
-            .collect();
+        // `children` is the contract the order exists for: a directory's
+        // entries form one slice, in both directions.
+        let mut root_children = db.children(root);
+        root_children.sort_unstable();
+        let mut expected_root = vec![a_dir, b_dir, top];
+        expected_root.sort_unstable();
+        assert_eq!(root_children, expected_root);
+        assert_eq!(db.children(a_dir), vec![inside_a]);
+        assert_eq!(db.children(b_dir), vec![inside_b]);
+
+        // Every record is reachable exactly once, and the root (whose parent is
+        // the ROOT_PARENT sentinel) sorts into the final bucket so the
+        // parent-keyed prefix stays ascending for `partition_point`.
+        let mut ordered: Vec<u32> = db.iter_ordered().collect();
+        ordered.sort_unstable();
         assert_eq!(
-            names,
-            vec![
-                "C:\\",
-                "C:\\a",
-                "C:\\a\\inside-a.txt",
-                "C:\\b",
-                "C:\\b\\inside-b.txt",
-                "C:\\top.txt",
-            ]
+            ordered,
+            (0..db.slot_count() as u32).collect::<Vec<_>>(),
+            "iteration covers every slot"
         );
+        assert_eq!(db.iter_ordered().last().unwrap(), root);
     }
 
     #[test]
@@ -1414,7 +1549,8 @@ mod tests {
             .iter_ordered()
             .map(|index| db.entry(index).unwrap().name)
             .collect();
-        assert_eq!(names, vec!["C:\\".to_string(), "excluded".to_string()]);
+        // Parent-grouped order puts the root (ROOT_PARENT sentinel) last.
+        assert_eq!(names, vec!["excluded".to_string(), "C:\\".to_string()]);
     }
 
     #[test]

@@ -35,6 +35,7 @@ steward-ui-components = { path = "../ui-components" }
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-plugin-host = { path = "../plugin-host" }
 steward-ipc-protocol = { path = "../ipc-protocol" }
+steward-index-helper = { path = "../index-helper" }
 serde_json.workspace = true
 arboard.workspace = true
 

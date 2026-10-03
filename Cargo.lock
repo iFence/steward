@@ -6138,6 +6138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "roaring"
+version = "0.10.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19e8d2cfa184d94d0726d650a9f4a1be7f9b76ac9fdb954219878dc00c1c1e7b"
+dependencies = [
+ "bytemuck",
+ "byteorder",
+]
+
+[[package]]
 name = "ropey"
 version = "2.0.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6924,6 +6934,7 @@ dependencies = [
  "rust-embed",
  "serde_json",
  "steward-core-engine",
+ "steward-index-helper",
  "steward-ipc-protocol",
  "steward-plugin-host",
  "steward-plugin-registry",
@@ -6943,9 +6954,21 @@ dependencies = [
  "nucleo",
  "pinyin",
  "regex",
+ "roaring",
  "serde",
  "widestring",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "steward-index-helper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "steward-core-engine",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

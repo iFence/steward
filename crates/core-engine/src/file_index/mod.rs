@@ -33,6 +33,7 @@
 use std::path::{Path, PathBuf};
 
 mod db;
+mod name_index;
 pub mod persist;
 mod query;
 mod scan;
@@ -52,6 +53,7 @@ pub use db::{
     FileDbBuilder, FileEntry, IndexError, JournalState, BLOCKS, FORMAT_VERSION, INLINE_NAME_MAX,
     MAGIC, MAX_NAME_BYTES, ROOT_PARENT,
 };
+pub use name_index::{NameIndex, MIN_RECORDS};
 pub use query::{
     evaluate, match_tier, parse as parse_filter, CaseMode, Compare, Filter, Haystack, KindFilter,
     MatchMode, MatchTier, Predicate, Scope, SizeFilter, TextPredicate,

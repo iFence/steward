@@ -18,7 +18,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use steward_core_engine::file_index::{
@@ -27,7 +27,7 @@ use steward_core_engine::file_index::{
     SearchOptions,
 };
 #[cfg(target_os = "windows")]
-use steward_core_engine::file_index::{apply_fs_changes, DirectoryWatcher, FsChange};
+use steward_core_engine::file_index::{apply_fs_changes, DirectoryWatcher, FsAction, FsChange};
 
 /// Records per search request from the launcher.
 pub(crate) const FILE_RESULT_LIMIT: usize = 12;
@@ -45,7 +45,13 @@ const EXTRA_EXCLUSIONS: [&str; 4] = ["node_modules", ".git", "winsxs", "$recycle
 
 /// A finished build: the index, the roots it covered, and the number of names
 /// that had to be truncated.
-type BuildOutput = (FileDb, Vec<(PathBuf, IndexBackend)>, usize);
+pub(crate) type BuildOutput = (FileDb, Vec<(PathBuf, IndexBackend)>, usize);
+
+/// A finished build plus the live helper session, when the helper built it.
+pub(crate) struct BuildResult {
+    pub(crate) output: BuildOutput,
+    pub(crate) session: Option<crate::file_index_helper::HelperSession>,
+}
 
 /// A finished catch-up pass: the updated index plus what the journal changed.
 type CatchUpOutput = (FileDb, usize, usize, usize, usize);
@@ -56,17 +62,20 @@ pub(crate) enum IndexEvent {
     Progress(IndexProgress),
     /// The build finished; `snapshot` is ready to be persisted.
     Ready {
-        db: Box<FileDb>,
         snapshot: Vec<u8>,
         records: usize,
         directories: usize,
+        journal: bool,
         backends: Vec<(PathBuf, IndexBackend)>,
         elapsed: Duration,
     },
     /// A catch-up pass applied replayed journal changes.
     Updated {
-        db: Box<FileDb>,
-        snapshot: Vec<u8>,
+        /// `Some` when the write-behind interval elapsed and a fresh snapshot
+        /// was encoded; `None` for the common live-update path.
+        snapshot: Option<Vec<u8>>,
+        records: usize,
+        journal: bool,
         replayed: usize,
         created: usize,
         removed: usize,
@@ -105,8 +114,6 @@ enum Command {
 
 /// The launcher's handle on the file index.
 pub(crate) struct FileIndex {
-    /// Current index, swapped wholesale by load/build/replay.
-    db: Arc<Mutex<Option<Arc<FileDb>>>>,
     commands: crossbeam_channel::Sender<Command>,
     events: crossbeam_channel::Receiver<IndexEvent>,
     /// Search replies for the launcher's poll task.
@@ -119,8 +126,14 @@ pub(crate) struct FileIndex {
     roots: Vec<PathBuf>,
     /// Whether a build or catch-up pass is running.
     building: bool,
+    /// Whether the current index has at least one live record. Mirrors the
+    /// worker's index without sharing it: the worker owns the `FileDb` outright,
+    /// so a live update never has to clone it.
+    ready: bool,
     /// Records in the current index.
     pub(crate) records: usize,
+    /// Whether the current index carries a usable USN journal cursor.
+    journal: bool,
     /// A snapshot waiting to be written by the launcher's thread (the worker
     /// holds no SQLite connection, so persistence stays on the UI side).
     pending_snapshot: Option<Vec<u8>>,
@@ -129,11 +142,6 @@ pub(crate) struct FileIndex {
     /// The last failure message, so a repeating one (an unreadable volume polled
     /// every couple of seconds) is logged once instead of on every tick.
     last_failure: Option<String>,
-    /// When the snapshot was last written, for [`LIVE_PERSIST_INTERVAL`].
-    last_persist: Instant,
-    /// Whether the pending snapshot is from a build (written at once) rather
-    /// than a live update (throttled).
-    snapshot_is_build: bool,
 }
 
 impl FileIndex {
@@ -146,14 +154,37 @@ impl FileIndex {
         let (command_tx, command_rx) = crossbeam_channel::unbounded::<Command>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<IndexEvent>();
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded::<SearchReply>();
-        let db = Arc::new(Mutex::new(None));
-        let worker_db = Arc::clone(&db);
 
         let roots = if configured_roots.is_empty() {
             default_roots()
         } else {
             parse_roots(configured_roots)
         };
+
+        // Adopt the persisted snapshot on the calling thread so `is_ready` and
+        // `supports_journal` are correct before the first event lands. The
+        // decoded index then moves into the worker, which owns it exclusively
+        // for the process lifetime 鈥?that ownership is what lets a live update
+        // mutate in place instead of cloning the whole index.
+        let (loaded, ready, journal) = match snapshot {
+            Some(blob) => match file_index::persist::decode(&blob, unix_seconds()) {
+                Ok(index) => {
+                    let journal = index.journals().values().any(|state| state.journal_id != 0);
+                    let ready = !index.is_empty();
+                    eprintln!(
+                        "file index: loaded {} records from the snapshot",
+                        index.len()
+                    );
+                    (Some(index), ready, journal)
+                }
+                Err(error) => {
+                    eprintln!("file index: snapshot rejected ({error}); a rebuild will follow");
+                    (None, false, false)
+                }
+            },
+            None => (None, false, false),
+        };
+        let records = loaded.as_ref().map_or(0, FileDb::len);
 
         // Real-time changes: watch every indexed root. Reading the USN journal
         // needs an elevated handle that a normal launch does not have, so this
@@ -166,11 +197,10 @@ impl FileIndex {
 
         std::thread::Builder::new()
             .name("steward-file-index".into())
-            .spawn(move || worker_loop(command_rx, event_tx, reply_tx, worker_db, watcher))
+            .spawn(move || worker_loop(command_rx, event_tx, reply_tx, loaded, watcher))
             .expect("spawn the file index worker");
 
-        let mut index = Self {
-            db,
+        Self {
             commands: command_tx,
             events: event_rx,
             replies: reply_rx,
@@ -178,38 +208,18 @@ impl FileIndex {
             cancel: None,
             roots,
             building: false,
-            records: 0,
+            ready,
+            records,
+            journal,
             pending_snapshot: None,
             needs_reconcile: false,
             last_failure: None,
-            last_persist: Instant::now(),
-            snapshot_is_build: false,
-        };
-        if let Some(blob) = snapshot {
-            match file_index::persist::decode(&blob, unix_seconds()) {
-                Ok(loaded) => {
-                    index.records = loaded.len();
-                    *index.db.lock().expect("file index lock") = Some(Arc::new(loaded));
-                    eprintln!(
-                        "file index: loaded {} records from the snapshot",
-                        index.records
-                    );
-                }
-                Err(error) => {
-                    eprintln!("file index: snapshot rejected ({error}); a rebuild will follow");
-                }
-            }
         }
-        index
     }
 
     /// Whether an index with at least one record is available.
     pub(crate) fn is_ready(&self) -> bool {
-        self.db
-            .lock()
-            .expect("file index lock")
-            .as_ref()
-            .is_some_and(|db| !db.is_empty())
+        self.ready
     }
 
     /// Whether a build or catch-up pass is running.
@@ -223,11 +233,7 @@ impl FileIndex {
     /// non-elevated fallback) has none, so it cannot be caught up and must be
     /// rebuilt to fold in changes made while Steward was not running.
     pub(crate) fn supports_journal(&self) -> bool {
-        self.db
-            .lock()
-            .expect("file index lock")
-            .as_ref()
-            .is_some_and(|db| db.journals().values().any(|state| state.journal_id != 0))
+        self.journal
     }
 
     /// Ask for a full build. Ignored while one is already running.
@@ -269,20 +275,18 @@ impl FileIndex {
                     }
                 }
                 IndexEvent::Ready {
-                    db,
                     snapshot,
                     records,
                     directories,
+                    journal,
                     backends,
                     elapsed,
                 } => {
                     self.building = false;
                     self.records = records;
+                    self.ready = records > 0;
+                    self.journal = journal;
                     self.last_failure = None;
-                    // A build is the expensive result of a restart/cold start, so
-                    // it is persisted immediately regardless of the throttle.
-                    self.snapshot_is_build = true;
-                    *self.db.lock().expect("file index lock") = Some(Arc::new(*db));
                     changed = true;
                     let covered: Vec<String> = backends
                         .iter()
@@ -297,23 +301,26 @@ impl FileIndex {
                     self.pending_snapshot = Some(snapshot);
                 }
                 IndexEvent::Updated {
-                    db,
                     snapshot,
+                    records,
+                    journal,
                     replayed,
                     created,
                     removed,
                     renamed,
                 } => {
                     self.building = false;
-                    self.records = db.len();
+                    self.records = records;
+                    self.ready = records > 0;
+                    self.journal = journal;
                     self.last_failure = None;
-                    self.snapshot_is_build = false;
-                    *self.db.lock().expect("file index lock") = Some(Arc::new(*db));
                     changed = true;
                     eprintln!(
                         "file index: applied {replayed} changes (+{created} -{removed} ~{renamed})"
                     );
-                    self.pending_snapshot = Some(snapshot);
+                    if let Some(snapshot) = snapshot {
+                        self.pending_snapshot = Some(snapshot);
+                    }
                 }
                 IndexEvent::Failed(message) => {
                     self.building = false;
@@ -349,12 +356,6 @@ impl FileIndex {
     /// snapshot stays pending and is returned once the interval elapses, while
     /// a build snapshot goes out at once.
     pub(crate) fn take_pending_snapshot(&mut self) -> Option<Vec<u8>> {
-        self.pending_snapshot.as_ref()?;
-        if !self.snapshot_is_build && self.last_persist.elapsed() < LIVE_PERSIST_INTERVAL {
-            return None;
-        }
-        self.snapshot_is_build = false;
-        self.last_persist = Instant::now();
         self.pending_snapshot.take()
     }
 
@@ -386,7 +387,7 @@ fn worker_loop(
     commands: crossbeam_channel::Receiver<Command>,
     events: crossbeam_channel::Sender<IndexEvent>,
     replies: crossbeam_channel::Sender<SearchReply>,
-    db: Arc<Mutex<Option<Arc<FileDb>>>>,
+    mut index: Option<FileDb>,
     #[cfg(target_os = "windows")] watcher: DirectoryWatcher,
 ) {
     // How long the worker is willing to sit idle before checking the watcher.
@@ -399,12 +400,31 @@ fn worker_loop(
     const MAX_PENDING_CHANGES: usize = 100_000;
     #[cfg(target_os = "windows")]
     let mut pending: Vec<FsChange> = Vec::new();
+    // When the live index was last encoded for persistence. Live updates are
+    // write-behind: most batches mutate the index in place and skip the O(n)
+    // snapshot encode entirely.
+    let mut last_encode = Instant::now();
+    // Live helper deltas, when the helper built the index. While this is set the
+    // worker ignores its own watcher: the helper's USN stream is the single
+    // source of truth, and two sources would duplicate every change.
+    #[cfg(target_os = "windows")]
+    let mut helper_rx: Option<
+        crossbeam_channel::Receiver<steward_index_helper::protocol::Frame>,
+    > = None;
     loop {
         let command = match commands.recv_timeout(WATCH_POLL) {
             Ok(command) => command,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 #[cfg(target_os = "windows")]
-                drain_watcher(&watcher, &db, &events, &mut pending, MAX_PENDING_CHANGES);
+                pump_sources(
+                    &watcher,
+                    &mut index,
+                    &mut helper_rx,
+                    &events,
+                    &mut pending,
+                    MAX_PENDING_CHANGES,
+                    &mut last_encode,
+                );
                 continue;
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
@@ -413,18 +433,42 @@ fn worker_loop(
             Command::Build(options) => {
                 let started = Instant::now();
                 match build_index(&options, &events) {
-                    Ok((index, backends, truncated)) => {
+                    Ok(result) => {
+                        let (mut built, backends, truncated) = result.output;
+                        if built.build_name_index() {
+                            if let Some(accelerator) = built.name_index() {
+                                eprintln!(
+                                    "file index: name accelerator over {} records ({} KB)",
+                                    accelerator.records(),
+                                    accelerator.approx_bytes() / 1024
+                                );
+                            }
+                        }
+                        #[cfg(target_os = "windows")]
+                        {
+                            helper_rx = result.session.map(|session| session.start());
+                            if helper_rx.is_some() {
+                                eprintln!(
+                                    "file index: helper session is live; the local watcher stays idle"
+                                );
+                            }
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            let _ = result.session;
+                        }
                         let snapshot =
-                            file_index::persist::encode(&index, truncated, unix_seconds());
-                        let records = index.len();
-                        let directories = index.dir_count();
-                        let shared = Arc::new(index);
-                        *db.lock().expect("file index lock") = Some(Arc::clone(&shared));
+                            file_index::persist::encode(&built, truncated, unix_seconds());
+                        let records = built.len();
+                        let directories = built.dir_count();
+                        let journal = has_journal(&built);
+                        index = Some(built);
+                        last_encode = Instant::now();
                         let _ = events.send(IndexEvent::Ready {
-                            db: Box::new(shared.as_ref().duplicate()),
                             snapshot,
                             records,
                             directories,
+                            journal,
                             backends,
                             elapsed: started.elapsed(),
                         });
@@ -435,19 +479,25 @@ fn worker_loop(
                 }
             }
             Command::ReplayJournal => {
-                let current = db.lock().expect("file index lock").clone();
-                let Some(current) = current else {
+                let Some(current) = index.as_ref() else {
                     let _ = events.send(IndexEvent::Failed("no index to update".into()));
                     continue;
                 };
-                match replay_journal(&current) {
+                match replay_journal(current) {
                     Ok(Some((updated, replayed, created, removed, renamed))) => {
-                        let snapshot = file_index::persist::encode(&updated, 0, unix_seconds());
-                        let shared = Arc::new(updated);
-                        *db.lock().expect("file index lock") = Some(Arc::clone(&shared));
+                        let records = updated.len();
+                        let journal = has_journal(&updated);
+                        let snapshot = if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
+                            last_encode = Instant::now();
+                            Some(file_index::persist::encode(&updated, 0, unix_seconds()))
+                        } else {
+                            None
+                        };
+                        index = Some(updated);
                         let _ = events.send(IndexEvent::Updated {
-                            db: Box::new(shared.as_ref().duplicate()),
                             snapshot,
+                            records,
+                            journal,
                             replayed,
                             created,
                             removed,
@@ -470,9 +520,8 @@ fn worker_loop(
                 kind,
                 cancel,
             } => {
-                let index = db.lock().expect("file index lock").clone();
                 let started = Instant::now();
-                let Some(index) = index else {
+                let Some(index) = index.as_ref() else {
                     let _ = replies.send(SearchReply {
                         generation,
                         hits: Vec::new(),
@@ -485,7 +534,7 @@ fn worker_loop(
                     kind,
                     sort_by_recency: false,
                 };
-                let outcome = search_filtered(&index, &filter, &options, Some(&cancel));
+                let outcome = search_filtered(index, &filter, &options, Some(&cancel));
                 let _ = options.limit;
                 let _ = replies.send(SearchReply {
                     generation,
@@ -497,7 +546,122 @@ fn worker_loop(
         // A long build/search just delayed the watcher; apply what queued up
         // before going back to waiting.
         #[cfg(target_os = "windows")]
-        drain_watcher(&watcher, &db, &events, &mut pending, MAX_PENDING_CHANGES);
+        pump_sources(
+            &watcher,
+            &mut index,
+            &mut helper_rx,
+            &events,
+            &mut pending,
+            MAX_PENDING_CHANGES,
+            &mut last_encode,
+        );
+    }
+}
+
+/// Whether an index carries at least one usable USN journal cursor.
+fn has_journal(index: &FileDb) -> bool {
+    index.journals().values().any(|state| state.journal_id != 0)
+}
+
+/// Route changes from whichever source is authoritative: the live helper
+/// session when there is one, otherwise the in-process watcher.
+#[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
+fn pump_sources(
+    watcher: &DirectoryWatcher,
+    index: &mut Option<FileDb>,
+    helper_rx: &mut Option<crossbeam_channel::Receiver<steward_index_helper::protocol::Frame>>,
+    events: &crossbeam_channel::Sender<IndexEvent>,
+    pending: &mut Vec<FsChange>,
+    max_pending: usize,
+    last_encode: &mut Instant,
+) {
+    if let Some(receiver) = helper_rx.as_ref() {
+        if drain_helper(index, receiver, events, last_encode) {
+            *helper_rx = None;
+            eprintln!("file index: helper session ended; resuming the local watcher");
+        }
+    } else {
+        drain_watcher(watcher, index, events, pending, max_pending, last_encode);
+    }
+}
+
+/// Apply queued helper deltas in place.
+///
+/// Returns `true` when the session ended (the helper closed the pipe, or its
+/// journal needs a rebuild). A `Reconcile` event is raised in both cases, which
+/// makes the launcher rebuild and fall back to the local walk.
+#[cfg(target_os = "windows")]
+fn drain_helper(
+    index: &mut Option<FileDb>,
+    receiver: &crossbeam_channel::Receiver<steward_index_helper::protocol::Frame>,
+    events: &crossbeam_channel::Sender<IndexEvent>,
+    last_encode: &mut Instant,
+) -> bool {
+    use steward_index_helper::protocol::Frame;
+
+    let mut changes: Vec<FsChange> = Vec::new();
+    let mut ended = false;
+    loop {
+        match receiver.try_recv() {
+            Ok(Frame::Delta(delta)) => changes.push(helper_change(delta)),
+            Ok(Frame::Resync) => {
+                ended = true;
+                let _ = events.send(IndexEvent::Reconcile);
+                break;
+            }
+            Ok(_) => {}
+            Err(crossbeam_channel::TryRecvError::Empty) => break,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                ended = true;
+                let _ = events.send(IndexEvent::Reconcile);
+                break;
+            }
+        }
+    }
+    if changes.is_empty() {
+        return ended;
+    }
+    let Some(index) = index.as_mut() else {
+        return ended;
+    };
+    let outcome = apply_fs_changes(index, &changes);
+    if outcome.is_empty() {
+        return ended;
+    }
+    let snapshot = if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
+        *last_encode = Instant::now();
+        Some(file_index::persist::encode(index, 0, unix_seconds()))
+    } else {
+        None
+    };
+    let _ = events.send(IndexEvent::Updated {
+        snapshot,
+        records: index.len(),
+        journal: has_journal(index),
+        replayed: changes.len(),
+        created: outcome.created,
+        removed: outcome.removed,
+        renamed: outcome.renamed,
+    });
+    ended
+}
+
+/// Map a helper delta onto the same `FsChange` the local watcher produces.
+#[cfg(target_os = "windows")]
+fn helper_change(delta: steward_index_helper::protocol::DeltaFrame) -> FsChange {
+    use steward_index_helper::DeltaAction;
+
+    let action = match delta.action {
+        DeltaAction::Created => FsAction::Created,
+        DeltaAction::Removed => FsAction::Removed,
+        DeltaAction::Modified => FsAction::Modified,
+        DeltaAction::RenamedOld => FsAction::RenamedOld,
+        DeltaAction::RenamedNew => FsAction::RenamedNew,
+    };
+    FsChange {
+        action,
+        path: std::path::PathBuf::from(delta.path),
     }
 }
 
@@ -511,10 +675,11 @@ fn worker_loop(
 #[cfg(target_os = "windows")]
 fn drain_watcher(
     watcher: &DirectoryWatcher,
-    db: &Arc<Mutex<Option<Arc<FileDb>>>>,
+    index: &mut Option<FileDb>,
     events: &crossbeam_channel::Sender<IndexEvent>,
     pending: &mut Vec<FsChange>,
     max_pending: usize,
+    last_encode: &mut Instant,
 ) {
     let mut overflow = false;
     while let Some(batch) = watcher.try_recv() {
@@ -527,8 +692,7 @@ fn drain_watcher(
     if pending.is_empty() {
         return;
     }
-    let current = db.lock().expect("file index lock").clone();
-    let Some(current) = current else {
+    let Some(index) = index.as_mut() else {
         // No index yet: keep buffering, but do not let a slow build accumulate
         // without bound. Dropping the batch and rebuilding afterwards is the
         // documented reconcile anyway.
@@ -539,17 +703,23 @@ fn drain_watcher(
         return;
     };
     let changes = std::mem::take(pending);
-    let mut updated = current.as_ref().duplicate();
-    let outcome = apply_fs_changes(&mut updated, &changes);
+    let outcome = apply_fs_changes(index, &changes);
     if outcome.is_empty() {
         return;
     }
-    let snapshot = file_index::persist::encode(&updated, 0, unix_seconds());
-    let shared = Arc::new(updated);
-    *db.lock().expect("file index lock") = Some(Arc::clone(&shared));
+    // Write-behind: encode at most once per interval. A busy disk (a build, an
+    // unzip) produces many batches; each one still updates the searchable index
+    // immediately, only the SQLite snapshot is deferred.
+    let snapshot = if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
+        *last_encode = Instant::now();
+        Some(file_index::persist::encode(index, 0, unix_seconds()))
+    } else {
+        None
+    };
     let _ = events.send(IndexEvent::Updated {
-        db: Box::new(shared.as_ref().duplicate()),
         snapshot,
+        records: index.len(),
+        journal: has_journal(index),
         replayed: changes.len(),
         created: outcome.created,
         removed: outcome.removed,
@@ -578,7 +748,30 @@ fn default_roots() -> Vec<PathBuf> {
 fn build_index(
     options: &ScanOptions,
     events: &crossbeam_channel::Sender<IndexEvent>,
-) -> Result<BuildOutput, String> {
+) -> Result<BuildResult, String> {
+    // The optional privileged helper reads `$MFT` at a fraction of a walk's
+    // cost. It is strictly an accelerator: when it is not listening, fall back
+    // to the in-process enumerator below without making the user wait.
+    if let Some(result) = crate::file_index_helper::try_build(options) {
+        match result {
+            Ok((output, session)) => {
+                eprintln!(
+                    "file index: helper streamed {} records from {}",
+                    output.0.len(),
+                    output
+                        .1
+                        .iter()
+                        .map(|(path, backend)| format!("{} [{backend}]", path.display()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                return Ok(BuildResult { output, session });
+            }
+            Err(error) => {
+                eprintln!("file index: helper failed ({error}); falling back to the local walk");
+            }
+        }
+    }
     let mut builder = FileDbBuilder::new();
     let mut backends = Vec::new();
     let mut walk_roots: Vec<PathBuf> = Vec::new();
@@ -650,7 +843,10 @@ fn build_index(
     if index.is_empty() {
         return Err("the index came out empty".into());
     }
-    Ok((index, backends, truncated))
+    Ok(BuildResult {
+        output: (index, backends, truncated),
+        session: None,
+    })
 }
 
 /// Enumerate one volume's `$MFT` into `builder`.
@@ -910,4 +1106,91 @@ pub(crate) fn store_snapshot(
     storage
         .borrow()
         .set_setting_blob(file_index::persist::SETTING_KEY, snapshot)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod helper_delta_tests {
+    use super::*;
+    use steward_index_helper::protocol::{DeltaFrame, Frame};
+    use steward_index_helper::DeltaAction;
+
+    #[test]
+    fn every_helper_delta_action_maps_to_a_watcher_action() {
+        // The app applies helper deltas through `apply_fs_changes`, so the
+        // mapping must be exact; a silent mismatch would drop live changes.
+        let cases = [
+            (DeltaAction::Created, FsAction::Created),
+            (DeltaAction::Removed, FsAction::Removed),
+            (DeltaAction::Modified, FsAction::Modified),
+            (DeltaAction::RenamedOld, FsAction::RenamedOld),
+            (DeltaAction::RenamedNew, FsAction::RenamedNew),
+        ];
+        for (action, expected) in cases {
+            let change = helper_change(DeltaFrame {
+                action,
+                path: "C:\\Users\\a.txt".into(),
+            });
+            assert_eq!(change.action, expected, "action {action:?}");
+            assert_eq!(change.path.to_string_lossy(), "C:\\Users\\a.txt");
+        }
+    }
+
+    #[test]
+    fn helper_deltas_are_applied_in_place_and_published() {
+        let root = std::env::temp_dir().join(format!(
+            "steward-helper-drain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let added = root.join("added.txt");
+        std::fs::write(&added, b"x").unwrap();
+
+        let mut builder = FileDbBuilder::new();
+        builder.add_root(&root.to_string_lossy(), 0);
+        let mut index = Some(builder.finalize());
+
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        sender
+            .send(Frame::Delta(DeltaFrame {
+                action: DeltaAction::Created,
+                path: added.to_string_lossy().into_owned(),
+            }))
+            .unwrap();
+        let (events, published) = crossbeam_channel::unbounded();
+        let mut last_encode = Instant::now();
+
+        assert!(!drain_helper(
+            &mut index,
+            &receiver,
+            &events,
+            &mut last_encode
+        ));
+        let hits = file_index::search(
+            index.as_ref().unwrap(),
+            "added",
+            &SearchOptions::with_limit(5),
+        );
+        assert_eq!(hits.hits.len(), 1, "the delta must be searchable");
+        match published.try_recv() {
+            Ok(IndexEvent::Updated { created, .. }) => assert_eq!(created, 1),
+            _ => panic!("expected an Updated event"),
+        }
+
+        // A dropped helper closes the channel, which ends the session and asks
+        // for a rebuild so the local watcher takes over.
+        drop(sender);
+        let (events, _published) = crossbeam_channel::unbounded();
+        assert!(drain_helper(
+            &mut index,
+            &receiver,
+            &events,
+            &mut last_encode
+        ));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

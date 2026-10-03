@@ -103,3 +103,41 @@ host 回复若 isolate 已被 kill/驱逐则被丢弃。
 > kill/驱逐一致性、parked 超时等单元用例保障；`net.request` 已随 `ureq` 落地
 > （宿主强制 http/https + 超时 + 回应体上限）。整机延迟/内存影响仍待
 > `scripts/bench.sh` 在 release 机器上回填。
+
+## 文件索引（M1 全盘搜索）增量热路径
+
+环境：Windows 开发机、release 构建、8 逻辑核、合成索引
+（`crates/core-engine/tests/file_index_bench.rs`，`STEWARD_BENCH_RECORDS` 默认 300k）。命令：
+
+```text
+cargo test -p steward-core-engine --release --test file_index_bench -- --ignored --nocapture
+STEWARD_BENCH_RECORDS=3000000 cargo test -p steward-core-engine --release \
+    --test file_index_bench -- --ignored --nocapture
+```
+
+| 指标 | 改造后（300k 记录，单层目录树） | 改造前 | 备注 |
+|---|---|---|---|
+| 全量构建（`finalize`） | ≈ 35 ms | ≈ 29 ms | 计数排序 + 父链 memo 深度；不再按完整路径字符串排序 |
+| 记录 arena | ≈ 19.3 MB | ≈ 19.3 MB | 仅记录 arena，不含并行数组 |
+| 宽匹配查询 p50（`re` / `rep` / `report`） | ≈ 100–116 ms | ≈ 311–346 ms | 每 worker 只留 top-`limit` 候选，最后才物化名字/路径 |
+| 近似无命中查询 p50（`a`） | ≈ 78 ms | ≈ 75 ms | 纯扫描下限：`name_index`/`offsets`/arena 的随机访问 |
+| 单批增量 +1000 −500 + 一次 `finish_incremental` | ≈ 42 ms | ≈ 62 ms | 批内尾扫先比父索引，避免每次插入做名字解码 |
+
+> 说明：线性扫描在 300k 已到约 100 ms 量级，按记录数线性外推到 3M 会接近秒级；
+> `docs/architecture.md` 2026-10-03 决策里 Stage 3（`fst` + `roaring` 3-gram 倒排、
+> mmap 快照、可选提权 helper）仍是 3M+ 目标的必要条件，本表是触发它的实测证据。
+> 真实全盘数字要在管理员权限下用 `$MFT` 建索引后补齐（helper 尚未落地）。
+
+### 文件索引 3-gram 加速（Stage 3）
+
+同一 300k 合成索引、release 构建、8 逻辑核，`--ignored --nocapture` harness：
+
+| 指标 | 线性扫描 | 3-gram 加速 |
+|---|---|---|
+| 选择性 needle `report-00012` p50 | 8.9 ms | **77 µs**（≈115×） |
+| 宽 needle `rep` / `report` p50 | ~21 ms | ~21 ms（候选 > 32_768 时回退扫描） |
+| 加速器体积 | — | 4.1 MB（≈13.6 B/条；3M 约 41 MB） |
+| 加速器构建 | — | 222 ms（3M 约 2.2 s，一次性、index worker 线程） |
+
+> 说明：加速器在每个索引构建后于 worker 线程构建一次，USN/文件系统增量只会追加到 overflow，
+> 因此新文件仍可被搜到；下一次完整重建（helper 每次启动都会重建）后回收 overflow。

@@ -90,6 +90,10 @@ pub struct SearchOutcome {
 /// system limit (the core count).
 const BLOCKS_PER_WORKER: usize = 16;
 
+/// Above this many trigram candidates the parallel scan wins; the candidate
+/// path verifies and scores on one thread.
+const MAX_INDEX_CANDIDATES: usize = 32_768;
+
 /// Cancel handle handed to search workers: one flag for the whole query, so a
 /// newer keystroke can stop a running scan inside the block loop.
 #[derive(Debug, Default)]
@@ -139,94 +143,198 @@ pub fn search_filtered(
     }
 
     // A query with no text at all ("list everything") is answered from the
-    // index order, which is already sorted by path; no scanning is needed.
+    // index order; no scanning is needed.
     if empty {
         return list_all(index, kind, options);
     }
 
+    // A plain folded substring term can be answered from the 3-gram name index
+    // the app builds for large indexes: the postings give a superset of the
+    // matches, which are then verified against each record's current name.
+    if let Some(needle) = filter.indexed_needle() {
+        if let Some(accelerator) = index.name_index() {
+            if let Some(candidates) = accelerator.candidates(needle.as_bytes()) {
+                // A very broad needle (a large share of the index is a
+                // candidate) is cheaper to answer with the parallel scan: the
+                // candidate path verifies and scores single-threaded. Selective
+                // needles get the index.
+                if candidates.len() <= MAX_INDEX_CANDIDATES {
+                    return search_candidates(
+                        index,
+                        filter,
+                        kind,
+                        &candidates,
+                        options,
+                        cancel,
+                        blocks,
+                    );
+                }
+            }
+        }
+    }
+
+    // Only the best `keep` records per worker are retained. A broad needle
+    // ("re" matching every report) must not materialise a name, a full path and
+    // a `FileHit` for millions of matches before truncating to `limit`.
+    let keep = options.limit.max(1);
     let workers = worker_count(blocks);
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut scanned = 0usize;
+    let mut matched = 0usize;
+    let mut cancelled = false;
+    let worker_total;
     if workers <= 1 {
-        let mut hits = Vec::new();
-        let mut scanned = 0usize;
-        let mut cancelled = false;
+        worker_total = 1;
         scan_range(
             index,
             filter,
             kind,
             0,
             blocks,
-            &mut hits,
+            keep,
+            &mut candidates,
             &mut scanned,
+            &mut matched,
             cancel,
             &mut cancelled,
         );
-        return finish(hits, scanned, blocks, 1, cancelled, options);
+    } else {
+        let chunk = blocks.div_ceil(workers);
+        let ranges: Vec<(usize, usize)> = (0..workers)
+            .map(|worker| {
+                let from = worker * chunk;
+                let to = ((worker + 1) * chunk).min(blocks);
+                (from, to)
+            })
+            .filter(|(from, to)| from < to)
+            .collect();
+        worker_total = ranges.len();
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(worker_total);
+            for (from, to) in ranges {
+                handles.push(scope.spawn(move || {
+                    let mut local = Vec::new();
+                    let mut local_scanned = 0usize;
+                    let mut local_matched = 0usize;
+                    let mut local_cancelled = false;
+                    scan_range(
+                        index,
+                        filter,
+                        kind,
+                        from,
+                        to,
+                        keep,
+                        &mut local,
+                        &mut local_scanned,
+                        &mut local_matched,
+                        cancel,
+                        &mut local_cancelled,
+                    );
+                    (local, local_scanned, local_matched, local_cancelled)
+                }));
+            }
+            for handle in handles {
+                if let Ok((local, local_scanned, local_matched, local_cancelled)) = handle.join() {
+                    candidates.extend(local);
+                    scanned += local_scanned;
+                    matched += local_matched;
+                    cancelled |= local_cancelled;
+                }
+            }
+        });
     }
+    finish_candidates(
+        index,
+        candidates,
+        keep,
+        options,
+        SearchStats {
+            blocks,
+            scanned,
+            workers: worker_total,
+            matched,
+            cancelled,
+        },
+    )
+}
 
-    let chunk = blocks.div_ceil(workers);
-    let ranges: Vec<(usize, usize)> = (0..workers)
-        .map(|worker| {
-            let from = worker * chunk;
-            let to = ((worker + 1) * chunk).min(blocks);
-            (from, to)
-        })
-        .filter(|(from, to)| from < to)
+/// Answer a query from the 3-gram index's candidate list.
+///
+/// Postings may over-include (a renamed or deleted record stays in an old
+/// bitmap), so every candidate is verified with the full filter against its
+/// current name before it is scored.
+#[allow(clippy::too_many_arguments)]
+fn search_candidates(
+    index: &FileDb,
+    filter: &Filter,
+    kind: KindFilter,
+    candidates: &[u32],
+    options: &SearchOptions,
+    cancel: Option<&Cancel>,
+    blocks: usize,
+) -> SearchOutcome {
+    let keep = options.limit.max(1);
+    let needles: Vec<&str> = filter
+        .text_predicates()
+        .into_iter()
+        .map(|predicate| predicate.text.as_str())
         .collect();
-    let worker_total = ranges.len();
-    let mut hits: Vec<FileHit> = Vec::new();
+    let mut best: Vec<Candidate> = Vec::new();
     let mut scanned = 0usize;
+    let mut matched = 0usize;
     let mut cancelled = false;
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(worker_total);
-        for (from, to) in ranges {
-            handles.push(scope.spawn(move || {
-                let mut local = Vec::new();
-                let mut local_scanned = 0usize;
-                let mut local_cancelled = false;
-                scan_range(
-                    index,
-                    filter,
-                    kind,
-                    from,
-                    to,
-                    &mut local,
-                    &mut local_scanned,
-                    cancel,
-                    &mut local_cancelled,
-                );
-                (local, local_scanned, local_cancelled)
-            }));
-        }
-        for handle in handles {
-            if let Ok((local, local_scanned, local_cancelled)) = handle.join() {
-                hits.extend(local);
-                scanned += local_scanned;
-                cancelled |= local_cancelled;
+    for record in candidates.iter().copied() {
+        if let Some(cancel) = cancel {
+            if cancel.is_cancelled() {
+                cancelled = true;
+                break;
             }
         }
-    });
-    finish(hits, scanned, blocks, worker_total, cancelled, options)
+        scanned += 1;
+        if !index.is_live(record) || !kind_accepts(index, record, kind) {
+            continue;
+        }
+        let haystack = Haystack::new(index.name_bytes(record));
+        let (size, mtime) = index.meta(record);
+        if !query::evaluate(filter, &haystack, size, mtime, index.is_dir(record)) {
+            continue;
+        }
+        matched += 1;
+        best.push(Candidate {
+            score: score(index, record, &needles, ""),
+            record,
+        });
+    }
+    trim_candidates(&mut best, keep);
+    finish_candidates(
+        index,
+        best,
+        keep,
+        options,
+        SearchStats {
+            blocks,
+            scanned,
+            workers: 1,
+            matched,
+            cancelled,
+        },
+    )
 }
 
 /// Answer an empty query from the index order (used for "show me everything").
 fn list_all(index: &FileDb, kind: KindFilter, options: &SearchOptions) -> SearchOutcome {
     let mut hits = Vec::new();
-    let mut path_buffer = String::new();
-    for record in index.iter_ordered() {
-        if !kind_accepts(index, record, kind) {
-            continue;
-        }
-        // No query text means no match quality to score: order by recency when
-        // asked, otherwise keep the index (path) order.
-        hits.push(
-            hit_from_path(index, record, &[], &mut path_buffer).unwrap_or_else(|| {
-                let mut fallback = String::new();
-                index.path_into(record, &mut fallback);
-                raw_hit(index, record, fallback)
-            }),
-        );
-    }
+    let mut matched = 0usize;
     if options.sort_by_recency {
+        // Picking the newest needs every mtime, so this branch materialises all
+        // accepted rows; the launcher never issues an empty file query.
+        for record in index.iter_ordered() {
+            if !kind_accepts(index, record, kind) {
+                continue;
+            }
+            matched += 1;
+            hits.push(materialize(index, record, 0));
+        }
         hits.sort_by(|left, right| {
             right
                 .mtime
@@ -234,8 +342,18 @@ fn list_all(index: &FileDb, kind: KindFilter, options: &SearchOptions) -> Search
                 .cmp(&left.mtime.unwrap_or(0))
                 .then_with(|| left.path.cmp(&right.path))
         });
+    } else {
+        // No ordering to apply: pay for only the rows that survive the limit.
+        for record in index.iter_ordered() {
+            if !kind_accepts(index, record, kind) {
+                continue;
+            }
+            matched += 1;
+            if hits.len() < options.limit {
+                hits.push(materialize(index, record, 0));
+            }
+        }
     }
-    let matched = hits.len();
     hits.truncate(options.limit);
     SearchOutcome {
         hits,
@@ -249,7 +367,18 @@ fn list_all(index: &FileDb, kind: KindFilter, options: &SearchOptions) -> Search
     }
 }
 
-/// Scan blocks `[from, to)` appending matches to `out`.
+/// A record that matched, before its name, path and metadata are materialised.
+///
+/// The scan keeps these compact candidates instead of full [`FileHit`]s, so a
+/// broad needle costs one `i32` + `u32` per match rather than a name `String`,
+/// an allocated full path and a parent-chain walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Candidate {
+    score: i32,
+    record: u32,
+}
+
+/// Scan blocks `[from, to)`, keeping at most `keep` best candidates.
 #[allow(clippy::too_many_arguments)]
 fn scan_range(
     index: &FileDb,
@@ -257,8 +386,10 @@ fn scan_range(
     kind: KindFilter,
     from: usize,
     to: usize,
-    out: &mut Vec<FileHit>,
+    keep: usize,
+    out: &mut Vec<Candidate>,
     scanned: &mut usize,
+    matched: &mut usize,
     cancel: Option<&Cancel>,
     cancelled: &mut bool,
 ) {
@@ -269,7 +400,6 @@ fn scan_range(
         .map(|predicate| predicate.text.as_str())
         .collect();
     let mut path_buffer = String::new();
-    let mut fallback_buffer = String::new();
     for block in from..to {
         let start = index.block_start(block as u32);
         let end = index.block_start(block as u32 + 1);
@@ -277,6 +407,7 @@ fn scan_range(
             if let Some(cancel) = cancel {
                 if cancel.is_cancelled() {
                     *cancelled = true;
+                    trim_candidates(out, keep);
                     return;
                 }
             }
@@ -301,27 +432,36 @@ fn scan_range(
             if !query::evaluate(filter, &haystack, size, mtime, is_dir) {
                 continue;
             }
-            // The hit needs a path even when the filter did not; rebuild into
-            // the same buffer the filter just used.
-            index.path_into(record, &mut path_buffer);
-            if path_buffer.is_empty() {
-                // Tombstoned between the match and the materialisation.
-                index.path_into(record, &mut fallback_buffer);
-                out.push(raw_hit(index, record, std::mem::take(&mut fallback_buffer)));
-                continue;
-            }
-            let score = score(index, record, &needles, &path_buffer);
-            out.push(FileHit {
-                index: record,
-                name: String::from_utf8_lossy(index.name_bytes(record)).into_owned(),
-                path: std::path::PathBuf::from(&path_buffer),
-                size,
-                mtime,
-                is_dir,
-                score,
-            });
+            *matched += 1;
+            // `path:` needs the path both to match and to score; a name-only
+            // filter already proved the name hit, so an empty path is fine here
+            // (the path branch of `score` can never fire).
+            let score = if needs_path {
+                index.path_into(record, &mut path_buffer);
+                score(index, record, &needles, &path_buffer)
+            } else {
+                score(index, record, &needles, "")
+            };
+            out.push(Candidate { score, record });
         }
     }
+    trim_candidates(out, keep);
+}
+
+/// Keep only the best `keep` candidates (score desc, then record for
+/// determinism). `select_nth_unstable_by` is O(n) and runs once per worker.
+fn trim_candidates(candidates: &mut Vec<Candidate>, keep: usize) {
+    let keep = keep.max(1);
+    if candidates.len() <= keep {
+        return;
+    }
+    candidates.select_nth_unstable_by(keep, |left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.record.cmp(&right.record))
+    });
+    candidates.truncate(keep);
 }
 
 /// Whether a record passes the kind filter.
@@ -333,32 +473,13 @@ fn kind_accepts(index: &FileDb, record: u32, kind: KindFilter) -> bool {
     }
 }
 
-/// Materialise a hit for a record whose path the caller already holds.
-fn hit_from_path(
-    index: &FileDb,
-    record: u32,
-    needles: &[&str],
-    path_buffer: &mut String,
-) -> Option<FileHit> {
-    index.path_into(record, path_buffer);
-    if path_buffer.is_empty() {
-        return None;
-    }
+/// Build a hit for a record that survived ranking. Only the bounded winner set
+/// reaches this function, so the name `String` and `PathBuf` are allocated a
+/// handful of times per query instead of once per match.
+fn materialize(index: &FileDb, record: u32, score: i32) -> FileHit {
     let (size, mtime) = index.meta(record);
-    Some(FileHit {
-        index: record,
-        name: String::from_utf8_lossy(index.name_bytes(record)).into_owned(),
-        path: std::path::PathBuf::from(&*path_buffer),
-        size,
-        mtime,
-        is_dir: index.is_dir(record),
-        score: score(index, record, needles, path_buffer),
-    })
-}
-
-/// Build a hit for a record whose path was already materialised by the caller.
-fn raw_hit(index: &FileDb, record: u32, path: String) -> FileHit {
-    let (size, mtime) = index.meta(record);
+    let mut path = String::new();
+    index.path_into(record, &mut path);
     FileHit {
         index: record,
         name: String::from_utf8_lossy(index.name_bytes(record)).into_owned(),
@@ -366,7 +487,7 @@ fn raw_hit(index: &FileDb, record: u32, path: String) -> FileHit {
         size,
         mtime,
         is_dir: index.is_dir(record),
-        score: 0,
+        score,
     }
 }
 
@@ -413,33 +534,33 @@ fn score(index: &FileDb, record: u32, predicates: &[&str], path: &str) -> i32 {
     score
 }
 
-/// Rank and truncate.
-fn finish(
-    mut hits: Vec<FileHit>,
-    scanned: usize,
-    blocks: usize,
-    workers: usize,
-    cancelled: bool,
+/// Rank the retained candidates, materialise the winners and order them.
+fn finish_candidates(
+    index: &FileDb,
+    mut candidates: Vec<Candidate>,
+    keep: usize,
     options: &SearchOptions,
+    stats: SearchStats,
 ) -> SearchOutcome {
-    let matched = hits.len();
+    trim_candidates(&mut candidates, keep);
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.record.cmp(&right.record))
+    });
+    candidates.truncate(options.limit);
+    let mut hits: Vec<FileHit> = candidates
+        .into_iter()
+        .map(|candidate| materialize(index, candidate.record, candidate.score))
+        .collect();
     hits.sort_by(|left, right| {
         right
             .score
             .cmp(&left.score)
             .then_with(|| left.path.cmp(&right.path))
     });
-    hits.truncate(options.limit);
-    SearchOutcome {
-        hits,
-        stats: SearchStats {
-            blocks,
-            scanned,
-            workers,
-            matched,
-            cancelled,
-        },
-    }
+    SearchOutcome { hits, stats }
 }
 
 /// `ceil(block_count / 16)`, clamped by the core count.
@@ -620,6 +741,33 @@ mod tests {
         let index = builder.finalize();
         let outcome = search(&index, "notes", &SearchOptions::with_limit(10));
         assert_eq!(outcome.hits[0].name, "notes.txt");
+    }
+
+    /// The 3-gram path must return exactly the same hits as the linear scan;
+    /// postings are a superset that verification then narrows.
+    #[test]
+    fn the_name_index_answers_exactly_what_the_scan_does() {
+        let plain = tree(500, 8);
+        let mut accelerated = tree(500, 8);
+        assert!(accelerated.build_name_index_with_min(1));
+
+        for (query, limit) in [
+            ("file", 20usize),
+            ("file-0001", 20),
+            ("00012", 20),
+            ("dir3", 20),
+            ("FILE-00042", 20),
+            ("missing", 20),
+            ("fi", 20),
+        ] {
+            let options = SearchOptions::with_limit(limit);
+            let fast = search(&accelerated, query, &options);
+            let exact = search(&plain, query, &options);
+            assert_eq!(
+                fast.hits, exact.hits,
+                "the accelerator must not change the result for {query:?}"
+            );
+        }
     }
 
     #[test]

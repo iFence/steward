@@ -20,15 +20,18 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 # The MSI bundles steward-plugin-runtime.exe next to the app executable (the
-# plugin host resolves it as a sibling), so both release binaries must exist.
+# plugin host resolves it as a sibling) and steward-index-helper.exe (the app
+# connects to it over a named pipe when it is running), so all three release
+# binaries must exist.
 $releaseBin = Join-Path $root "target\release"
 $appExe = Join-Path $releaseBin "steward-app.exe"
 $runtimeExe = Join-Path $releaseBin "steward-plugin-runtime.exe"
+$helperExe = Join-Path $releaseBin "steward-index-helper.exe"
 
 Push-Location $root
 try {
     if (-not $SkipBuild) {
-        & cargo build --release -p steward-app -p steward-plugin-runtime
+        & cargo build --release -p steward-app -p steward-plugin-runtime -p steward-index-helper
         if ($LASTEXITCODE -ne 0) {
             throw "cargo build --release failed with exit code $LASTEXITCODE"
         }
@@ -38,6 +41,9 @@ try {
     }
     if (-not (Test-Path $runtimeExe)) {
         throw "missing $runtimeExe (run without -SkipBuild first)"
+    }
+    if (-not (Test-Path $helperExe)) {
+        throw "missing $helperExe (run without -SkipBuild first)"
     }
 
     # Locate WiX: explicit -b argument, WIX env var / PATH (cargo-wix default),

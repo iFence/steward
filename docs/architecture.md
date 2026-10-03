@@ -575,3 +575,140 @@ steward/
   / InstallExecuteSequence 表。
 - 边界：关闭动作按镜像名匹配，会连带关闭 `target\debug` / `target\release` 调试实例；
   卸载清理只覆盖执行卸载的当前用户 HKCU；不做应用层单实例。
+
+### 2026-10-03（文件索引增量热路径：按 parent 分组 + 原地更新）
+
+- 问题：每个 watcher 批次都会 `duplicate()` 全量深拷贝索引 → `finish_incremental()` 里
+  `prune_orphans()` 定点扫描 + 重算深度 + `sort_by_path()` 按完整路径字符串 O(n log n)
+  重排 → `persist::encode()` 全量编码 → 再 `duplicate()` 一份发给事件；百万级索引下
+  每批都是可观的 CPU/内存峰值，磁盘繁忙（编译、解压）时直接打满。
+- 方案（core-engine）：`name_index` 改为按 `parent` 记录索引做整数计数排序（O(n)，
+  不构造路径字符串、不做比较），根记录（`ROOT_PARENT`）落在最后一个 bucket，
+  `children` / `child_by_name` 的 `partition_point` 二分仍成立；`grouped` 记录已分组
+  前缀长度，批次中途 append 的记录留在尾部线性扫描，保证批内查找正确。
+- 方案（core-engine）：`remove_subtree` 在 tombstone 前先取 children；`finish_incremental`
+  不再调用 `prune_orphans`（子树删除已完整）；新增 `replace_record` 让重命名/移动保留
+  子树（tombstone 旧槽 → 插入新槽 → 把直接子记录 re-parent 到新槽，文件 id 未知时沿用
+  旧 id）；`compute_depths` 改为按父链带 memo 的 O(n) 计算，不依赖数组顺序。
+- 方案（app）：`FileDb` 由索引 worker 独占（去掉 `Arc<Mutex<Arc<FileDb>>>` 共享），
+  事件只回传记录数/`journal` 标志；`drain_watcher` 原地 `apply_fs_changes`，快照编码按
+  `LIVE_PERSIST_INTERVAL`（30s）写后节流，事件不再携带整份索引副本。
+- 生效与兼容：搜索、排序、查询 DSL 与快照格式（`SNAPSHOT_VERSION = 2`）不变；
+  `from_parts` 载入后按 parent 重新归一化，旧快照仍可解码。`iter_ordered` / 空查询列举
+  顺序由「路径序」变为「父记录分组序」（根在最后）；启动器不会把空查询交给文件索引，
+  用户可见行为不变。
+- 验证：`cargo test -p steward-core-engine`（133 lib + 7 集成）、`cargo test -p steward-app`
+  （78）、`cargo clippy -p steward-core-engine --all-targets -- -D warnings` 全绿；新增深层
+  目录的同批嵌套增删改、目录重命名保留子树与「无孤儿记录」回归测试。
+- 未做：可选提权 helper（MFT/USN 服务）、三百万级倒排索引/文件名拼音、mmap 快照仍是后续
+  阶段；本次只覆盖用户态增量热路径与正确性。
+
+### 2026-10-03（可选提权索引 helper：MFT 流式枚举骨架）
+
+- 背景：UI 进程以用户令牌运行，打不开 `\\.\X:`，所以 `$MFT`/USN 快路径在普通安装下不可达；
+  Stage 1 为此引入一个可选提权 helper，让索引构建走「枚举在 helper、搜索在 app」的分工。
+- 落地：新增 `crates/index-helper`（lib + bin `steward-index-helper`）。
+  `protocol` 定义长度前缀二进制帧（Volume / Record / End，Record 带 root 标记与 UTF-8 名称），
+  JSON 只用于一次性的请求行；`source` 在 Windows 下按卷优先读 `$MFT`、失败回退目录遍历，两条
+  路径产出同一种 RecordFrame；`server` 用 `windows-sys` 命名管道服务（一次连接一次请求，
+  `FlushFileBuffers` 后才断开，避免快速度断开丢掉客户端还没读完的帧）；`client` 用 `std::fs`
+  打开管道，`read_index` 把流物化成 `FileDb`（复用 `FileDbBuilder` / `finalize`）。
+- 接线：app 新增 `file_index_helper::try_build`，`build_index` 先试 helper，连不上或流失败就记录
+  并回退本地枚举；helper 不可用时行为与之前完全一致，因此本步对现有用户零风险。
+- 权限：helper 只读枚举、不写用户文件；管道使用创建者的默认 DACL（当前用户 + SYSTEM/管理员）；
+  未提权启动时 MFT 打不开，helper 同样退化为目录遍历（与本地等价）。
+- 验证：`cargo test -p steward-index-helper`（协议 7 项 + 真实命名管道 2 项端到端：流式建索引后
+  能按名字搜索并命中正确路径）；`cargo clippy --workspace --all-targets -- -D warnings` 与
+  `cargo test -p steward-core-engine -p steward-app -p steward-index-helper` 全绿。
+- 未做（下一步）：服务安装 / 按需 UAC 启动与设置开关（当前 helper 即使手动运行也只是与本地遍历
+  等价，真正收益要等提权）、USN → path delta 推送（运行期继续由 app 自己的 watcher 维护）、
+  MSI 安装 helper、按用户 SID 的管道 ACL 与连接超时/多客户端。
+
+### 2026-10-03（索引 helper 提权服务与管道 ACL）
+
+- 激活：`steward-index-helper.exe` 新增 `--service` 模式（`StartServiceCtrlDispatcherW` +
+  `RegisterServiceCtrlHandlerExW`，处理 `SERVICE_CONTROL_STOP`：置停止标志，并用一个一次性客户端
+  连接唤醒阻塞中的 `ConnectNamedPipe`，随后上报 `SERVICE_STOPPED`）。MSI 在 `helper0` 组件里用 WiX
+  `ServiceInstall`（Name=`StewardIndexHelper`、`Arguments=--service`、`Start=auto`、LocalSystem、
+  `Vital=no`）安装，`ServiceControl` 负责 install 时启动、升级/卸载时停止；便携/开发可用
+  `--install-service` / `--uninstall-service`（内部调 `sc.exe`，需要提权提示）。
+- 管道 ACL：LocalSystem 服务令牌的默认 DACL 只含 SYSTEM/Administrators，普通用户连不上。新增
+  `security.rs`：`WTSGetActiveConsoleSessionId` + `WTSQueryUserToken` 取当前控制台用户 SID，构造
+  SDDL `D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;<user sid>)`，经
+  `ConvertStringSecurityDescriptorToSecurityDescriptorW` 后传给 `CreateNamedPipeW`。解析失败
+  （普通用户独立运行、会话切换中）保留默认 DACL：独立模式下进程本身就是该用户，服务模式下解析
+  本该成功。
+- 前端行为不变：app 仍是「能连上 helper 就加速、连不上就回退本地目录遍历」，服务安装失败也不影响
+  可用性，只是退回慢路径。
+- 验证：`cargo test -p steward-index-helper`（9 个 lib 用例，含真实 advapi32 SDDL→描述符转换；2 个
+  真实命名管道端到端）；`--service` 在控制台运行返回 1063（预期：不是 SCM 启动）、`--help` 正常；
+  `cargo fmt --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 全绿；`main.wxs`
+  通过 XML 解析。
+- 未验证（需要管理员/服务环境）：MSI 实际安装服务、LocalSystem 下 `WTSQueryUserToken` 成功并让普通
+  用户连上管道、提权 `$MFT` 枚举的真实吞吐。发布前需在管理员虚拟机走一遍：装 MSI → `sc query
+  StewardIndexHelper` → app 日志出现 `helper streamed ... [mft]`。
+- 仍待办：USN → path delta 推送、多客户端/连接超时、按每个会话用户建独立管道实例。
+
+### 2026-10-03（USN → path delta：模型与 wire 帧）
+
+- 新增 `crates/index-helper/src/delta.rs`：只维护目录子集的 `DirIndex`（`id → (parent_id, name)`，
+  含卷根特例：`parent_id == 0` 回退到根），把一条变更记录（`file_id/parent_id/name/attributes/
+  reason`）解析成绝对路径的 `Delta { action, path }`；目录的 create/delete/rename 会同步更新 map，
+  所以后续子记录能解析到移动后的路径，父目录已删除的记录被跳过（等下次快照对账）。`join_path`
+  自己拼分隔符，避免 `Path::join` 在 `"C:"` 上的 drive-relative 结果（`C:x`）。
+- `protocol` 升到 v2：新增 `Delta`（action + 路径，路径用不带 4096 名字上限的 u16 长度编码）与
+  `Resync`（journal 失效，客户端应重建）帧；v1 的 Volume/Record/End 布局不变，所以 v2 客户端仍能
+  读旧 helper 的快照。`End` 现在表示「快照结束」，其后可以继续跟 `Delta` 帧、连接保持；只有
+  walk / 无可用 journal 时连接才在 `End` 后关闭。
+- 验证：`delta` 8 项单测（嵌套路径、创建文件/目录、删除目录后子记录跳过、目录改名后子路径跟随、
+  未知父目录跳过、根特例、元数据刷新）；协议新增 2 项（Delta/Resync 往返、超 4096 字节路径不
+  截断）；helper 共 19 lib + 2 真实管道端到端，`cargo fmt --check` /
+  `cargo clippy --workspace --all-targets -- -D warnings` 全绿。
+- 未接线（下一步）：helper 在快照结束后保持连接并按卷 `read_usn` 泵 `Delta`；app 保持 helper 会话、
+  把 `Delta` 交给 `apply_fs_changes`，并在 helper 活跃时停用本地 watcher。
+
+### 2026-10-03（USN delta 接线：helper 泵送 + app 原地应用）
+
+- helper：`source` 在 `$MFT` 枚举时同步构建 `DirIndex`（只存目录），并在枚举*之前*记下 journal
+  游标，因此枚举期间发生的变化会作为 delta 重放（幂等 upsert），不会落进空隙；`stream_with_sessions`
+  返回仍需保持的卷会话（卷句柄 + journal 游标 + 目录表）。`server::serve_once` 在写完快照 `End`
+  之后，若请求 `live` 且存在会话，就进入 `pump_deltas`：每 500ms 逐卷 `query_journal` →
+  `cursor_is_usable` → `read_usn` → `delta_for` → 写 `Delta` 帧；journal 失效 / 读取失败 / 管道
+  断开则发 `Resync` 并结束连接。
+- 请求新增 `live`（serde 默认 true）；walk 根不产生会话，所以快照-only 行为不变，既有管道测试仍走
+  这条路径。
+- app：`file_index_helper::try_build` 改为返回 `(BuildOutput, Option<HelperSession>)`；
+  `HelperSession::start` 在专用线程上读帧并送回 worker（线程只发帧，`FileDb` 仍由 worker 独占写）。
+  worker 新增 `pump_sources`：有 helper 会话时走 `drain_helper`，把 `Delta` 映射成 `FsChange` 交给
+  已有的 `apply_fs_changes` 原地应用，按 30s 写后节流快照并广播 `Updated`；会话断开或收到 `Resync`
+  时清空会话并广播 `Reconcile`，由 launcher 触发重建（自动回退本地 walk）。helper 活跃期间不再
+  drain 本地 watcher，避免同一变更被两路重复应用。
+- 验证：app 新增 2 项单测（5 种 delta action 的映射；用真实临时文件发送 `Delta(Created)` →
+  `drain_helper` 原地应用 → 可搜索并广播 `Updated`，再断开通道验证会话结束）；helper 19 lib + 2
+  真实管道端到端；core-engine/app 全绿；`cargo fmt --check` /
+  `cargo clippy --workspace --all-targets -- -D warnings` 全绿。
+- 未验证（需要提权/服务环境）：真实 USN 泵送与提权 `$MFT` 枚举；发布前按「索引 helper 提权服务与
+  管道 ACL」记录的验收步骤跑一遍。
+- 仍待办：多客户端/连接超时、按每会话用户建独立管道实例；Stage 3 倒排索引（3M 规模必需）。
+
+### 2026-10-03（Stage 3：3-gram 名字倒排加速）
+
+- 依赖调整：计划用 `fst` + `roaring`；本机 `cargo fetch` 反复在 `fst` 的包体下载上超时（镜像索引
+  可用、包体走 `static.crates.io` 不可达），因此**不引入 `fst`**，改用「排序 term 表 + 二分」自建
+  词典 + `roaring 0.10` 位图：表是 `Vec<Term{key, offset, len}>`（12B/条），postings 是各 trigram
+  序列化位图的拼接 blob。
+- `crates/core-engine/src/file_index/name_index.rs`：`NameIndex::build`（默认 `MIN_RECORDS =
+  100_000` 才建）、`candidates(needle)` 对 ≥3 字节的 folded needle 求 posting 交集（最稀有的
+  trigram 先交）；ASCII 折叠、按字节取 3-gram（CJK 单字恰好 3 字节，同样适用）。
+- 正确性契约：postings 允许**过包含**（删除/改名遗留的旧位图不清理），因为每个候选都会用当前名字
+  复核；但绝不允许欠包含——构建之后新增/改名的记录进 `overflow`，`finish_incremental` 把
+  `built_slots` 之后的新槽折进 overflow。`duplicate()` 不复制加速器（派生状态）。
+- 查询接线：`Filter::indexed_needle()` 只对「单个 folded substring、name scope」放行（`case:`、
+  `path:`、`regex:`、`wildcards:`、`wholeword:`、分组/否定仍走精确扫描）；`search_filtered` 命中时走
+  `search_candidates`，且**候选数 > 32_768 就回退并行扫描**——宽匹配走单线程候选路径反而更慢。
+- 验证：core-engine 138 项，含新增 `name_index` 4 项与 oracle 测试
+  `the_name_index_answers_exactly_what_the_scan_does`（同一索引分别用「扫描」与「加速器」跑 7 个
+  needle，结果逐条相等）；app 80、helper 19 + 2 管道端到端；fmt/clippy 全绿。
+- 实测（300k 合成索引）：加速器 4.1MB（≈13.6B/条，3M 约 41MB），构建 222ms（3M 约 2.2s，一次性、
+  在 index worker 线程）；选择性 needle `report-00012` p50 从 8.9ms 降到 **77µs**（≈115×）；
+  宽 needle（`rep`/`report`）回退扫描后与原来持平。
