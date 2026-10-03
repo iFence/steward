@@ -105,7 +105,8 @@ pub(crate) fn apply_steward_theme(cx: &mut App, accent: u32) {
     theme.sidebar_border = border;
     theme.sidebar_foreground = foreground;
     theme.sidebar_accent = background_alt;
-    theme.tiles = background;
+    // `tiles` (dock tile board) was removed from the theme in gpui-component
+    // 0.7.0; nothing in Steward renders that surface.
     theme.table = background;
     theme.title_bar = background;
     theme.title_bar_border = border;

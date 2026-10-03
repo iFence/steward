@@ -19,9 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same toolchain as CI: the gpui dependency is pinned to a Zed revision
-      # that must be built with the version in rust-toolchain.toml.
-      - uses: dtolnay/rust-toolchain@1.95.0
+      # Same toolchain as CI: the gpui dependency is a `gpui-pre` snapshot that
+      # must be built with the version in rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.97.1
 
       - uses: Swatinem/rust-cache@v2
 

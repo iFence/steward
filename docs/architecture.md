@@ -61,7 +61,7 @@ steward/
 
 | 领域 | 选型 | 备注 |
 |---|---|---|
-| UI 框架 | `gpui`（Zed 仓库内 crate）+ `gpui-component`（Longbridge） | GPUI pre-1.0，git 依赖 + Cargo.lock 锁定 |
+| UI 框架 | `gpui-pre` 0.3.7（crates.io，Zed 周快照）+ `gpui-component` 0.7.0 | GPUI pre-1.0，crates.io 精确版本（`=0.3.7` / `=0.7.0`），三行必须成对升级 |
 | 全局热键/托盘 | `global-hotkey` + `tray-icon` | 跨平台 crate |
 | 模糊匹配 | `nucleo` | Helix 同款，性能优先 |
 | 数据库 | `rusqlite`（bundled feature） | 同步足够快，避免引入 async ORM |
@@ -147,6 +147,16 @@ steward/
 
 ## 决策记录
 
+### 2026-10-03（gpui / gpui-component 升级到 crates.io 快照）
+
+- 现状：原依赖走 git——`gpui`/`gpui_platform`（Zed 仓库，提交 `7a7c3e1d`）与 `gpui-component`（Longbridge 仓库，提交 `b77f3525`，v0.5.2），均停在 2026-08-19。上游 `longbridge/gpui-component` 仓库已改名 `longbridge/gpui-kit`，最新 0.7.0（2026-09-28）比锁定提交领先 417 个提交。
+- 关键变化：上游不再从 git 依赖 Zed，改为依赖 Zed 每周发布到 crates.io 的快照 `gpui-pre`，且精确锁死快照（`gpui-pre = 0.3.7` = zed@1a28cff，2026-09-28）。因此"git 版 gpui + 最新 gpui-component"会引入两份 gpui 类型而无法编译，升级必须整体改走 crates.io。
+- 方案：`[workspace.dependencies]` 改为 `gpui = { package = "gpui-pre", version = "=0.3.7" }`、`gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }`、`gpui-component = { version = "=0.7.0" }`。lib 名仍是 `gpui`/`gpui_platform`/`gpui_component`，业务代码的 use 与对外 API 不变；不迁移到 `gpui-kit` facade。默认 feature 与旧 git 版一致（font-kit/wayland/x11/windows-manifest）。
+- 工具链：`rust-toolchain.toml` 与 CI（`ci.yml`/`release.yml` 的 `dtolnay/rust-toolchain`）从 1.95.0 提到 1.97.1——该快照 zed 侧的 pin，也是 edition-2024 依赖所需。
+- API 适配：仅一处——`ThemeColor::tiles`（dock tile board 用色）在 0.7.0 被移除，`apply_steward_theme` 中对应赋值删除（Steward 不渲染该表面）。逐项核对并保持不变的有：`Element` trait、`EntityInputHandler`、`WindowOptions`/`TitlebarOptions`、`gpui_platform::application()` 与 `Application::run`、`Root::new(view, window, cx)`、`Settings`/`SettingPage|Group|Item|Field`、`Theme::change`/`ThemeTokens::from(ThemeColor)`、`ActiveTheme` token（`primary`/`muted_foreground` 等）、`IconName` 各变体、`Image::from_bytes`/`ImageFormat`。
+- 副作用：新 `gpui-component` 引入 `gpui-base`/`gpui-kit-assets`/`smol`/`ropey`/`lsp-types`/`markdown`/`notify 7`，依赖图与编译时间略增；`Cargo.lock` 中 `accesskit*`/`bindgen`/`strum`/`which`/`windows-registry` 的版本变化来自新 gpui 自身的约束。
+- 验证：1.97.1 下 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo build -p steward-app` 全绿；GUI 冒烟（托盘、召唤、搜索、设置窗口、插件面板）由人工确认。
+
 ### 2026-10-03（应用安装/卸载运行中实时生效）
 
 - 症状：运行中安装/卸载应用后，启动器仍按旧列表搜索——卸载后还能搜到、刚装的搜不到，重启才恢复正常。
@@ -219,6 +229,7 @@ steward/
 - `gpui` 不从 crates.io 引入，直接从 Zed 仓库 git 引用（`git = "https://github.com/zed-industries/zed", package = "gpui"`），提交由 `Cargo.lock` 锁定（当前 `7a7c3e1d`）。
 - `gpui_platform`（Zed 仓库，`features = ["font-kit"]`）与 `gpui-component`（Longbridge 仓库）同样走 git，与 git 版 gpui 保持类型一致（crates.io 版 gpui-component 0.5.1 绑定 crates.io gpui 0.2.2，混用会产生两份 gpui 类型冲突）。
 - Rust 工具链固定 `1.95.0`（gpui 锁定的提交需要比 1.92 更新的编译器，`rust-toolchain.toml` 显式锁定）。
+- 以上三条 gpui / gpui_platform / gpui-component 的 git 依赖与 1.95.0 工具链决策，已于 2026-10-03 被 crates.io `gpui-pre` 快照方案取代（见决策记录顶部）。
 - M0 窗口显隐：Windows 上通过原生 HWND `ShowWindow(SW_HIDE/SW_SHOW)` 实现（GPUI Windows 后端 `App::hide` 是空操作）；其他平台回退 `App::hide`/`App::activate`，M4 打磨。
 - M0 全局热键：`global-hotkey` 注册 `Ctrl+Alt+Space`，事件经 crossbeam channel 由 GPUI 前台任务每 10ms 轮询桥接（GPUI 无系统级热键 API，回调线程不能直接操作 GPUI 状态）。
 - Windows 上所有构建（含 debug）均启用 `windows_subsystem = "windows"`，避免启动时闪现控制台窗口；debug 下 `eprintln!` 无控制台输出属预期，M3 起引入 tracing 文件日志。

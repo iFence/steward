@@ -10,7 +10,7 @@ Steward is a monorepo combining a **Rust workspace** (native host) and a **pnpm 
 ┌───────────────────────────────────────────────────────────┐
 │  Native main process (Rust)        │  Plugin system       │
 │  app (GPUI window/tray/hotkey)     │  plugin-runtime      │
-│  ├─ gpui (git, from Zed)           │  (embedded QuickJS)  │
+│  ├─ gpui (crates.io gpui-pre)      │  (embedded QuickJS)  │
 │  ├─ core-engine (search)           │   ↑ bundled TS→JS    │
 │  └─ plugin-host / registry /       │   (esbuild)         │
 │     storage (SQLite)               │                      │
@@ -60,7 +60,7 @@ Prefer battle-tested dependencies over hand-rolled code:
 - **Use the workspace library**: `nucleo` (fuzzy match), `rusqlite` (SQLite), `rquickjs` (QuickJS), `serde`/`serde_json` (JSON), `tokio`, `tracing`, `anyhow`, `gpui`/`gpui-component`, `global-hotkey`, `tray-icon`.
 - **Never duplicate an existing dependency's job** — no second fuzzy matcher, no second DB/ORM, no handwritten JSON when `serde` exists.
 - **Before adding a dependency**: check `[workspace.dependencies]` (root `Cargo.toml`), `Cargo.lock`, and `node_modules` first.
-- **Prefer crates.io published versions**; use git deps only when necessary (gpui is pulled from Zed at a pinned revision — `rust-toolchain.toml` is pinned to **1.95.0** accordingly).
+- **Prefer crates.io published versions**; use git deps only when necessary (gpui comes from Zed's published `gpui-pre` snapshots — `rust-toolchain.toml` is pinned to **1.97.1** accordingly).
 - **Keep the footprint small** — fewer/lighter deps directly serve the low-memory, fast-build goals.
 
 ## Git — Angular-style (Conventional Commits)

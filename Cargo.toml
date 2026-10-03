@@ -18,9 +18,13 @@ authors = ["Steward contributors"]
 license = "MIT"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", package = "gpui_platform", features = ["font-kit"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+# GPUI ships as weekly `gpui-pre-*` snapshots on crates.io (published from the
+# Zed repo), and gpui-component pins the exact snapshot it was built against.
+# Bump the three lines together; mixing snapshots produces two incompatible
+# `gpui` crates.
+gpui = { package = "gpui-pre", version = "=0.3.7" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
+gpui-component = { version = "=0.7.0" }
 global-hotkey = "0.8"
 tray-icon = "0.24"
 nucleo = "0.5"
