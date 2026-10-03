@@ -57,7 +57,7 @@ pub(crate) enum IndexEvent {
     /// The build finished; `snapshot` is ready to be persisted.
     Ready {
         db: Box<FileDb>,
-        snapshot: String,
+        snapshot: Vec<u8>,
         records: usize,
         directories: usize,
         backends: Vec<(PathBuf, IndexBackend)>,
@@ -66,7 +66,7 @@ pub(crate) enum IndexEvent {
     /// A catch-up pass applied replayed journal changes.
     Updated {
         db: Box<FileDb>,
-        snapshot: String,
+        snapshot: Vec<u8>,
         replayed: usize,
         created: usize,
         removed: usize,
@@ -123,7 +123,7 @@ pub(crate) struct FileIndex {
     pub(crate) records: usize,
     /// A snapshot waiting to be written by the launcher's thread (the worker
     /// holds no SQLite connection, so persistence stays on the UI side).
-    pending_snapshot: Option<String>,
+    pending_snapshot: Option<Vec<u8>>,
     /// Set when the watcher lost changes and the index needs a reconcile.
     needs_reconcile: bool,
     /// The last failure message, so a repeating one (an unreadable volume polled
@@ -142,7 +142,7 @@ impl FileIndex {
     /// `storage` is opened on the calling thread only to read the snapshot;
     /// persistence is driven from [`FileIndex::persist_snapshot`], which the
     /// launcher calls from its own thread.
-    pub(crate) fn start(snapshot: Option<String>, configured_roots: &[String]) -> Self {
+    pub(crate) fn start(snapshot: Option<Vec<u8>>, configured_roots: &[String]) -> Self {
         let (command_tx, command_rx) = crossbeam_channel::unbounded::<Command>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<IndexEvent>();
         let (reply_tx, reply_rx) = crossbeam_channel::unbounded::<SearchReply>();
@@ -348,7 +348,7 @@ impl FileIndex {
     /// updates are throttled (see [`LIVE_PERSIST_INTERVAL`]): the newest
     /// snapshot stays pending and is returned once the interval elapses, while
     /// a build snapshot goes out at once.
-    pub(crate) fn take_pending_snapshot(&mut self) -> Option<String> {
+    pub(crate) fn take_pending_snapshot(&mut self) -> Option<Vec<u8>> {
         self.pending_snapshot.as_ref()?;
         if !self.snapshot_is_build && self.last_persist.elapsed() < LIVE_PERSIST_INTERVAL {
             return None;
@@ -890,17 +890,24 @@ fn unix_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-/// The snapshot stored in the shared settings table, if any.
-pub(crate) fn load_snapshot(storage: &steward_storage::Storage) -> Option<String> {
-    storage.get_setting(file_index::persist::SETTING_KEY)
+/// The binary snapshot stored in the shared database, if any.
+pub(crate) fn load_snapshot(storage: &steward_storage::Storage) -> Option<Vec<u8>> {
+    if let Some(blob) = storage.get_setting_blob(file_index::persist::SETTING_KEY) {
+        return Some(blob);
+    }
+    // A snapshot written by the pre-binary build lives under the text
+    // `settings` key. This build cannot decode it, so drop it rather than
+    // leaving a possibly huge orphan row in the database.
+    let _ = storage.remove_setting(file_index::persist::SETTING_KEY);
+    None
 }
 
-/// Persist `snapshot` through the shared SQLite settings table.
+/// Persist `snapshot` as a BLOB in the shared database.
 pub(crate) fn store_snapshot(
     storage: &Rc<RefCell<steward_storage::Storage>>,
-    snapshot: &str,
+    snapshot: &[u8],
 ) -> anyhow::Result<()> {
     storage
         .borrow()
-        .set_setting(file_index::persist::SETTING_KEY, snapshot)
+        .set_setting_blob(file_index::persist::SETTING_KEY, snapshot)
 }

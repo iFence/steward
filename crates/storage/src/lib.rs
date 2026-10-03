@@ -89,6 +89,10 @@ impl Storage {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     text TEXT NOT NULL,
                     copied_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings_blob (
+                    key TEXT PRIMARY KEY,
+                    value BLOB NOT NULL
                 );",
             )
             .context("run schema migrations")
@@ -112,6 +116,41 @@ impl Storage {
                 (key, value),
             )
             .context("set setting")?;
+        Ok(())
+    }
+
+    /// Remove a persisted text setting, used to drop the pre-binary file-index
+    /// snapshot once it can no longer be decoded.
+    pub fn remove_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", (key,))
+            .context("remove setting")?;
+        Ok(())
+    }
+
+    /// Read a persisted binary setting (the file-index snapshot), or `None`.
+    ///
+    /// Binary settings live in their own table rather than in `settings` so a
+    /// BLOB never has to survive that column's TEXT affinity.
+    pub fn get_setting_blob(&self, key: &str) -> Option<Vec<u8>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM settings_blob WHERE key = ?1",
+                (key,),
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok()
+    }
+
+    /// Persist a binary setting (insert or replace).
+    pub fn set_setting_blob(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO settings_blob(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            .context("set binary setting")?;
         Ok(())
     }
 
@@ -364,6 +403,30 @@ mod tests {
             storage.get_setting("theme_color").as_deref(),
             Some("#a6e3a1")
         );
+    }
+
+    #[test]
+    fn blob_settings_roundtrip_and_overwrite() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert!(storage.get_setting_blob("file_index").is_none());
+        storage
+            .set_setting_blob("file_index", &[0, 1, 2, 255])
+            .unwrap();
+        assert_eq!(
+            storage.get_setting_blob("file_index").as_deref(),
+            Some(&[0, 1, 2, 255][..])
+        );
+        storage.set_setting_blob("file_index", b"next").unwrap();
+        assert_eq!(
+            storage.get_setting_blob("file_index").as_deref(),
+            Some(&b"next"[..])
+        );
+
+        // The legacy text key is independent and can be dropped on its own.
+        storage.set_setting("file_index", "legacy json").unwrap();
+        storage.remove_setting("file_index").unwrap();
+        assert!(storage.get_setting("file_index").is_none());
+        assert!(storage.get_setting_blob("file_index").is_some());
     }
 
     #[test]

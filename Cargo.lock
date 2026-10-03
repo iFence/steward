@@ -6939,13 +6939,11 @@ dependencies = [
 name = "steward-core-engine"
 version = "0.1.0"
 dependencies = [
- "base64",
  "crossbeam-channel",
  "nucleo",
  "pinyin",
  "regex",
  "serde",
- "serde_json",
  "widestring",
  "windows 0.61.3",
 ]

@@ -1,11 +1,12 @@
 //! Persistence: a compact snapshot of the index plus the USN cursors, so a
 //! restart can load instead of re-enumerating the volume.
 //!
-//! The snapshot is a logical stream with a signature, a format-version field,
-//! counts and the volume/USN information. Steward stores it in the `settings`
-//! table of the same SQLite database that already caches apps and plugin
-//! metadata, and encodes the byte arena as base64 inside a `serde_json`
-//! envelope — no new dependency, and it survives schema migration.
+//! The snapshot is a formal binary stream with a signature, a format-version
+//! field, counts and the volume/USN information. Steward stores it as a single
+//! BLOB in the `settings_blob` table of the same SQLite database that already
+//! caches apps and plugin metadata; the byte arena travels at its native width
+//! instead of base64, so the row is roughly a third smaller and decoding is a
+//! bounds-checked `try_into` rather than a JSON parse.
 //!
 //! Invariants worth stating explicitly, because they decide whether a load is
 //! safe:
@@ -17,114 +18,147 @@
 //! - The blob carries a timestamp; a snapshot older than the staleness window
 //!   is discarded so a long-dormant index is not trusted as current.
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::db::{
     FileDb, FileDbBuilder, IndexError, JournalState, BLOCKS, FORMAT_VERSION, MAGIC, MAX_NAME_BYTES,
     ROOT_PARENT,
 };
 
-/// `settings` key holding the snapshot.
+/// `settings_blob` key holding the snapshot.
 pub const SETTING_KEY: &str = "file_index";
 
 /// A snapshot older than this is not trusted; the index is rebuilt instead.
 pub const MAX_SNAPSHOT_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 
-/// The persisted envelope.
-#[derive(Debug, Serialize, Deserialize)]
-struct Snapshot {
-    /// UNIX seconds when the snapshot was taken.
-    taken_at: u64,
-    /// Record count, checked against the arena before anything is trusted.
-    count: usize,
-    /// The byte arena, base64 encoded.
-    data: String,
-    offsets: Vec<u32>,
-    lengths: Vec<u16>,
-    parent: Vec<u32>,
-    ids: Vec<u64>,
-    name_index: Vec<u32>,
-    removed: Vec<u8>,
-    depths: Vec<u32>,
-    #[serde(default)]
-    truncated_names: usize,
-    /// `(drive letter, journal id, next usn)` per volume.
-    #[serde(default)]
-    journals: Vec<(u8, u64, i64)>,
+/// Version of the binary snapshot layout. Bumping it rejects older rows.
+pub const SNAPSHOT_VERSION: u32 = 2;
+
+/// Bytes in the fixed part of the header: magic, version, taken-at, record
+/// count, truncated-name count and the arena length.
+const HEADER_BYTES: usize = 4 + 4 + 8 + 8 + 8 + 8;
+
+/// Encode an index into its compact binary snapshot.
+///
+/// The layout is positional and little-endian (see the module docs). It carries
+/// the same data the in-memory index holds, at its native width, so decoding is
+/// a bounds-checked `try_into` per element instead of a JSON parse plus a base64
+/// decode.
+pub fn encode(db: &FileDb, truncated_names: usize, taken_at: u64) -> Vec<u8> {
+    let count = db.offsets.len();
+    let mut journals: Vec<(u8, JournalState)> = db
+        .journals()
+        .iter()
+        .map(|(drive, state)| (*drive, *state))
+        .collect();
+    // `HashMap` iteration order is not deterministic; sort so equal indexes
+    // produce equal snapshots.
+    journals.sort_by_key(|(drive, _)| *drive);
+
+    let mut out = Vec::with_capacity(
+        HEADER_BYTES
+            + db.data.len()
+            + count * (4 + 2 + 4 + 8 + 4 + 1 + 4)
+            + 4
+            + journals.len() * (1 + 8 + 8),
+    );
+    out.extend_from_slice(&MAGIC.to_le_bytes());
+    out.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+    out.extend_from_slice(&taken_at.to_le_bytes());
+    out.extend_from_slice(&(count as u64).to_le_bytes());
+    out.extend_from_slice(&(truncated_names as u64).to_le_bytes());
+    out.extend_from_slice(&(db.data.len() as u64).to_le_bytes());
+    out.extend_from_slice(&db.data);
+    for value in &db.offsets {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in &db.lengths {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in &db.parent {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in &db.ids {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in &db.name_index {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&db.removed);
+    for value in &db.depths {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&(journals.len() as u32).to_le_bytes());
+    for (drive, state) in journals {
+        out.push(drive);
+        out.extend_from_slice(&state.journal_id.to_le_bytes());
+        out.extend_from_slice(&state.next_usn.to_le_bytes());
+    }
+    out
 }
 
-/// Encode an index into a storable string.
-pub fn encode(db: &FileDb, truncated_names: usize, taken_at: u64) -> String {
-    let snapshot = Snapshot {
-        taken_at,
-        count: db.offsets.len(),
-        data: BASE64.encode(&db.data),
-        offsets: db.offsets.clone(),
-        lengths: db.lengths.clone(),
-        parent: db.parent.clone(),
-        ids: db.ids.clone(),
-        name_index: db.name_index.clone(),
-        removed: db.removed.clone(),
-        depths: db.depths.clone(),
-        truncated_names,
-        journals: db
-            .journals()
-            .iter()
-            .map(|(drive, state)| (*drive, state.journal_id, state.next_usn))
-            .collect(),
-    };
-    serde_json::to_string(&snapshot).unwrap_or_default()
-}
+/// Decode a binary snapshot, rejecting anything that fails the invariants.
+pub fn decode(blob: &[u8], now: u64) -> Result<FileDb, IndexError> {
+    let mut cursor = Cursor::new(blob);
+    if cursor.u32()? != MAGIC {
+        return Err(IndexError::Magic);
+    }
+    let version = cursor.u32()?;
+    if version != SNAPSHOT_VERSION {
+        return Err(IndexError::Version(version));
+    }
+    let taken_at = cursor.u64()?;
+    let count = usize::try_from(cursor.u64()?).map_err(|_| IndexError::Short)?;
+    let _truncated = cursor.u64()?;
+    let data_len = usize::try_from(cursor.u64()?).map_err(|_| IndexError::Short)?;
+    if taken_at != 0 && now.saturating_sub(taken_at) > MAX_SNAPSHOT_AGE_SECS {
+        return Err(IndexError::Version(taken_at as u32));
+    }
 
-/// Decode a snapshot, rejecting anything that fails the invariants.
-pub fn decode(blob: &str, now: u64) -> Result<FileDb, IndexError> {
-    let snapshot: Snapshot = serde_json::from_str(blob).map_err(|_| IndexError::Magic)?;
-    if snapshot.taken_at != 0 && now.saturating_sub(snapshot.taken_at) > MAX_SNAPSHOT_AGE_SECS {
-        return Err(IndexError::Version(snapshot.taken_at as u32));
-    }
-    let data = BASE64
-        .decode(snapshot.data.as_bytes())
-        .map_err(|_| IndexError::Magic)?;
-    let count = snapshot.offsets.len();
-    if count != snapshot.count
-        || snapshot.parent.len() != count
-        || snapshot.ids.len() != count
-        || snapshot.lengths.len() != count
-    {
-        return Err(IndexError::Short);
-    }
-    if snapshot.name_index.len() != count {
-        return Err(IndexError::Short);
-    }
+    let data = cursor.take(data_len)?.to_vec();
+    let offsets = cursor.u32s(count)?;
+    let lengths = cursor.u16s(count)?;
+    let parent = cursor.u32s(count)?;
+    let ids = cursor.u64s(count)?;
+    let name_index = cursor.u32s(count)?;
+    let removed = cursor.take(count)?.to_vec();
+    let depths = cursor.u32s(count)?;
+    let journal_count = usize::try_from(cursor.u32()?).map_err(|_| IndexError::Short)?;
+
     // The name array must be exactly the permutation `0..count`.
     let mut seen = vec![false; count];
-    for index in &snapshot.name_index {
-        let Ok(index) = usize::try_from(*index) else {
-            return Err(IndexError::Magic);
-        };
+    for index in &name_index {
+        let index = usize::try_from(*index).map_err(|_| IndexError::Magic)?;
         if index >= count || std::mem::replace(&mut seen[index], true) {
             return Err(IndexError::Magic);
         }
     }
     // Every record must point at a valid slot or at ROOT_PARENT.
-    for parent in &snapshot.parent {
+    for parent in &parent {
         if *parent != ROOT_PARENT && *parent as usize >= count {
             return Err(IndexError::Magic);
         }
     }
-    // Every offset/length pair must lie inside the arena.
-    for (offset, length) in snapshot.offsets.iter().zip(snapshot.lengths.iter()) {
-        let start = *offset as usize + 24;
-        let end = start + *length as usize;
-        if end > data.len() || *length as usize > MAX_NAME_BYTES {
+    // Every name must lie inside the arena, allowing for the 4-byte escaped
+    // length slot that follows the 24-byte record header for long names.
+    for record in 0..count {
+        let offset = offsets[record] as usize;
+        if offset + 24 > data.len() {
+            return Err(IndexError::Magic);
+        }
+        let escaped = data[offset + 4] == 0xff;
+        let start = offset + 24 + if escaped { 4 } else { 0 };
+        let length = lengths[record] as usize;
+        if length > MAX_NAME_BYTES || start + length > data.len() {
             return Err(IndexError::Magic);
         }
     }
 
-    let mut journals = std::collections::HashMap::new();
-    for (drive, journal_id, next_usn) in snapshot.journals {
+    let mut journals = HashMap::new();
+    for _ in 0..journal_count {
+        let drive = cursor.u8()?;
+        let journal_id = cursor.u64()?;
+        let next_usn = cursor.i64()?;
         journals.insert(
             drive.to_ascii_uppercase(),
             JournalState {
@@ -133,31 +167,23 @@ pub fn decode(blob: &str, now: u64) -> Result<FileDb, IndexError> {
             },
         );
     }
-    let depths = if snapshot.depths.len() == count {
-        snapshot.depths
-    } else {
-        vec![0; count]
-    };
-    let removed = if snapshot.removed.len() == count {
-        snapshot.removed
-    } else {
-        vec![0; count]
-    };
+    if cursor.remaining() != 0 {
+        return Err(IndexError::Magic);
+    }
+
     let max_depth = depths.iter().copied().max().unwrap_or(1).max(1);
     let live = removed.iter().filter(|flag| **flag == 0).count();
     let dirs = (0..count)
-        .filter(|index| {
-            removed[*index] == 0 && data[snapshot.offsets[*index] as usize + 5] & 0b10 != 0
-        })
+        .filter(|index| removed[*index] == 0 && data[offsets[*index] as usize + 5] & 0b10 != 0)
         .count();
     let blocks: Vec<u32> = (0..count).step_by(BLOCKS).map(|at| at as u32).collect();
     Ok(FileDb::from_parts(
         data,
-        snapshot.offsets,
-        snapshot.lengths,
-        snapshot.parent,
-        snapshot.ids,
-        snapshot.name_index,
+        offsets,
+        lengths,
+        parent,
+        ids,
+        name_index,
         if blocks.is_empty() { vec![0] } else { blocks },
         removed,
         depths,
@@ -166,6 +192,81 @@ pub fn decode(blob: &str, now: u64) -> Result<FileDb, IndexError> {
         max_depth,
         journals,
     ))
+}
+
+/// A bounds-checked reader over the snapshot bytes.
+///
+/// Every array read is size-checked before it is taken, so a corrupt count
+/// cannot make the decoder allocate before it knows the bytes are really there.
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.at
+    }
+
+    fn take(&mut self, len: usize) -> Result<&'a [u8], IndexError> {
+        let end = self.at.checked_add(len).ok_or(IndexError::Short)?;
+        if end > self.bytes.len() {
+            return Err(IndexError::Short);
+        }
+        let out = &self.bytes[self.at..end];
+        self.at = end;
+        Ok(out)
+    }
+
+    fn u8(&mut self) -> Result<u8, IndexError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, IndexError> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, IndexError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+
+    fn i64(&mut self) -> Result<i64, IndexError> {
+        Ok(i64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+
+    fn u32s(&mut self, count: usize) -> Result<Vec<u32>, IndexError> {
+        let bytes = self.take(count.checked_mul(4).ok_or(IndexError::Short)?)?;
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("4 bytes")))
+            .collect())
+    }
+
+    fn u16s(&mut self, count: usize) -> Result<Vec<u16>, IndexError> {
+        let bytes = self.take(count.checked_mul(2).ok_or(IndexError::Short)?)?;
+        Ok(bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes(chunk.try_into().expect("2 bytes")))
+            .collect())
+    }
+
+    fn u64s(&mut self, count: usize) -> Result<Vec<u64>, IndexError> {
+        let bytes = self.take(count.checked_mul(8).ok_or(IndexError::Short)?)?;
+        Ok(bytes
+            .chunks_exact(8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("8 bytes")))
+            .collect())
+    }
 }
 
 /// Header written ahead of the envelope, so a truncated or foreign row is
@@ -295,7 +396,10 @@ mod tests {
 
     #[test]
     fn corrupt_blobs_are_rejected_rather_than_trusted() {
-        assert!(matches!(decode("not json", 0), Err(IndexError::Magic)));
+        assert!(matches!(
+            decode(b"not a snapshot", 0),
+            Err(IndexError::Magic)
+        ));
         let (db, truncated) = sample();
         let mut blob = encode(&db, truncated, 1_000);
         // Truncating the envelope must not produce a half-built index.
@@ -306,26 +410,23 @@ mod tests {
     #[test]
     fn a_tampered_name_index_is_rejected() {
         let (db, truncated) = sample();
-        let blob = encode(&db, truncated, 1_000);
-        let mut value: serde_json::Value = serde_json::from_str(&blob).expect("valid json");
+        let mut blob = encode(&db, truncated, 1_000);
         // Duplicate an entry instead of permuting: not a permutation any more.
-        value["name_index"] = serde_json::json!([0, 0, 1, 2]);
-        assert!(matches!(
-            decode(&value.to_string(), 1_000),
-            Err(IndexError::Magic)
-        ));
+        let count = db.offsets.len();
+        let name_index_at = HEADER_BYTES + db.data.len() + count * (4 + 2 + 4 + 8);
+        let first = blob[name_index_at..name_index_at + 4].to_vec();
+        blob[name_index_at + 4..name_index_at + 8].copy_from_slice(&first);
+        assert!(matches!(decode(&blob, 1_000), Err(IndexError::Magic)));
     }
 
     #[test]
     fn a_tampered_parent_index_is_rejected() {
         let (db, truncated) = sample();
-        let blob = encode(&db, truncated, 1_000);
-        let mut value: serde_json::Value = serde_json::from_str(&blob).expect("valid json");
-        value["parent"] = serde_json::json!([4294967295u32, 999, 0, 0]);
-        assert!(matches!(
-            decode(&value.to_string(), 1_000),
-            Err(IndexError::Magic)
-        ));
+        let mut blob = encode(&db, truncated, 1_000);
+        let count = db.offsets.len();
+        let parent_at = HEADER_BYTES + db.data.len() + count * (4 + 2);
+        blob[parent_at + 4..parent_at + 8].copy_from_slice(&999u32.to_le_bytes());
+        assert!(matches!(decode(&blob, 1_000), Err(IndexError::Magic)));
     }
 
     #[test]

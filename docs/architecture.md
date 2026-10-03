@@ -147,6 +147,14 @@ steward/
 
 ## 决策记录
 
+### 2026-10-03（文件索引快照改为二进制 BLOB）
+
+- 问题：文件索引快照原先是 `serde_json` 信封 + arena base64（`persist.rs`），写进共享 SQLite 的 `settings` 文本行。base64 让快照膨胀约三分之一，JSON 数字数组又把 `offsets`/`parent`/`ids`/`name_index`/`depths` 放大成文本；百万级条目下每次构建/更新都是一次全量文本重编码，冷启动解码要先 JSON 解析再 base64 解码。
+- 方案：新增 `settings_blob(key, value BLOB)` 表与 `Storage::get_setting_blob` / `set_setting_blob`；`persist::encode` / `decode` 改为定长小端二进制布局（magic/version/taken_at/count/arena + 并行数组 + 每个卷的 USN 游标），`decode` 用边界检查游标读取，先校验数组字节数再分配。版本号 `SNAPSHOT_VERSION = 2`，旧 JSON 行因 magic/version 不符被拒绝。
+- 生效与兼容：`load_snapshot` 在新 BLOB 缺失时删除 `settings` 里旧的 `file_index` 文本行（避免遗留可能很大的孤儿行），随后后台重建一次索引；`FileDb` / `FileIndex` 的对外 API 与 UI 不变。
+- 未采纳：不把 watcher 换成 `notify`。notify 的 Windows 后端固定监听 attributes/size/last-write/creation/security 且只有 64 KiB 缓冲，而现实现刻意只监听名称变更、用 256 KiB 缓冲；换过去会让全盘根目录在繁忙时被元数据事件淹没、更容易溢出。后续若要减少手写代码，应先向上游提供可配置 filter，或保留自研 watcher。
+- 验证：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p steward-core-engine -p steward-storage` 全绿（core-engine 132 + 集成 7、storage 7）；`cargo test --workspace` 里 `steward-plugin-runtime` 的 `storage_round_trips_through_bridge` 需要 `STEWARD_DATA_DIR` 指向可写目录，属沙箱环境限制，带上该变量单独运行通过。
+
 ### 2026-10-03（gpui / gpui-component 升级到 crates.io 快照）
 
 - 现状：原依赖走 git——`gpui`/`gpui_platform`（Zed 仓库，提交 `7a7c3e1d`）与 `gpui-component`（Longbridge 仓库，提交 `b77f3525`，v0.5.2），均停在 2026-08-19。上游 `longbridge/gpui-component` 仓库已改名 `longbridge/gpui-kit`，最新 0.7.0（2026-09-28）比锁定提交领先 417 个提交。
@@ -544,3 +552,26 @@ steward/
   新增 2 个 net 用例）、`cargo test -p steward-plugin-registry --lib`
   （`all_permissions_are_supported` 取代原 `unimplemented_permissions_are_rejected`）；
   `tsc --noEmit`、esbuild 构建全绿。
+
+### 2026-10-03（MSI 同版本覆盖升级与自启修正）
+
+- 现象与根因：`wix/main.wxs` 的 `Product Id='*'` 每次编译生成新的 ProductCode，但
+  `MajorUpgrade` 未开启同版本升级，生成的 Upgrade 表只匹配“严格更旧/严格更新”，同版本
+  重装既不升级也不报降级，本机因此并排出现 10 个 Steward 0.1.0。`autostart.rs` 只判断
+  HKCU `Run\Steward` 是否存在、从不校验路径，旧调试实例写入的 `target\debug` 路径不会
+  被正式版纠正。
+- 安装器：`MajorUpgrade` 增加 `AllowSameVersionUpgrades='yes'` 与
+  `IgnoreRemoveFailure='yes'`，生成的升级行 `VersionMax=当前版本`、`Attributes=0x205`
+  （含 `VersionMaxInclusive`），同版本会被当作升级移除。新增
+  `StopRunningSteward`/`StopRunningStewardRuntime`（`taskkill /F /T`，排在
+  `RemoveExistingProducts` 之前）保证旧进程不再占用 exe，另有
+  `util:CloseApplication` 先做优雅关闭、`TerminateProcess` 兜底。
+- 自启：`Run` 值统一写带引号的绝对路径；新增 `--sync-autostart`（安装后仅当用户已开启
+  自启时把路径改写到新安装的可执行文件）与 `--unregister-autostart`（卸载前删除 HKCU
+  `Run` 值，升级通过 `NOT UPGRADINGPRODUCTCODE` 跳过）；启动时仅当记录的路径已不存在
+  才修复，避免 `cargo run` 的调试版抢走已安装版自启。
+- 验证：`cargo test -p steward-app`、`cargo clippy -p steward-app --all-targets -- -D
+  warnings`；`-SkipBuild` 重新打包并用 WindowsInstaller COM 检查 Upgrade / CustomAction
+  / InstallExecuteSequence 表。
+- 边界：关闭动作按镜像名匹配，会连带关闭 `target\debug` / `target\release` 调试实例；
+  卸载清理只覆盖执行卸载的当前用户 HKCU；不做应用层单实例。
