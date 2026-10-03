@@ -26,7 +26,7 @@ pub use file_index::{
     match_tier, EntryInfo, FileDb, FileDbBuilder, FileHit, Filter, MatchTier, SearchOptions,
 };
 pub use link::try_openable;
-pub use scanner::{platform_scanner, AppScanner};
+pub use scanner::{platform_scanner, start_menu_roots, AppScanner};
 
 /// A single installed application discoverable via the launcher.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -283,6 +283,46 @@ fn drain_icon_batches(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
     });
 }
 
+/// Fold application-index news into the launcher.
+///
+/// Two things happen here on every tick: a finished background scan is applied
+/// to the shared `Engine`, and the Start Menu watcher / reconcile timer decides
+/// whether the next scan is due. When the scan changed the app set, the visible
+/// query is re-run so an install or uninstall shows up (or disappears) without
+/// the user retyping.
+fn drain_app_index(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
+    let changed = state.borrow().apply_scan_results();
+    let due = {
+        let launcher = state.borrow_mut();
+        let scanning = launcher.scan_rx.borrow().is_some();
+        let mut watch = launcher.app_watch.borrow_mut();
+        match watch.as_mut() {
+            Some(watch) => watch.take_scan_request(scanning, Instant::now()),
+            None => false,
+        }
+    };
+    if due {
+        state.borrow().spawn_app_scan();
+    }
+    if !changed {
+        return;
+    }
+    let Some(window) = state.borrow().window else {
+        return;
+    };
+    let Some(app) = window.downcast::<StewardApp>() else {
+        return;
+    };
+    let _ = app.update(cx, |app, window, cx| {
+        // The directory picker answers folder paths only; app rows belong to
+        // the ordinary launcher and are picked up when its next search runs.
+        if app.is_directory_picker() {
+            return;
+        }
+        app.search(window, cx);
+    });
+}
+
 /// Fold file-index events into the launcher.
 ///
 /// Two different kinds of news arrive on the same poll tick: index lifecycle
@@ -465,8 +505,10 @@ pub(crate) fn spawn_event_poll_task(
     let mut last_live_tick = Instant::now();
 
     cx.spawn(async move |cx| loop {
-        // A background scan may finish at any time; both event loops drain it.
-        state.borrow().apply_scan_results();
+        // Application-index news: a finished scan (applied to the shared index
+        // and, when the set changed, re-run through the visible query) plus the
+        // timing that starts the next scan.
+        drain_app_index(&state, cx);
         // Plugin reconcile: apply newly scanned/version-changed plugins.
         state.borrow().apply_plugin_scan();
         // Plugin command responses, toasts and runtime crashes/restarts.

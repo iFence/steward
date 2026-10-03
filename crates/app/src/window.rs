@@ -54,8 +54,9 @@ pub(crate) fn init_ui_common(cx: &mut App, state: &Rc<RefCell<LauncherState>>) -
     state.borrow_mut().focus = Some(focus.clone());
 
     // A background scan may have finished while the app was starting; apply it
-    // before the first window opens.
-    state.borrow().apply_scan_results();
+    // before the first window opens. There is no window to re-render yet, so a
+    // changed set does not need to trigger a query here.
+    let _ = state.borrow().apply_scan_results();
 
     // Closing the launcher (e.g. Alt+F4) must not kill the app: the tray icon
     // is the application shell, and the window is reopened on demand. Filtered

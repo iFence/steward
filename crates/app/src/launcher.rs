@@ -435,6 +435,11 @@ pub(crate) struct LauncherState {
     /// task.
     pub(crate) scan_rx:
         RefCell<Option<crossbeam_channel::Receiver<Vec<steward_core_engine::AppEntry>>>>,
+    /// Live app-index maintenance: decides when to re-run the scanner while the
+    /// app runs (Start Menu change notifications plus a reconcile timer that
+    /// covers UWP/Store apps). `None` until [`Self::start_app_watch`] runs at
+    /// boot.
+    pub(crate) app_watch: RefCell<Option<crate::app_index::AppIndexWatcher>>,
     /// Plugin host: runtime processes, trigger routing, command invocation.
     pub(crate) plugin_host: Rc<RefCell<PluginHost>>,
     /// Plugin metadata cache (SQLite) plus the plugin root to scan.
@@ -624,19 +629,38 @@ impl LauncherState {
             .and_then(|(_, view)| view.clone())
     }
 
-    /// Seed the search index from the SQLite cache and, when the cache is
-    /// missing or stale, start a background scan whose results are applied by
-    /// [`Self::apply_scan_results`]. Never blocks the caller: the scan runs
-    /// on a worker thread and both event loops drain the result channel.
+    /// Seed the search index from the SQLite cache, then always start a
+    /// background reconcile whose results are applied by
+    /// [`Self::apply_scan_results`]. Never blocks the caller: the scan runs on a
+    /// worker thread and both event loops drain the result channel.
+    ///
+    /// The cache makes the cold start searchable immediately; the reconcile is
+    /// what catches installs/uninstalls made while Steward was closed.
     pub(crate) fn ensure_app_index(&self) {
         let cached = self.storage.borrow().cached_apps().unwrap_or_default();
-        let has_cache = !cached.is_empty();
-        if has_cache {
+        if !cached.is_empty() {
             self.engine.borrow_mut().set_entries(cached);
         }
-        let fresh = self.storage.borrow().is_cache_fresh() && has_cache;
-        if fresh || self.scan_rx.borrow().is_some() {
+        self.spawn_app_scan();
+    }
+
+    /// Start the live app-index watch: Start Menu change notifications for
+    /// desktop installs/uninstalls, plus the reconcile timer that covers
+    /// UWP/Store apps. Called once at boot.
+    pub(crate) fn start_app_watch(&self) {
+        if self.app_watch.borrow().is_some() {
             return;
+        }
+        *self.app_watch.borrow_mut() = Some(crate::app_index::AppIndexWatcher::start(
+            std::time::Instant::now(),
+        ));
+    }
+
+    /// Start a background app scan when one is not already running. Returns
+    /// whether a scan was started.
+    pub(crate) fn spawn_app_scan(&self) -> bool {
+        if self.scan_rx.borrow().is_some() {
+            return false;
         }
         let (tx, rx) = crossbeam_channel::bounded(1);
         std::thread::spawn(move || {
@@ -644,21 +668,31 @@ impl LauncherState {
             let _ = tx.send(apps);
         });
         *self.scan_rx.borrow_mut() = Some(rx);
+        true
     }
 
     /// Apply a finished background scan: persist the cache and rebuild the
     /// index. Runs on the main thread from the GPUI foreground poll task.
-    pub(crate) fn apply_scan_results(&self) {
+    ///
+    /// Returns whether the app set actually changed, so the caller can re-run
+    /// the visible query. A reconcile that found nothing new is a no-op.
+    pub(crate) fn apply_scan_results(&self) -> bool {
         let Some(rx) = self.scan_rx.borrow().clone() else {
-            return;
+            return false;
         };
+        let mut changed = false;
         loop {
             match rx.try_recv() {
                 Ok(apps) if !apps.is_empty() => {
+                    let current = self.engine.borrow().entries().to_vec();
+                    if !crate::app_index::entries_differ(&current, &apps) {
+                        continue;
+                    }
                     if let Err(error) = self.storage.borrow_mut().mark_seen(&apps) {
                         eprintln!("failed to persist scanned apps: {error:#}");
                     }
                     self.engine.borrow_mut().set_entries(apps);
+                    changed = true;
                 }
                 // Empty scan (e.g. unsupported platform): keep the cache.
                 Ok(_) => {}
@@ -669,6 +703,7 @@ impl LauncherState {
                 }
             }
         }
+        changed
     }
 
     /// Ask the file index for a build, or for a journal catch-up when a snapshot

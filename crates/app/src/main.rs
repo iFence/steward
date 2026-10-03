@@ -28,6 +28,7 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod app_index;
 mod autostart;
 mod clipboard_history;
 mod config;
@@ -189,6 +190,7 @@ fn main() {
         icon_gen: Cell::new(0),
         icon_rx: RefCell::new(None),
         scan_rx: RefCell::new(None),
+        app_watch: RefCell::new(None),
         plugin_host,
         plugin_registry: registry,
         plugin_scan_rx: RefCell::new(None),
@@ -222,8 +224,11 @@ fn main() {
     application().run(move |cx: &mut App| {
         let focus = init_ui_common(cx, &state);
 
-        // Seed the index from the cache, and refresh it in the background when
-        // the cache is stale, before the window opens.
+        // Watch the Start Menu (and reconcile on a timer) *before* the first
+        // scan, so a shortcut written while that scan runs is not missed.
+        state.borrow().start_app_watch();
+        // Seed the index from the cache and start the background reconcile
+        // before the window opens.
         state.borrow().ensure_app_index();
         // Seed the plugin host from the metadata cache (cold path: SQLite
         // only); a background scan reconciles new/changed plugins.

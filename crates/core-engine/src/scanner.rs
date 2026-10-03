@@ -4,6 +4,8 @@
 //! shortcuts and resolve their targets via the ShellLink COM interface.
 //! Other platforms are stubbed until later milestones.
 
+use std::path::PathBuf;
+
 use crate::AppEntry;
 
 /// Platform abstraction for discovering installed applications.
@@ -21,6 +23,23 @@ pub fn platform_scanner() -> Box<dyn AppScanner> {
     #[cfg(not(target_os = "windows"))]
     {
         Box::new(imp::NoopScanner)
+    }
+}
+
+/// The Start Menu `Programs` roots that installer-created shortcuts live in:
+/// the current user's and the all-users one.
+///
+/// Shared by the scanner and the app-side live watcher so both always look at
+/// exactly the same directories. On non-Windows platforms there is nothing to
+/// scan yet, so the list is empty.
+pub fn start_menu_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        imp::start_menu_roots()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
     }
 }
 
@@ -59,27 +78,35 @@ mod imp {
         }
 
         fn roots() -> Vec<PathBuf> {
-            let mut roots = Vec::new();
-            if let Some(p) = std::env::var_os("APPDATA") {
-                roots.push(
-                    PathBuf::from(p)
-                        .join("Microsoft")
-                        .join("Windows")
-                        .join("Start Menu")
-                        .join("Programs"),
-                );
-            }
-            if let Some(p) = std::env::var_os("PROGRAMDATA") {
-                roots.push(
-                    PathBuf::from(p)
-                        .join("Microsoft")
-                        .join("Windows")
-                        .join("Start Menu")
-                        .join("Programs"),
-                );
-            }
-            roots
+            start_menu_roots()
         }
+    }
+
+    /// Lay out the two Start Menu roots from explicit environment values.
+    /// Split out from [`start_menu_roots`] so the layout is unit-testable
+    /// without racing the process environment.
+    fn roots_from(
+        appdata: Option<&std::ffi::OsStr>,
+        programdata: Option<&std::ffi::OsStr>,
+    ) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        for base in [appdata, programdata].into_iter().flatten() {
+            roots.push(
+                PathBuf::from(base)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Start Menu")
+                    .join("Programs"),
+            );
+        }
+        roots
+    }
+
+    /// The Start Menu roots of the current process environment.
+    pub(crate) fn start_menu_roots() -> Vec<PathBuf> {
+        let appdata = std::env::var_os("APPDATA");
+        let programdata = std::env::var_os("PROGRAMDATA");
+        roots_from(appdata.as_deref(), programdata.as_deref())
     }
 
     fn collect_lnks(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -260,6 +287,34 @@ mod imp {
     impl Default for WinAppsScanner {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn roots_are_the_user_and_machine_start_menus() {
+            let roots = roots_from(
+                Some("C:\\Users\\me\\AppData\\Roaming".as_ref()),
+                Some("C:\\ProgramData".as_ref()),
+            );
+            assert_eq!(
+                roots,
+                vec![
+                    PathBuf::from(
+                        "C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs"
+                    ),
+                    PathBuf::from("C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs"),
+                ]
+            );
+        }
+
+        #[test]
+        fn a_missing_environment_variable_skips_its_root() {
+            assert_eq!(roots_from(Some("C:\\Roaming".as_ref()), None).len(), 1);
+            assert!(roots_from(None, None).is_empty());
         }
     }
 }

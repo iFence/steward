@@ -147,6 +147,16 @@ steward/
 
 ## 决策记录
 
+### 2026-10-03（应用安装/卸载运行中实时生效）
+
+- 症状：运行中安装/卸载应用后，启动器仍按旧列表搜索——卸载后还能搜到、刚装的搜不到，重启才恢复正常。
+- 根因：应用扫描只在启动时执行一次（`ensure_app_index` 仅由 boot 调用），运行期间没有任何变化检测；SQLite 缓存带 24h TTL，使 24h 内的重启也会继续读旧缓存。
+- 方案（Windows）：复用 `file_index::watch::DirectoryWatcher` 监听开始菜单 per-user / all-users `Programs` 两棵目录树（安装器在这里增删 `.lnk`），任意变化经 1s 尾部防抖后触发后台重扫；另加 30s 兜底全量重扫，覆盖不落在开始菜单树里的 UWP / 商店应用（`shell:AppsFolder`）以及 watcher 打不开根目录的情况。新增 `core-engine::start_menu_roots()`，让扫描与监听共用同一组根目录。
+- 索引生命周期：冷启动仍先读 SQLite 缓存立即建索引，但 boot 时**始终**再跑一次后台对账（移除 24h `SCAN_CACHE_TTL` / `is_cache_fresh` / `last_scan` / `touch_scan`），因此关闭期间（即使不足 24h）的安装/卸载也会被发现。
+- 结果生效：后台扫描回来后用大小写不敏感的 `(path, name)` 集合与当前索引比对；无变化则不重建 `Engine`、不写库；有变化则 `mark_seen` 增量落库（按 path upsert + 删除消失项）并重建索引，且启动器窗口可见时用当前输入立即重跑查询（目录选择器会话中跳过），与文件索引的 `drain_file_index` 行为一致。
+- 新增模块与接口：app 侧 `app_index`（`AppIndexWatcher` + 纯 `ScanTimer` 防抖/定时状态机，可单测）；`core-engine::start_menu_roots()`；`LauncherState::apply_scan_results` 改为返回“条目是否变化”。
+- 验证：`cargo fmt --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 全绿；`cargo test`（app 单测 75 项、core-engine 132 项、storage 5 项、plugin 各包全绿，`steward-plugin-runtime` 因本机有旧实例占用其可执行文件未重链）。手动验收场景：运行中安装/卸载桌面应用约 1–2s 生效、UWP 应用 ≤30s 生效、关闭 Steward 后安装再启动立即生效（均无需重启）。
+
 ### 2026-08-26（URL 链接用默认浏览器打开）
 
 - 启动器支持把形如 `https://github.com`、`172.20.2.14:1230`（IPv4:端口）的查询当作"用浏览器打开"命令：结果列表顶部插入一条链接行（左侧是本地化的 "Open in Browser" 标签、右侧是 "Command" 类型标签，无图标），确认后调用默认浏览器打开，而不是只当成应用名搜索。
@@ -311,7 +321,7 @@ steward/
 - **回退惰性加载**：曾实现 Windows"常驻态去 GPUI"（原生托盘/热键 + 消息泵，首呼才 `application().run`），实测首呼 0.5–4.5 s（一次性 DirectX/DirectWrite/着色器初始化），对启动器不可接受；已回退为 `application().run` 启动即加载、隐藏建窗，呼出即 `ShowWindow`（首呼 14 ms）。双进程与"空闲预热"都只能转移这笔成本，无法消除，暂不采用。
 - **保留：`QuitMode::Explicit`**：GPUI Windows 后端默认"最后一个窗口关闭即退出"，与托盘外壳模型冲突（Esc/失焦/Alt+F4 关窗会杀进程）；显式 `cx.set_quit_mode(QuitMode::Explicit)`，只有托盘"退出"才结束进程。
 - **保留：共享状态上移**：`Engine`（索引 + pinyin haystack）、图标缓存、后台扫描结果通道在 `LauncherState`，窗口重建（Alt+F4 后重呼）不再重扫、不重取图标。
-- **保留：扫描缓存优先**：SQLite `settings` 表新增 `last_scan` 时间戳（24h TTL）；冷启动直接读缓存建索引，缓存缺失/过期时后台线程全量扫描，结果经通道由前台轮询任务落库（`mark_seen` 改为按 path 增量 upsert + 删除消失项，替代全表重写）。
+- **保留：扫描缓存优先**：SQLite `settings` 表新增 `last_scan` 时间戳（24h TTL）；冷启动直接读缓存建索引，缓存缺失/过期时后台线程全量扫描，结果经通道由前台轮询任务落库（`mark_seen` 改为按 path 增量 upsert + 删除消失项，替代全表重写）。**修订（2026-10-03）**：24h TTL 会导致运行期/关闭期（不足 24h）的安装卸载不被发现，已移除 TTL 与 `last_scan`/`touch_scan`，改为冷启动读缓存 + boot 始终后台对账 + 运行期开始菜单监听与 30s 兜底重扫（详见文末 2026-10-03 决策）。
 - **保留：窗口隐藏策略（实测后定）**：关闭窗口回收极少——DirectX 设备与 DirectWrite 字体是平台级资源，GPUI 会话内常驻——而重建窗口使二次呼出增加 ~150 ms；默认 `CLOSE_ON_HIDE=false`（隐藏窗口，二次呼出 21 ms）。
 - **保留：查询路径**：`nucleo::Matcher` 从每次查询新建改为 `Engine` 内复用。
 - **保留：release 构建**：`[profile.release] lto="thin"`、`codegen-units=1`、`panic="abort"`、`strip=true`，二进制 26.7 MB → 17.8 MB。

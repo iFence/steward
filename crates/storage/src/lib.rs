@@ -1,12 +1,11 @@
 //! SQLite wrappers and configuration file access.
 //!
-//! M1 stores two things in a single SQLite database: an application index
-//! cache (so cold start can skip full file scanning until it changes) and per-
-//! application usage frequency used to rank launcher results.
+//! M1 stores two things in a single SQLite database: an application index cache
+//! (so cold start renders before the first scan finishes) and per-application
+//! usage frequency used to rank launcher results.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
@@ -14,12 +13,6 @@ use steward_core_engine::AppEntry;
 
 /// The on-disk database file name inside the data directory.
 const DB_FILE: &str = "steward.db";
-/// How long a completed app scan is trusted before the next boot re-scans in
-/// the background. Cold start reads the cache within this window and never
-/// blocks on the scanner.
-const SCAN_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-/// Settings-table key storing the UNIX timestamp of the last full scan.
-const LAST_SCAN_SETTING: &str = "last_scan";
 
 /// A row in the clipboard-history cache: the copied text plus when it was
 /// captured (unix seconds). The host clipboard watcher inserts one per
@@ -181,25 +174,6 @@ impl Storage {
         Ok(())
     }
 
-    /// Whether the cached app index can be trusted without a re-scan: the
-    /// cache is fresh for [`SCAN_CACHE_TTL`] after the last successful scan.
-    pub fn is_cache_fresh(&self) -> bool {
-        self.last_scan()
-            .is_some_and(|t| t.elapsed().map(|age| age < SCAN_CACHE_TTL).unwrap_or(false))
-    }
-
-    /// Timestamp of the last completed scan, if any.
-    fn last_scan(&self) -> Option<SystemTime> {
-        self.get_setting(LAST_SCAN_SETTING)
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
-    }
-
-    /// Record that a full scan completed just now.
-    pub fn touch_scan(&self) -> Result<()> {
-        self.set_setting(LAST_SCAN_SETTING, &unix_seconds().to_string())
-    }
-
     /// Record that `path` was launched: bump the count and update last-used.
     pub fn upsert_usage(&self, path: &Path) -> Result<()> {
         let key = path_key(path);
@@ -253,9 +227,9 @@ impl Storage {
 
     /// Merge the result of a full scan into the cache: upsert seen apps and
     /// drop entries that existed in a previous scan but were not seen this
-    /// time. Unlike the previous clear-and-reinsert approach this avoids
-    /// rewriting unchanged rows on every boot, and it records the scan time
-    /// so subsequent cold starts can read the cache without re-scanning.
+    /// time. Unlike a clear-and-reinsert this avoids rewriting unchanged rows;
+    /// callers only invoke it when the scanned set actually differs from the
+    /// current index, so an idle reconcile does not touch the database.
     pub fn mark_seen(&mut self, apps: &[AppEntry]) -> Result<()> {
         let now = unix_seconds();
         let tx = self.conn.transaction().context("begin scan transaction")?;
@@ -297,7 +271,6 @@ impl Storage {
             }
         }
         tx.commit().context("commit scan transaction")?;
-        self.touch_scan()?;
         Ok(())
     }
 }
@@ -344,9 +317,7 @@ mod tests {
             entry("Calculator", "C:/calc.exe"),
             entry("Terminal", "C:/term.exe"),
         ];
-        assert!(!storage.is_cache_fresh());
         storage.mark_seen(&apps).unwrap();
-        assert!(storage.is_cache_fresh());
         let cached = storage.cached_apps().unwrap();
         assert_eq!(cached.len(), 2);
         assert!(cached.iter().any(|a| a.name == "Calculator"));

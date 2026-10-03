@@ -30,7 +30,7 @@
 | 指标 | 数值 | 备注 |
 |---|---|---|
 | 冷启动 | ≈ 307 ms（release） | 启动 → 托盘就绪；含一次性 GPUI/DirectX/DirectWrite 初始化，启动静默 |
-| 应用扫描 + 建索引 | ≈ 1.1 s（首扫，后台） | 删除 `steward.db` 后冷启动实测；遍历开始菜单 `.lnk` + ShellLink COM 解析 + `shell:AppsFolder` UWP 枚举。扫描结果 `mark_seen` 缓存（`SCAN_CACHE_TTL` 24h），冷启动回退读缓存、不阻塞 |
+| 应用扫描 + 建索引 | ≈ 1.1 s（首扫，后台） | 删除 `steward.db` 后冷启动实测；遍历开始菜单 `.lnk` + ShellLink COM 解析 + `shell:AppsFolder` UWP 枚举。冷启动先读 `mark_seen` 缓存立即建索引、不阻塞，boot 始终再跑一次后台对账；运行期开始菜单变化经 1s 防抖重扫，另有 30s 兜底重扫覆盖 UWP（`SCAN_CACHE_TTL` 24h 已移除） |
 | RSS | 65.2 MB 工作集 / 79.9 MB 私有 | release 常驻；相比 M0 debug 152 MB 明显下降 |
 | 呼出延迟 | 8–29 ms（首呼）/ 26–28 ms（二呼） | 窗口启动时已隐藏创建，呼出即 ShowWindow；nucleo 匹配在按键回调内同步完成 |
 | 首次查询响应 | ≈ 87 µs | `cargo test -p steward-core-engine bench_query_latency --release` 临时测得：200 条目索引、空查询 + 模糊查询混合，500 次平均 |
