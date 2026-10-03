@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/iFence/steward?style=flat-square&color=orange" alt="License"></a>
-  <img src="https://img.shields.io/badge/MSRV-1.95-red?style=flat-square" alt="MSRV">
+  <img src="https://img.shields.io/badge/MSRV-1.97-red?style=flat-square" alt="MSRV">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square" alt="Platform">
   <a href="https://github.com/iFence/steward"><img src="https://img.shields.io/github/stars/iFence/steward?style=social" alt="Stars"></a>
 </p>
@@ -71,6 +71,7 @@ pnpm build
 
 ## 文档
 
+- [更新日志](Changelog-zh-CN.md)
 - [架构说明](docs/architecture.md)
 - [插件 API 草案](docs/extension-api.md)
 - [插件 manifest 规范草案](docs/plugin-manifest-spec.md)

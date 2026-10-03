@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/iFence/steward?style=flat-square&color=orange" alt="License"></a>
-  <img src="https://img.shields.io/badge/MSRV-1.95-red?style=flat-square" alt="MSRV">
+  <img src="https://img.shields.io/badge/MSRV-1.97-red?style=flat-square" alt="MSRV">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square" alt="Platform">
   <a href="https://github.com/iFence/steward"><img src="https://img.shields.io/github/stars/iFence/steward?style=social" alt="Stars"></a>
 </p>
@@ -71,6 +71,7 @@ Hotkeys / interactions:
 
 ## Documentation
 
+- [Changelog](Changelog.md)
 - [Architecture](docs/architecture.md)
 - [Plugin API draft](docs/extension-api.md)
 - [Plugin manifest spec draft](docs/plugin-manifest-spec.md)

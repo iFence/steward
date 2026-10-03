@@ -102,11 +102,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # `Changelog.md` is the single source of truth for the release notes; the
+      # script exits non-zero when the tag has no matching `## vX.Y.Z` section,
+      # so a release can never be published with an empty body.
+      - name: Extract release notes
+        run: bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog.md > release-notes.md
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "Steward $GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file release-notes.md \
             dist/*.msi dist/*.zip

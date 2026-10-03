@@ -63,6 +63,12 @@ Prefer battle-tested dependencies over hand-rolled code:
 - **Prefer crates.io published versions**; use git deps only when necessary (gpui comes from Zed's published `gpui-pre` snapshots — `rust-toolchain.toml` is pinned to **1.97.1** accordingly).
 - **Keep the footprint small** — fewer/lighter deps directly serve the low-memory, fast-build goals.
 
+## Release notes
+
+- `Changelog.md` (English) and `Changelog-zh-CN.md` (中文) hold the user-facing notes; each released version gets a `## vX.Y.Z` section, and the release workflow publishes the English section as the GitHub Release body.
+- Add the entry to both files in the same commit as the user-facing change; internal refactors that users cannot observe do not need one.
+- `scripts/extract-release-notes.sh <tag> [changelog]` prints that section and exits non-zero when it is missing — that is what the release workflow runs, so a tag without notes fails the release.
+
 ## Git — Angular-style (Conventional Commits)
 
 Commit messages follow **Conventional Commits** (established by repo history; best practice even though no tool enforces it).
