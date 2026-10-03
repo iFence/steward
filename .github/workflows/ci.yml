@@ -1,10 +1,19 @@
 name: CI
 
 on:
-  # Not every push: the launcher repo is developed by pushing directly to
-  # master, so CI runs on pull requests and on demand instead of per commit.
+  # Master is developed by pushing to it directly, so those commits have to be
+  # verified here too: a pull-request-only trigger would leave every direct
+  # push unchecked.
+  push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
+
+# A newer run on the same ref makes an in-flight one pointless; cancelling it
+# keeps a burst of pushes from queueing behind itself.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   rust:

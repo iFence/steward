@@ -1,15 +1,29 @@
 name: Release
 
 on:
+  # A version tag publishes a GitHub Release. A manual run only builds and
+  # uploads the artifacts, because there is no tag to attach them to.
+  push:
+    tags: ["v*"]
   workflow_dispatch:
+
+# The release job below needs to create the release; everything else only reads
+# the repository.
+permissions:
+  contents: read
 
 jobs:
   build-msi:
+    name: Build MSI
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Same toolchain as CI: the gpui dependency is pinned to a Zed revision
+      # that must be built with the version in rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Install WiX Toolset and cargo-wix
         shell: pwsh
@@ -26,3 +40,73 @@ jobs:
         with:
           name: steward-msi
           path: target/wix/*.msi
+          if-no-files-found: error
+
+  package-plugins:
+    name: Package plugins
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: install
+        run: pnpm install --frozen-lockfile
+
+      - name: build
+        run: pnpm build
+
+      - name: Package plugin zips
+        shell: pwsh
+        run: ./scripts/package-plugins.ps1
+
+      - name: Upload plugin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: steward-plugins
+          path: target/plugins/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    # Manual runs have no tag to attach assets to; they stop after the uploads.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-msi, package-plugins]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The MSI version comes from the workspace version, so a mismatched tag
+      # would ship an installer labelled as a different release.
+      - name: Check the tag matches the workspace version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "tag=$tag workspace version=$version"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::$GITHUB_REF_NAME does not match the workspace version $version"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Steward $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.msi dist/*.zip
