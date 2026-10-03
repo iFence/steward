@@ -18,7 +18,8 @@
     <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
 <?endif ?>
 
-<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'
+    xmlns:util='http://schemas.microsoft.com/wix/UtilExtension'>
 
     <Product
         Id='*'
@@ -41,6 +42,8 @@
 
         <MajorUpgrade
             Schedule='afterInstallInitialize'
+            AllowSameVersionUpgrades='yes'
+            IgnoreRemoveFailure='yes'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
@@ -54,6 +57,9 @@
         <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='Run Steward'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
+            <!-- Resolved to the system directory so the taskkill fallback can
+                 be launched before the previous product's files are removed. -->
+            <Directory Id='SystemFolder'/>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='Steward'>
                     <Component Id='License' Guid='*'>
@@ -142,6 +148,72 @@
             Execute='immediate'
             Return='asyncNoWait'
             Impersonate='yes'/>
+
+        <!-- Force any running instance to exit before `RemoveExistingProducts`
+             (scheduled by MajorUpgrade at afterInstallInitialize) removes the
+             previous product's files. `util:CloseApplication` is graceful but
+             only runs just before InstallFiles, which is too late for that
+             removal; taskkill guarantees the executable is not locked, and /T
+             also stops the plugin-runtime child. Matching is by image name, so
+             local debug/release builds are closed too. -->
+        <CustomAction
+            Id='StopRunningSteward'
+            Directory='SystemFolder'
+            ExeCommand='taskkill.exe /IM steward-app.exe /F /T'
+            Execute='immediate'
+            Return='ignore'/>
+        <CustomAction
+            Id='StopRunningStewardRuntime'
+            Directory='SystemFolder'
+            ExeCommand='taskkill.exe /IM steward-plugin-runtime.exe /F /T'
+            Execute='immediate'
+            Return='ignore'/>
+
+        <!-- Graceful fallback: a normal close and an end-session message are
+             tried first; TerminateProcess is the fallback after the timeout. -->
+        <util:CloseApplication
+            Id='CloseStewardApp'
+            Target='steward-app.exe'
+            Description='Steward is running and will be closed to install the update.'
+            CloseMessage='yes'
+            EndSessionMessage='yes'
+            RebootPrompt='no'
+            TerminateProcess='1'
+            Timeout='5'/>
+        <util:CloseApplication
+            Id='CloseStewardRuntime'
+            Target='steward-plugin-runtime.exe'
+            Description='The Steward plugin runtime is running and will be closed to install the update.'
+            CloseMessage='yes'
+            EndSessionMessage='yes'
+            RebootPrompt='no'
+            TerminateProcess='1'
+            Timeout='5'/>
+
+        <!-- Keep the per-user autostart entry in sync with what is installed:
+             rewrite it to the freshly installed executable (only when the user
+             had autostart on), and remove it on a real uninstall. During a
+             major upgrade the old product's uninstall carries
+             UPGRADINGPRODUCTCODE, so the entry survives for SyncAutostart. -->
+        <CustomAction
+            Id='SyncAutostart'
+            Directory='APPLICATIONFOLDER'
+            ExeCommand='"[#exe0]" --sync-autostart'
+            Execute='immediate'
+            Return='ignore'/>
+        <CustomAction
+            Id='UnregisterAutostart'
+            Directory='APPLICATIONFOLDER'
+            ExeCommand='"[#exe0]" --unregister-autostart'
+            Execute='immediate'
+            Return='ignore'/>
+
+        <InstallExecuteSequence>
+            <Custom Action='StopRunningSteward' Before='RemoveExistingProducts'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardRuntime' After='StopRunningSteward'>VersionNT &gt; 400</Custom>
+            <Custom Action='SyncAutostart' After='InstallFiles'>NOT REMOVE</Custom>
+            <Custom Action='UnregisterAutostart' Before='RemoveFiles'>(REMOVE="ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
+        </InstallExecuteSequence>
 
         <WixVariable Id='WixUILicenseRtf' Value='../../crates/app/wix/License.rtf'/>
 

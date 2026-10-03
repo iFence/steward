@@ -54,6 +54,8 @@ try {
         }
     }
 
+    # cargo-wix already links WixUIExtension and WixUtilExtension by default,
+    # so `util:CloseApplication` in main.wxs needs no extra -ext arguments here.
     $wixArgs = @("-p", "steward-app", "--nocapture", "-L", "-sval")
     if ($wixBin) {
         $wixArgs += @("-b", $wixBin)

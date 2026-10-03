@@ -87,6 +87,19 @@ use crate::window::{init_ui_common, open_launcher_window};
 use crate::tray::setup_tray;
 
 fn main() {
+    // Installer/uninstaller hooks: manage the per-user autostart entry before
+    // touching storage or GPUI. `--sync-autostart` runs after `InstallFiles`
+    // (rewrite an existing entry to this build); `--unregister-autostart` runs
+    // before `RemoveFiles` on a real uninstall.
+    if std::env::args().any(|arg| arg == "--sync-autostart") {
+        autostart::sync_autostart_path();
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--unregister-autostart") {
+        autostart::unregister_autostart();
+        return;
+    }
+
     // Headless query for the effective summon hotkey, used by
     // `scripts/bench-resident.ps1` to inject a matching synthetic WM_HOTKEY
     // (the id is derived from the modifier/key combo, so a mismatched binding
@@ -112,6 +125,10 @@ fn main() {
     // (tray context menu, settings title bar) match the app's dark theme.
     #[cfg(target_os = "windows")]
     platform::enable_dark_mode();
+    // A moved or deleted build can leave the `Run` entry pointing at a path
+    // that no longer exists; repoint it at this executable so the next logon
+    // starts a working Steward. Entries that still resolve are left untouched.
+    autostart::repair_autostart_path();
 
     let storage = Rc::new(RefCell::new(
         steward_storage::Storage::open().expect("failed to open the Steward storage database"),
