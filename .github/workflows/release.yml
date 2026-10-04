@@ -79,7 +79,12 @@ jobs:
     # Manual runs have no tag to attach assets to; they stop after the uploads.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-msi, package-plugins]
-    runs-on: ubuntu-latest
+    # Windows-only pipeline: the publisher runs on the same platform the app
+    # ships on, so no Linux runner is needed anywhere. The tag/version check and
+    # the notes extraction are POSIX shell, run through Git Bash (`shell: bash`).
+    # Git Bash is started with `--noprofile --norc`, which does not put its own
+    # `usr/bin` (sed/head) on PATH, so each step adds it explicitly.
+    runs-on: windows-latest
     permissions:
       contents: write
     steps:
@@ -88,7 +93,9 @@ jobs:
       # The MSI version comes from the workspace version, so a mismatched tag
       # would ship an installer labelled as a different release.
       - name: Check the tag matches the workspace version
+        shell: bash
         run: |
+          export PATH="/usr/bin:$PATH"
           version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
           tag="${GITHUB_REF_NAME#v}"
           echo "tag=$tag workspace version=$version"
@@ -106,12 +113,17 @@ jobs:
       # script exits non-zero when the tag has no matching `## vX.Y.Z` section,
       # so a release can never be published with an empty body.
       - name: Extract release notes
-        run: bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog.md > release-notes.md
+        shell: bash
+        run: |
+          export PATH="/usr/bin:$PATH"
+          bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog.md > release-notes.md
 
       - name: Publish the release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          export PATH="/usr/bin:$PATH"
           gh release create "$GITHUB_REF_NAME" \
             --title "Steward $GITHUB_REF_NAME" \
             --notes-file release-notes.md \

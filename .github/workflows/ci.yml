@@ -17,35 +17,17 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: Rust (Windows)
+    # Steward ships on Windows only, so CI validates that one platform. The
+    # crates keep their non-Windows `cfg` branches compiling, but nothing
+    # exercises them any more.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-
-      # GPUI's Linux backend builds against fontconfig/X11/Wayland headers.
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libfontconfig-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-x11-dev \
-            libxcb-randr0-dev \
-            libxcb1-dev \
-            libxrandr-dev
 
       - name: fmt
         run: cargo fmt --check
@@ -56,7 +38,7 @@ jobs:
 
   typescript:
     name: TypeScript
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

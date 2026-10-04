@@ -744,3 +744,22 @@ steward/
 - 实测（1M 合成记录、release）：arena 64.1MB + 并行数组 27.7MB + 3-gram 13.5MB = 常驻 105.3MB；
   catch-up 空批次不再有任何整份分配，`id → 记录` 映射常驻为 0。目标：1M 条索引（含 GPUI 基线）
   私有内存 ≤ 200MB，整机数字用 `scripts/bench-resident.ps1` 在 release 机器上回填。
+
+### 2026-10-04（平台支持收敛为 Windows）
+
+- 决策：Steward 只支持 Windows，CI 不再跑 Linux/macOS 校验。`.github/workflows/ci.yml` 的 Rust
+  三平台矩阵收敛为 `windows-latest`（同时删除为 GPUI Linux 后端安装 fontconfig/X11/Wayland 的
+  步骤），TypeScript 任务与 `release.yml` 的发布任务也改到 `windows-latest`：发布任务里的版本
+  校验 / 发布说明抽取 / `gh release create` 用 `shell: bash`（Windows runner 的 Git Bash），
+  并在每步 `export PATH="/usr/bin:$PATH"` —— Git Bash 以 `--noprofile --norc` 启动时不会把自身的
+  `usr/bin`（`sed`/`head`）放进 PATH。整条流水线不再有任何 Linux/macOS runner。
+- 影响：`#[cfg(not(target_os = "windows"))]` 分支（可移植目录树 walk、非 Windows 的 USN stub、
+  macOS 托盘与 PNG 图标、`image` 依赖）不再被 CI 编译验证，可能随时间失效；保留它们只是为了让
+  本地非 Windows 构建不报错，不再是产品承诺。文档里既有的「先 macOS，再 Linux」验收标准与
+  macOS 托盘描述属于历史决策记录，由本条取代。
+- 验证：`ci.yml` / `release.yml` 经 YAML 解析确认；TypeScript 任务在 Windows 上本地跑通
+  （eslint、三个包的 `tsc --noEmit`、esbuild 与 `scripts/build-plugin.mjs` 全部 rc=0）；发布任务
+  的 POSIX 片段用 Git Bash `--noprofile --norc -eo pipefail` 复现（`v0.1.0` 能抽出版本号与发布
+  说明，`v9.9.9` 正确失败）。
+- 未验证：`shell: bash` + `gh release create` 组合要等下一次打 tag 才能在 GitHub runner 上确认；
+  `cargo fmt --check` / clippy / test 在 Windows 上本来就是原矩阵的一部分，无变化。
