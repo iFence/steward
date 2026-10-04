@@ -3,8 +3,6 @@ app-settings = Настройки
 app-autostart = Запуск при входе в систему
 app-quit = Выйти
 application = Приложение
-# Shortcut hints shown on the right of the result rows (Ctrl+N)
-row-shortcut-modifier = Ctrl
 open-in-browser = Открыть в браузере
 command = Команда
 settings-general = Общие

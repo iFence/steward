@@ -143,20 +143,6 @@ const DESIGN_ICON_SIZE: f32 = 24.0;
 /// GPUI Windows revision never has to clip overflowing children (its scroll
 /// container paints them unclipped, spilling below the drop-down).
 pub const VISIBLE_ROWS: usize = 8;
-/// The first row reachable with a Ctrl+number shortcut. The top row is
-/// confirmed with a bare Enter, so the digits start at the second row (Ctrl+1)
-/// and run to Ctrl+7 for the eighth and last visible row.
-const FIRST_CTRL_INDEX: usize = 1;
-/// The label on the top row's cap: the key that confirms it. Not localized —
-/// "Enter" is the name printed on the key of every keyboard and keyboard
-/// layout Steward supports, so it reads the same in all seven locales.
-const ENTER_KEY_LABEL: &str = "Enter";
-/// Width reserved for the shortcut before every row's content, so that the key
-/// caps, icons and names line up across rows. Sized for the widest cap — a
-/// five-glyph shortcut such as the German `Strg+1` — plus a gap to the icon.
-const HINT_COLUMN_WIDTH: f32 = 52.0;
-/// Horizontal padding inside the chip, between its border and the key text.
-const HINT_CHIP_PADDING: f32 = 5.0;
 /// Width of the secondary text column (a file row's folder, an app row's kind
 /// label, a plugin row's subtitle). Fixed, and applied on every row, so the text
 /// starts on one axis and the column's edge lands in one place instead of
@@ -165,57 +151,6 @@ const DETAIL_COLUMN_WIDTH: f32 = 280.0;
 /// Width reserved for the size column. Fixed — and reserved on every row, file
 /// or not — so the trailing columns line up down the whole drop-down.
 const SIZE_COLUMN_WIDTH: f32 = 64.0;
-/// Opacity of the chip's border. The border is `palette::BORDER` (white 0.20
-/// over the launcher surface) dropped to a whisper: at full strength it reads
-/// as a box drawn around every row rather than as a key cap.
-const HINT_CHIP_BORDER_ALPHA: f32 = 0.45;
-
-/// The row confirmed by the bare Enter key (and by a click): the first one.
-/// Every visible row therefore advertises a key — Enter on top, Ctrl+1 …
-/// Ctrl+7 below it — and no row is left without one.
-pub fn enter_row_index() -> usize {
-    0
-}
-
-/// The Ctrl+number shortcut that confirms the row at `index`, or `None` for the
-/// rows that have none. The top row belongs to Enter (see [`enter_row_index`]);
-/// the rows below it take Ctrl+1, Ctrl+2, ... in order, capped at the last
-/// visible row.
-pub(crate) fn shortcut_key_for(index: usize) -> Option<char> {
-    let digit = index.checked_sub(FIRST_CTRL_INDEX)?.checked_add(1)?;
-    (digit <= VISIBLE_ROWS - FIRST_CTRL_INDEX)
-        .then(|| char::from_digit(digit as u32, 10))
-        .flatten()
-}
-
-/// The text of the keyboard shortcut for the row at `index`: `Enter` on the top
-/// row, `Ctrl+1` … `Ctrl+7` on the rows below it, and `None` for a row past the
-/// last mapped key. `modifier` is the localized name of the Ctrl key; an empty
-/// one (the hint label is missing from the active locale) falls back to the
-/// bare number.
-pub(crate) fn shortcut_hint(index: usize, modifier: &str) -> Option<String> {
-    if index == enter_row_index() {
-        return Some(ENTER_KEY_LABEL.to_owned());
-    }
-    let key = shortcut_key_for(index)?;
-    Some(if modifier.is_empty() {
-        key.to_string()
-    } else {
-        format!("{modifier}+{key}")
-    })
-}
-
-/// The row index that a digit shortcut selects when combined with Ctrl, i.e.
-/// the inverse of [`shortcut_hint`]. `None` for digits outside the mapped
-/// range. Kept next to the forward mapping so the two cannot drift apart.
-pub fn shortcut_digit_index(digit: char) -> Option<usize> {
-    let value = digit.to_digit(10)? as usize;
-    if value == 0 || value > VISIBLE_ROWS - FIRST_CTRL_INDEX {
-        return None;
-    }
-    Some(FIRST_CTRL_INDEX + value - 1)
-}
-
 /// The state backing the results list. Kept as its own entity so updates
 /// (`set_results`, selection moves) can happen without a window.
 pub struct ResultListState {
@@ -229,10 +164,6 @@ pub struct ResultListState {
     /// scrim (raised over bright backdrops, where a fixed 0.10 wash reads too
     /// faint against the lightened bar).
     selected_wash: f32,
-    /// Localized name of the Ctrl key ("Ctrl" / "^"), shown in the shortcut cap
-    /// on every row below the first. Empty drops the modifier and leaves the
-    /// bare digit.
-    shortcut_modifier: String,
     /// Whether the displayed rows may be confirmed. The directory picker turns
     /// this off while a search is in flight, so rows kept on screen for a smooth
     /// repaint cannot be navigated to by mistake. See [`ResultList::set_confirmable`].
@@ -245,23 +176,15 @@ impl Render for ResultListState {
         let range = self.visible_range();
         let selected = self.selected;
         let selected_wash = self.selected_wash;
-        let modifier = self.shortcut_modifier.clone();
         let rows = self.items[range.clone()]
             .iter()
             .enumerate()
             .map(|(offset, item)| {
                 let index = range.start + offset;
-                let shortcut = match item {
-                    // A placeholder row is not confirmable, so it gets no
-                    // shortcut: the hint never advertises a key that no-ops.
-                    ResultItem::Loading { .. } => None,
-                    _ => shortcut_hint(index, &modifier),
-                };
                 render_row(
                     item,
                     self.icons.get(index).cloned().flatten(),
                     &type_label,
-                    shortcut,
                     selected == Some(index),
                     selected_wash,
                     index,
@@ -333,61 +256,6 @@ mod tests {
         ));
         assert!(!icons_equal(&[Some(shared)], &[None]));
     }
-
-    #[test]
-    fn every_visible_row_advertises_a_key() {
-        // The top row is the bare Enter target, so it shows "Enter" rather than
-        // a digit...
-        assert_eq!(enter_row_index(), 0);
-        assert_eq!(
-            shortcut_hint(enter_row_index(), "Ctrl").as_deref(),
-            Some("Enter")
-        );
-        assert_eq!(shortcut_key_for(enter_row_index()), None);
-        // ...and Ctrl+1 upward starts on the row below it.
-        assert_eq!(shortcut_key_for(1), Some('1'));
-        assert_eq!(shortcut_key_for(2), Some('2'));
-        assert_eq!(shortcut_key_for(7), Some('7'));
-        assert_eq!(shortcut_hint(1, "Ctrl").as_deref(), Some("Ctrl+1"));
-        assert_eq!(shortcut_hint(7, "Ctrl").as_deref(), Some("Ctrl+7"));
-        // Nothing past the last visible row: the drop-down renders exactly
-        // `VISIBLE_ROWS` rows, so a hint there would advertise a dead key.
-        assert_eq!(shortcut_key_for(VISIBLE_ROWS), None);
-        assert_eq!(shortcut_hint(VISIBLE_ROWS, "Ctrl"), None);
-        // Enter is not localized: it names the key printed on every keyboard.
-        assert_eq!(shortcut_hint(0, "").as_deref(), Some("Enter"));
-    }
-
-    #[test]
-    fn shortcut_hints_carry_the_localized_modifier() {
-        assert_eq!(shortcut_hint(1, "Ctrl").as_deref(), Some("Ctrl+1"));
-        assert_eq!(shortcut_hint(7, "^").as_deref(), Some("^+7"));
-        assert_eq!(shortcut_hint(1, "Strg").as_deref(), Some("Strg+1"));
-        // A locale without the modifier label still shows the key itself.
-        assert_eq!(shortcut_hint(1, "").as_deref(), Some("1"));
-    }
-
-    #[test]
-    fn digits_map_back_to_the_rows_the_hints_advertise() {
-        // The digit handler and the hint renderer must agree: every advertised
-        // shortcut selects the row that shows it.
-        for index in 0..=VISIBLE_ROWS {
-            let Some(key) = shortcut_key_for(index) else {
-                continue;
-            };
-            assert_eq!(shortcut_digit_index(key), Some(index));
-        }
-    }
-
-    #[test]
-    fn unmapped_digits_do_not_select_a_row() {
-        // Ctrl+0 is not a shortcut (the row numbering starts at 1), and
-        // neither is a digit past the last visible row.
-        assert_eq!(shortcut_digit_index('0'), None);
-        assert_eq!(shortcut_digit_index('8'), None);
-        assert_eq!(shortcut_digit_index('9'), None);
-        assert_eq!(shortcut_digit_index('a'), None);
-    }
 }
 
 impl ResultListState {
@@ -413,18 +281,10 @@ impl ResultListState {
 /// and the original expression on the right. Selected rows get Tinycast's
 /// neutral white wash (opacity adapted by the app); hovered rows get the
 /// fainter white 0.05 surface tint.
-///
-/// A row with a keyboard shortcut (see [`shortcut_hint`]) also carries the
-/// hint "Ctrl+N" as a fixed-width cell before its right-hand detail column, so
-/// a long name is truncated ahead of it rather than running into the shortcut.
-#[allow(clippy::too_many_arguments)]
 fn render_row(
     item: &ResultItem,
     icon: Option<Arc<Image>>,
     type_label: &str,
-    // Already-formatted shortcut hint ("Ctrl+1"), or `None` for a row without
-    // one (the first row, and any row past the last mapped digit).
-    shortcut: Option<String>,
     selected: bool,
     selected_wash: f32,
     index: usize,
@@ -473,9 +333,9 @@ fn render_row(
 
     // Every arm below pairs the row's main text with its trailing columns: the
     // name, and optionally the size (file rows) and the secondary text. Splitting
-    // the text out here is what lets the shortcut hint sit at the head of the row,
-    // and the trailing columns stay put, without repeating the layout in every
-    // arm. `None` means the row has that column and leaves it out entirely.
+    // the text out here is what lets the trailing columns stay put without
+    // repeating the layout in every arm. `None` means the row has that column
+    // and leaves it out entirely.
     let (row, name, size, detail, icon) = match item {
         ResultItem::App(app) => (
             row,
@@ -552,9 +412,8 @@ fn render_row(
         .text_sm()
         .child(name);
 
-    // The row reads left to right: the key cap (or the empty spacer that
-    // reserves its width on the first row), the icon, the name, the size, then
-    // the secondary text.
+    // The row reads left to right: the icon, the name, the size, then the
+    // secondary text.
     //
     // Both text columns truncate to the right and are laid out left to right, so
     // the name gives way to the size and the size never moves: the name is the
@@ -562,15 +421,13 @@ fn render_row(
     // has them, which is what keeps the columns on one axis down the drop-down.
     // A row with nothing to put in them (a picker's path) drops them entirely
     // instead of reserving two empty columns against its own text.
-    let mut row = row
-        .child(hint_cell(shortcut))
-        .when_some(icon, |this, icon| {
-            this.child(
-                img(ImageSource::Image(icon))
-                    .w(px(DESIGN_ICON_SIZE))
-                    .h(px(DESIGN_ICON_SIZE)),
-            )
-        });
+    let mut row = row.when_some(icon, |this, icon| {
+        this.child(
+            img(ImageSource::Image(icon))
+                .w(px(DESIGN_ICON_SIZE))
+                .h(px(DESIGN_ICON_SIZE)),
+        )
+    });
     row = row.child(name);
     if let Some(size) = size {
         row = row.child(
@@ -595,41 +452,6 @@ fn render_row(
         );
     }
     row
-}
-
-/// The shortcut cell that opens every row: the key itself ("Ctrl+1") drawn in
-/// a small rounded box, the way launchers and menus show a key cap, inside a
-/// fixed-width column.
-///
-/// The shortcut leads the row rather than trailing it, which keeps the two out
-/// of each other's way without any overlay: a truncated long name can never
-/// reach the key, and the key never shifts between rows. The first row has no
-/// shortcut (see [`shortcut_key_for`]), so it gets the same fixed-width cell
-/// with nothing in it and every row's icon and name stay on one axis.
-fn hint_cell(hint: Option<String>) -> gpui::Div {
-    let cell = div()
-        .w(px(HINT_COLUMN_WIDTH))
-        .flex_shrink_0()
-        .flex()
-        .items_center();
-    let Some(hint) = hint else {
-        return cell;
-    };
-    cell.child(
-        div()
-            .px(px(HINT_CHIP_PADDING))
-            .rounded_md()
-            // The row has no background of its own (the window root paints one
-            // translucent scrim across the whole launcher), so the cap is a
-            // raised surface tint plus a hairline border rather than a fill
-            // that would have to match the backdrop.
-            .bg(rgb(crate::palette::BACKGROUND_ALT))
-            .border_1()
-            .border_color(rgb(crate::palette::BORDER).opacity(HINT_CHIP_BORDER_ALPHA))
-            .text_color(rgb(crate::palette::FOREGROUND))
-            .text_size(px(11.0))
-            .child(hint),
-    )
 }
 
 /// Builds the `ResultList` with an optional confirm callback.
@@ -691,23 +513,9 @@ impl ResultList {
             selected: None,
             on_confirm: delegate.on_confirm,
             selected_wash: crate::palette::SELECTION_WASH,
-            shortcut_modifier: String::new(),
             confirmable: true,
         });
         Self { state }
-    }
-
-    /// Set the localized name of the Ctrl key shown in the row shortcut hints
-    /// ("Ctrl" / "^"). An empty string hides the hints (the list is still
-    /// keyboard-selectable; only the on-screen affordance goes away).
-    pub fn set_shortcut_modifier<C: AppContext>(&self, modifier: impl Into<String>, cx: &mut C) {
-        self.state.update(cx, |this, cx| {
-            let modifier = modifier.into();
-            if this.shortcut_modifier != modifier {
-                this.shortcut_modifier = modifier;
-                cx.notify();
-            }
-        });
     }
 
     /// Replace the displayed rows (and their icons, aligned with `items`) and
@@ -799,24 +607,6 @@ impl ResultList {
             }
         });
         next
-    }
-
-    /// Select the row at `index` outright (used by the Ctrl+number shortcuts,
-    /// which jump straight to a row instead of stepping the selection). Returns
-    /// whether the index names an existing row, leaving the selection alone
-    /// when it does not.
-    pub fn set_selected<C: AppContext>(&self, index: usize, cx: &mut C) -> bool {
-        let mut ok = false;
-        self.state.update(cx, |this, cx| {
-            if index < this.items.len() {
-                ok = true;
-                if this.selected != Some(index) {
-                    this.selected = Some(index);
-                    cx.notify();
-                }
-            }
-        });
-        ok
     }
 
     /// Confirm the currently selected row, invoking the delegate's `on_confirm`

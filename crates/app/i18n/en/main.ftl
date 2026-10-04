@@ -3,8 +3,6 @@ app-settings = Settings
 app-autostart = Launch at Startup
 app-quit = Quit
 application = Application
-# Shortcut hints shown on the right of the result rows (Ctrl+N)
-row-shortcut-modifier = Ctrl
 open-in-browser = Open in Browser
 command = Command
 settings-general = General

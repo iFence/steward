@@ -3,8 +3,6 @@ app-settings = 设置
 app-autostart = 开机自启
 app-quit = 退出
 application = 应用
-# Shortcut hints shown on the right of the result rows (Ctrl+N)
-row-shortcut-modifier = ^
 open-in-browser = 用浏览器打开
 command = 命令
 settings-general = 通用

@@ -419,10 +419,6 @@ pub(crate) fn open_launcher_window(
                     },
                 );
                 let results = ResultList::new(delegate, window, cx);
-                // The row shortcut hints ("Ctrl+1") are localized text, so they
-                // are pushed in rather than read from a global: the list has no
-                // i18n plumbing of its own (`set_type_label` is the same story).
-                results.set_shortcut_modifier(i18n.translate("row-shortcut-modifier"), cx);
                 let calendar =
                     CalendarView::new(Some(on_calendar_select), Some(on_toggle_pin), window, cx);
                 let mut app = StewardApp {

@@ -3,8 +3,6 @@ app-settings = 設定
 app-autostart = サインイン時に起動
 app-quit = 終了
 application = アプリ
-# Shortcut hints shown on the right of the result rows (Ctrl+N)
-row-shortcut-modifier = ^
 open-in-browser = ブラウザで開く
 command = コマンド
 settings-general = 一般

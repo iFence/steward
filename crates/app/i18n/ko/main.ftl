@@ -3,8 +3,6 @@ app-settings = 설정
 app-autostart = 로그인 시 실행
 app-quit = 종료
 application = 앱
-# Shortcut hints shown on the right of the result rows (Ctrl+N)
-row-shortcut-modifier = ^
 open-in-browser = 브라우저에서 열기
 command = 명령
 settings-general = 일반

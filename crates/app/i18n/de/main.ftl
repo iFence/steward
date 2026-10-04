@@ -3,8 +3,6 @@ app-settings = Einstellungen
 app-autostart = Beim Anmelden starten
 app-quit = Beenden
 application = Anwendung
-# Shortcut hints shown on the right of the result rows (Ctrl+N)
-row-shortcut-modifier = Strg
 open-in-browser = Im Browser öffnen
 command = Befehl
 settings-general = Allgemein

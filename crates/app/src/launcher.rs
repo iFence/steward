@@ -23,8 +23,8 @@ use steward_core_engine::MatchTier;
 use steward_plugin_host::{PluginHost, RouteHit};
 use steward_plugin_registry::{PluginMeta, Registry, ScanReport};
 use steward_ui_components::{
-    calendar_grid_height, days_in_month, iso_date, month_week_rows, shortcut_digit_index,
-    CalendarData, CalendarView, ResultItem, ResultList,
+    calendar_grid_height, days_in_month, iso_date, month_week_rows, CalendarData, CalendarView,
+    ResultItem, ResultList,
 };
 
 use crate::config::{
@@ -1704,35 +1704,6 @@ impl StewardApp {
             }
         }
 
-        // Ctrl+number acts on a row outright, starting at the second row
-        // (Ctrl+1): the first row is Enter's, so the digit a row advertises on
-        // its left is always the digit that acts on it.
-        //
-        // Inside the directory picker the action is to **fill the query with the
-        // row's path**, not to navigate: the picker is the "type a path" box, so
-        // the useful thing a shortcut can do is put the path in it, ready to be
-        // edited or extended into a subfolder. Enter (or a click) is still what
-        // navigates.
-        //
-        // The key is read from `keystroke.key`, not `key_char`: Windows
-        // translates Ctrl+1 to the control character U+0001 and gpui drops
-        // control characters, so `key_char` is `None` whenever Ctrl is held —
-        // matching on it is why these shortcuts did nothing. `key` carries the
-        // unmodified character gpui normalised the virtual key to.
-        if modifiers.control && !modifiers.alt && !modifiers.platform {
-            let digit = keystroke.key.chars().next();
-            if let Some(index) = digit.and_then(shortcut_digit_index) {
-                self.results.set_selected(index, cx);
-                if !self.fill_query_from_row(index, window, cx)
-                    && self.results.confirm_selected(window, cx)
-                {
-                    self.after_confirm(window, cx);
-                }
-                cx.stop_propagation();
-                return;
-            }
-        }
-
         // Select all (Ctrl+A). The launcher's hand-rolled input owns its
         // selection model, so the standard shortcut has no built-in handler.
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "a" {
@@ -2605,57 +2576,6 @@ impl StewardApp {
                 "[steward] plugin {} not ready for item.invoke",
                 active.plugin_id
             );
-        }
-    }
-
-    /// Put the row at `index` into the query box and re-search, returning
-    /// whether that is what the row's shortcut should do.
-    ///
-    /// Only inside the directory picker, and only for a directory row: the
-    /// picker *is* a path box, so the useful action of a row shortcut there is to
-    /// fill it with the row's path — ready to be edited, extended into a
-    /// subfolder, or confirmed with Enter — rather than to navigate away from the
-    /// list the user is looking at. Everywhere else (and for any other row kind)
-    /// the shortcut keeps confirming, which is what launches things.
-    ///
-    /// The follow-up search runs through [`Self::search_unless_composing`], the
-    /// same path as typing, so the picker debounce, the stale-row gate and the
-    /// status line all behave exactly as if the path had been typed by hand.
-    fn fill_query_from_row(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut gpui::Context<Self>,
-    ) -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            if !self.is_directory_picker() {
-                return false;
-            }
-            let Some(ResultItem::Directory { path, .. }) =
-                self.last_results.borrow().get(index).cloned()
-            else {
-                return false;
-            };
-            let path = path.to_string_lossy().into_owned();
-            if path == self.active_input().query {
-                // Already what the box says: nothing to fill, and re-running the
-                // search would only cost a round trip.
-                return true;
-            }
-            let input = self.active_input_mut();
-            input.query = path;
-            input.marked = None;
-            input.set_cursor(input.char_count());
-            input.selection = None;
-            self.search_unless_composing(window, cx);
-            cx.notify();
-            true
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = (index, window, cx);
-            false
         }
     }
 
