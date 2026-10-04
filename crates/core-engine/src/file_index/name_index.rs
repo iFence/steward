@@ -177,8 +177,18 @@ impl NameIndex {
         for key in &keys {
             match self.lookup(*key) {
                 Some(term) => terms.push(*term),
-                // A trigram of the needle is absent, so no name can contain it.
-                None => return Some(Vec::new()),
+                // The trigram is not in the build-time term table. That is *not*
+                // proof that no name contains it: a name appended since the
+                // build lands in `overflow`, so a trigram that never existed at
+                // build time (a brand-new file name) can still be present.
+                // Returning empty here would under-include, which the contract
+                // forbids; only a trigram missing from both tables means no
+                // candidate can match.
+                None => {
+                    if !self.overflow.contains_key(key) {
+                        return Some(Vec::new());
+                    }
+                }
             }
         }
         // Rarest first keeps the intersection small early.
@@ -286,5 +296,30 @@ mod tests {
         accelerator.note(added, index.name_bytes(added));
         let candidates = accelerator.candidates(b"report").unwrap();
         assert!(candidates.contains(&added));
+    }
+
+    /// A name added after the build can introduce a trigram that never existed
+    /// in the build-time postings. The candidate list must consult `overflow`
+    /// for those keys instead of concluding "no name can contain this".
+    #[test]
+    fn a_trigram_introduced_after_the_build_is_still_found() {
+        let (mut index, mut accelerator) = build(&["a.txt"]);
+        let root = index
+            .iter_ordered()
+            .find(|record| index.parent_of(*record) == crate::file_index::ROOT_PARENT)
+            .expect("the root record");
+        let added = index
+            .insert_child(root, &EntryInfo::file("xyz-notes.txt"))
+            .unwrap();
+        index.finish_incremental();
+        accelerator.note(added, index.name_bytes(added));
+
+        let candidates = accelerator.candidates(b"xyz").unwrap();
+        assert!(
+            candidates.contains(&added),
+            "the overflow must answer a trigram the postings never saw"
+        );
+        // A trigram in neither table still short-circuits.
+        assert!(accelerator.candidates(b"qqq").unwrap().is_empty());
     }
 }

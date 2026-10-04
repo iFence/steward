@@ -46,9 +46,11 @@ fn file_index_scale_report() {
     let mut index = builder.finalize();
     let build = started.elapsed();
     println!(
-        "records={} arena_bytes={} build={build:?}",
+        "records={} arena_bytes={} arrays_bytes={} resident_bytes={} build={build:?}",
         index.len(),
-        index.arena_bytes()
+        index.arena_bytes(),
+        index.resident_bytes() - index.arena_bytes(),
+        index.resident_bytes(),
     );
 
     fn measure(label: &str, index: &steward_core_engine::file_index::FileDb) {
@@ -83,8 +85,9 @@ fn file_index_scale_report() {
     let started = Instant::now();
     let built = index.build_name_index();
     println!(
-        "name_index built={built} bytes={} build={:?}",
+        "name_index built={built} bytes={} resident_bytes={} build={:?}",
         index.name_index().map_or(0, |accel| accel.approx_bytes()),
+        index.resident_bytes(),
         started.elapsed()
     );
     if built {

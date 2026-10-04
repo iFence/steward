@@ -71,11 +71,12 @@ pub(crate) fn try_build(
             .collect(),
         excluded_dirs: options.excluded_dirs.iter().cloned().collect(),
         live: true,
+        records_hint: options.records_hint.map(|hint| hint as u64),
     };
     if let Err(error) = client.send_request(&request) {
         return Some(Err(error.to_string()));
     }
-    match client::read_index(&mut client) {
+    match client::read_index(&mut client, request.records_hint) {
         Ok(output) => Some(Ok((output, Some(HelperSession { client })))),
         Err(error) => Some(Err(error)),
     }

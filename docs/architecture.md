@@ -712,3 +712,35 @@ steward/
 - 实测（300k 合成索引）：加速器 4.1MB（≈13.6B/条，3M 约 41MB），构建 222ms（3M 约 2.2s，一次性、
   在 index worker 线程）；选择性 needle `report-00012` p50 从 8.9ms 降到 **77µs**（≈115×）；
   宽 needle（`rep`/`report`）回退扫描后与原来持平。
+
+### 2026-10-03（文件索引内存：catch-up 原地更新 + 快照流式写入）
+
+- 问题：启动后内存周期性暴涨。`LIVE_INDEX_REFRESH = 2s` 触发 `request_catch_up()`，而
+  `crates/app/src/file_index.rs` 的 `replay_journal()` 第一行无条件 `FileDb::duplicate()`，深拷贝
+  arena + 8 个并行数组 + `key_map`；即使 journal 没有新记录（或 `$MFT` 打不开、注定失败）也先分配
+  再丢弃——1.5M 条实测约 165MB/次、每 2 秒一次。同一路径还用克隆替换原索引，而 `duplicate()`
+  不复制 3-gram 加速器，导致第一次 catch-up 后加速器丢失、大索引搜索退化为线性扫描。重建路径另
+  叠加一次 `persist::encode` 的整份快照，峰值达到索引体积的 2–3 倍。
+- 方案（core-engine）：`replay_journal(&mut FileDb)` 原地 `apply_usn_records`，删除
+  `FileDb::duplicate()`；`key_map` 改为批内临时（`rebuild_key_map` 开、`clear_key_map` 关），
+  `from_parts`/`finalize` 都不再预构建，MFT 索引省下约 19B/条的常驻；`ScanOptions.records_hint`
+  用于 `FileDbBuilder::with_capacity`，重建不再对几百 MB 的 arena 反复翻倍。
+- 方案（app/storage）：`SnapshotWriter` 由 index worker 复用自己的 WAL 连接，`settings_blob`
+  先写 `zeroblob(len)` 再用 `blob_open` + 固定 256KB 缓冲流式写入（`persist::encode_to` /
+  `persist::encoded_len`），UI 线程不再持有或同步写整份快照；`Storage::open_at` 加 5s
+  `busy_timeout` 以配合第二个 WAL 写连接。
+- 顺带修复：`name_index::candidates` 在 needle 的某个 trigram 只存在于 `overflow`（构建后新增的
+  文件名引入了全新 trigram）时错误返回空候选，违反「绝不允许欠包含」契约；`replay_one_volume`
+  的 journal 失效（journal id 变化、游标超前）改为 `IndexEvent::Rebuild`，由 launcher 触发重建，
+  而不是只打日志后永远陈旧（也不能走 `Reconcile`→catch-up，否则死循环）。
+- 弃用项：把 arena 从快照 BLOB 缓冲「原地前移」以省一次冷启动拷贝——`Vec` 无法只释放尾部容量，
+  复用会把数组字节永久留在 arena capacity 里（1M 条约 +27MB 常驻），得不偿失；冷启动保留一次性
+  短时峰值。
+- 验证：core-engine 142、app 80、helper 20 + 2 管道端到端、storage 8 全绿；新增
+  `the_streamed_encoding_matches_the_buffered_one`、
+  `streaming_blob_settings_roundtrip_across_chunk_boundaries`、
+  `a_trigram_introduced_after_the_build_is_still_found`、`a_usn_batch_keeps_the_name_index_usable`；
+  `cargo clippy --workspace --all-targets -- -D warnings` 全绿。
+- 实测（1M 合成记录、release）：arena 64.1MB + 并行数组 27.7MB + 3-gram 13.5MB = 常驻 105.3MB；
+  catch-up 空批次不再有任何整份分配，`id → 记录` 映射常驻为 0。目标：1M 条索引（含 GPUI 基线）
+  私有内存 ≤ 200MB，整机数字用 `scripts/bench-resident.ps1` 在 release 机器上回填。

@@ -54,6 +54,11 @@ impl Storage {
         let conn = Connection::open(data_dir.join(DB_FILE)).context("open sqlite database")?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("enable WAL")?;
+        // The app holds a UI-thread connection and the file-index worker opens
+        // its own for snapshot writes; WAL allows one writer at a time, so a
+        // writer must wait for the other instead of failing with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("set the SQLite busy timeout")?;
         let storage = Self { conn };
         storage.migrate()?;
         Ok(storage)
@@ -151,6 +156,42 @@ impl Storage {
                 (key, value),
             )
             .context("set binary setting")?;
+        Ok(())
+    }
+
+    /// Replace a binary setting by streaming `length` bytes into it.
+    ///
+    /// The row is first written as a `zeroblob` of the exact size, then opened
+    /// for incremental BLOB I/O, so a multi-hundred-megabyte snapshot never has
+    /// to exist as a `Vec<u8>` (or a second copy inside SQLite). `write` is
+    /// called with the open BLOB and must produce exactly `length` bytes; a
+    /// short write leaves the row truncated, so callers pair this with an
+    /// encoder that computed the length up front.
+    pub fn set_setting_blob_streaming<F>(&self, key: &str, length: usize, write: F) -> Result<()>
+    where
+        F: FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+    {
+        let length = i64::try_from(length).context("snapshot length does not fit SQLite")?;
+        self.conn
+            .execute(
+                "INSERT INTO settings_blob(key, value) VALUES (?1, zeroblob(?2))
+                 ON CONFLICT(key) DO UPDATE SET value = zeroblob(?2)",
+                (key, length),
+            )
+            .context("reserve the binary setting")?;
+        let rowid: i64 = self
+            .conn
+            .query_row(
+                "SELECT rowid FROM settings_blob WHERE key = ?1",
+                (key,),
+                |row| row.get(0),
+            )
+            .context("locate the binary setting row")?;
+        let mut blob = self
+            .conn
+            .blob_open(rusqlite::MAIN_DB, "settings_blob", "value", rowid, false)
+            .context("open the binary setting for writing")?;
+        write(&mut blob).context("stream the binary setting")?;
         Ok(())
     }
 
@@ -427,6 +468,75 @@ mod tests {
         storage.remove_setting("file_index").unwrap();
         assert!(storage.get_setting("file_index").is_none());
         assert!(storage.get_setting_blob("file_index").is_some());
+    }
+
+    /// The file-index snapshot is written through the streaming path; it has to
+    /// land byte-for-byte, including when the row already exists and when the
+    /// length spans the encoder's chunk size.
+    #[test]
+    fn streaming_blob_settings_roundtrip_across_chunk_boundaries() {
+        let storage = Storage::open_in_memory().unwrap();
+        let payload = |len: usize| -> Vec<u8> { (0..len).map(|i| (i % 251) as u8).collect() };
+
+        for len in [0usize, 1, 64 * 1024 - 1, 64 * 1024, 64 * 1024 + 1] {
+            let data = payload(len);
+            storage
+                .set_setting_blob_streaming("file_index", len, |sink| sink.write_all(&data))
+                .unwrap_or_else(|error| panic!("length {len}: {error:#}"));
+            assert_eq!(
+                storage.get_setting_blob("file_index").as_deref(),
+                Some(&data[..]),
+                "length {len}"
+            );
+        }
+
+        // A shorter overwrite must not leave the previous row's tail behind.
+        let long = payload(4096);
+        storage
+            .set_setting_blob_streaming("file_index", long.len(), |sink| sink.write_all(&long))
+            .unwrap();
+        let short = payload(3);
+        storage
+            .set_setting_blob_streaming("file_index", short.len(), |sink| sink.write_all(&short))
+            .unwrap();
+        assert_eq!(
+            storage.get_setting_blob("file_index").as_deref(),
+            Some(&short[..])
+        );
+    }
+
+    /// The app runs against a WAL-mode file database, not an in-memory one; the
+    /// incremental BLOB write has to survive that path and a reopen too.
+    #[test]
+    fn streaming_blob_settings_survive_a_wal_file_database() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "steward-storage-stream-{}-{unique}",
+            std::process::id()
+        ));
+        let data: Vec<u8> = (0..300_000usize).map(|i| (i % 251) as u8).collect();
+
+        let storage = Storage::open_at(&dir).unwrap();
+        storage
+            .set_setting_blob_streaming("file_index", data.len(), |sink| sink.write_all(&data))
+            .unwrap();
+        assert_eq!(
+            storage.get_setting_blob("file_index").as_deref(),
+            Some(&data[..])
+        );
+        drop(storage);
+
+        let reopened = Storage::open_at(&dir).unwrap();
+        assert_eq!(
+            reopened.get_setting_blob("file_index").as_deref(),
+            Some(&data[..]),
+            "the streamed blob must be committed, not left in a transaction"
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

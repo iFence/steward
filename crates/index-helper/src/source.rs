@@ -29,6 +29,13 @@ pub struct StreamRequest {
     /// Snapshot-only callers (tests, tooling) can turn this off.
     #[serde(default = "default_live")]
     pub live: bool,
+    /// How many records the client expects, used to pre-size its index builder.
+    ///
+    /// Purely a memory hint for the client: an older helper that does not know
+    /// the field ignores it (the frame layout is unchanged), and a stream that
+    /// carries more or fewer records is unaffected.
+    #[serde(default)]
+    pub records_hint: Option<u64>,
 }
 
 fn default_live() -> bool {
@@ -46,6 +53,7 @@ impl StreamRequest {
                 .map(|name| (*name).to_string())
                 .collect(),
             live: true,
+            records_hint: None,
         }
     }
 
@@ -413,10 +421,26 @@ mod tests {
             roots: vec!["C".into(), "D:/Media".into(), "relative".into()],
             excluded_dirs: vec!["Node_Modules".into()],
             live: true,
+            records_hint: None,
         };
         let options = request.options();
         assert_eq!(options.roots.len(), 2, "relative roots are dropped");
         assert!(options.excluded_dirs.contains("node_modules"));
+    }
+
+    /// `records_hint` is a client-side memory hint added after the protocol was
+    /// released: a request line from a build that does not know the field must
+    /// still parse (and an old helper must still ignore it).
+    #[test]
+    fn a_request_without_a_records_hint_still_parses() {
+        let json = r#"{"version":2,"roots":["C"],"live":false}"#;
+        let request: StreamRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.records_hint, None);
+        assert!(request.excluded_dirs.is_empty());
+
+        let hinted: StreamRequest =
+            serde_json::from_str(r#"{"version":2,"roots":["C"],"records_hint":1500000}"#).unwrap();
+        assert_eq!(hinted.records_hint, Some(1_500_000));
     }
 
     #[test]

@@ -61,6 +61,11 @@ pub struct ScanOptions {
     pub excluded_dirs: HashSet<String>,
     /// Stop after this many records (a guard rail for tests and dry runs).
     pub max_entries: Option<usize>,
+    /// How many records the caller expects, used to pre-size the index builder.
+    ///
+    /// This is only a memory hint (the record count of the index being
+    /// replaced); a build that produces more or fewer records is unaffected.
+    pub records_hint: Option<usize>,
 }
 
 /// Directory names skipped by default. The reparse-point check already removes
@@ -85,6 +90,7 @@ impl Default for ScanOptions {
                 .map(|name| (*name).to_string())
                 .collect(),
             max_entries: None,
+            records_hint: None,
         }
     }
 }

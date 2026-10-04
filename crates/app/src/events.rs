@@ -342,9 +342,6 @@ fn drain_file_index(
     i18n: &Rc<Localization>,
 ) {
     let changed = state.borrow_mut().file_index.poll_events();
-    // Always offer the pending snapshot: a live update may be waiting out the
-    // persistence throttle, and this is the only place it can be flushed.
-    persist_file_index(state);
     // The real-time watcher lost changes (its kernel buffer overflowed), so the
     // index can no longer be trusted without a reconcile: replay the journal
     // when one exists (it holds the same changes and is cheap), otherwise
@@ -359,6 +356,17 @@ fn drain_file_index(
                 eprintln!("file index: watcher lost changes; rebuilding the index");
                 launcher.file_index.request_build();
             }
+        }
+    }
+    // When a volume's journal can never be replayed again (it was recreated or
+    // wrapped), only a full rebuild can restore that volume's records; retrying
+    // the catch-up would loop forever because the cursor can never become
+    // usable again.
+    {
+        let mut launcher = state.borrow_mut();
+        if launcher.file_index.take_rebuild_request() {
+            eprintln!("file index: journal cannot be replayed; rebuilding the index");
+            launcher.file_index.request_build();
         }
     }
     update_tray_status(state, i18n);
@@ -446,18 +454,6 @@ fn update_tray_status(state: &Rc<RefCell<LauncherState>>, i18n: &Rc<Localization
         crate::tray::TrayStatus::Idle
     };
     item.update(status, i18n);
-}
-
-/// Write the pending snapshot, if the index produced one.
-fn persist_file_index(state: &Rc<RefCell<LauncherState>>) {
-    let mut index = state.borrow_mut();
-    let Some(snapshot) = index.file_index.take_pending_snapshot() else {
-        return;
-    };
-    let storage = index.storage.clone();
-    if let Err(error) = crate::file_index::store_snapshot(&storage, &snapshot) {
-        eprintln!("file index: failed to persist the snapshot: {error:#}");
-    }
 }
 
 /// Bridge native tray/hotkey events into the GPUI event loop. Runs only after

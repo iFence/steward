@@ -141,3 +141,20 @@ STEWARD_BENCH_RECORDS=3000000 cargo test -p steward-core-engine --release \
 
 > 说明：加速器在每个索引构建后于 worker 线程构建一次，USN/文件系统增量只会追加到 overflow，
 > 因此新文件仍可被搜到；下一次完整重建（helper 每次启动都会重建）后回收 overflow。
+
+### 文件索引常驻内存（1M 条，2026-10-03 内存修复后）
+
+release 构建、1,000,000 条合成记录（单层目录树）、`--ignored --nocapture` harness：
+
+| 结构 | 占用 | 备注 |
+|---|---|---|
+| arena（记录字节） | 64.1 MB | ≈64 B/条：24 B 头 + UTF-8 名字 + 20 B 元数据，4 B 对齐 |
+| 并行数组 | 27.7 MB | `offsets`/`lengths`/`parent`/`ids`/`name_index`/`removed`/`depths`，≈27 B/条 |
+| 3-gram 加速器 | 13.5 MB | ≈13.6 B/条，构建 871 ms（worker 线程） |
+| `id → record` 映射 | 0（常驻） | 只在 USN 批次内按需构建，批次结束即释放（全量 id 时约 19 B/条） |
+| **常驻合计** | **105.3 MB** | 加速器已构建；处理变更批次时临时再加约 20 MB |
+
+> 修复前每个 2 s 的 catch-up tick 都会 `FileDb::duplicate()` 整份深拷贝（约 92 MB + 批内 id
+> 映射），即使 journal 没有新记录也分配后立刻丢弃；现在 catch-up 原地更新，快照经 `zeroblob` +
+> 增量 BLOB 流式写入，都不再产生整份副本。验收目标：1M 条索引时应用常驻私有内存 ≤ 200 MB
+> （含 GPUI 基线），且空闲 60 s 内 RSS 无周期性锯齿。

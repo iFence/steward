@@ -15,9 +15,7 @@
 //! loop already polls channels for app scans, icons and plugins, so one more data
 //! source does not justify a second async runtime.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -53,16 +51,23 @@ pub(crate) struct BuildResult {
     pub(crate) session: Option<crate::file_index_helper::HelperSession>,
 }
 
-/// A finished catch-up pass: the updated index plus what the journal changed.
-type CatchUpOutput = (FileDb, usize, usize, usize, usize);
+/// What one USN catch-up pass applied to the index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReplayCounts {
+    pub(crate) replayed: usize,
+    pub(crate) created: usize,
+    pub(crate) removed: usize,
+    pub(crate) renamed: usize,
+}
 
 /// A finished index build or load.
 pub(crate) enum IndexEvent {
     /// Periodic progress while enumerating.
     Progress(IndexProgress),
-    /// The build finished; `snapshot` is ready to be persisted.
+    /// The build finished. The worker has already streamed the snapshot into
+    /// SQLite itself (see [`SnapshotWriter`]), so no index-sized payload
+    /// travels through this channel.
     Ready {
-        snapshot: Vec<u8>,
         records: usize,
         directories: usize,
         journal: bool,
@@ -71,9 +76,6 @@ pub(crate) enum IndexEvent {
     },
     /// A catch-up pass applied replayed journal changes.
     Updated {
-        /// `Some` when the write-behind interval elapsed and a fresh snapshot
-        /// was encoded; `None` for the common live-update path.
-        snapshot: Option<Vec<u8>>,
         records: usize,
         journal: bool,
         replayed: usize,
@@ -88,6 +90,10 @@ pub(crate) enum IndexEvent {
     /// The real-time watcher's change buffer overflowed: changes were lost, so
     /// the index must be reconciled (caught up or rebuilt).
     Reconcile,
+    /// The USN journal can no longer be replayed (recreated, wrapped, or a
+    /// cursor ahead of the journal): only a full rebuild can restore the index,
+    /// so catch-up must not be retried on this volume.
+    Rebuild,
 }
 
 /// A search reply, paired with the generation that asked for it. The generation
@@ -134,11 +140,11 @@ pub(crate) struct FileIndex {
     pub(crate) records: usize,
     /// Whether the current index carries a usable USN journal cursor.
     journal: bool,
-    /// A snapshot waiting to be written by the launcher's thread (the worker
-    /// holds no SQLite connection, so persistence stays on the UI side).
-    pending_snapshot: Option<Vec<u8>>,
     /// Set when the watcher lost changes and the index needs a reconcile.
     needs_reconcile: bool,
+    /// Set when a volume's journal can never be replayed again and the only fix
+    /// is a full rebuild.
+    needs_rebuild: bool,
     /// The last failure message, so a repeating one (an unreadable volume polled
     /// every couple of seconds) is logged once instead of on every tick.
     last_failure: Option<String>,
@@ -147,9 +153,9 @@ pub(crate) struct FileIndex {
 impl FileIndex {
     /// Start the worker, adopting `snapshot` when it decodes.
     ///
-    /// `storage` is opened on the calling thread only to read the snapshot;
-    /// persistence is driven from [`FileIndex::persist_snapshot`], which the
-    /// launcher calls from its own thread.
+    /// The snapshot is decoded on the calling thread; the worker owns the index
+    /// (and its own SQLite connection) from then on, so a rebuild or catch-up
+    /// never has to clone the index to persist it.
     pub(crate) fn start(snapshot: Option<Vec<u8>>, configured_roots: &[String]) -> Self {
         let (command_tx, command_rx) = crossbeam_channel::unbounded::<Command>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<IndexEvent>();
@@ -211,8 +217,8 @@ impl FileIndex {
             ready,
             records,
             journal,
-            pending_snapshot: None,
             needs_reconcile: false,
+            needs_rebuild: false,
             last_failure: None,
         }
     }
@@ -245,6 +251,10 @@ impl FileIndex {
         for extra in EXTRA_EXCLUSIONS {
             options = options.exclude_dir(extra);
         }
+        // The currently loaded index is the best available estimate of how many
+        // records the rebuild will produce, and pre-sizing the arena avoids
+        // repeatedly reallocating a multi-hundred-megabyte buffer.
+        options.records_hint = (self.records > 0).then_some(self.records);
         self.building = true;
         let _ = self.commands.send(Command::Build(options));
     }
@@ -275,7 +285,6 @@ impl FileIndex {
                     }
                 }
                 IndexEvent::Ready {
-                    snapshot,
                     records,
                     directories,
                     journal,
@@ -297,11 +306,8 @@ impl FileIndex {
                         covered.join(", "),
                         elapsed.as_secs_f32()
                     );
-                    // Keep the snapshot for the launcher to write.
-                    self.pending_snapshot = Some(snapshot);
                 }
                 IndexEvent::Updated {
-                    snapshot,
                     records,
                     journal,
                     replayed,
@@ -318,9 +324,6 @@ impl FileIndex {
                     eprintln!(
                         "file index: applied {replayed} changes (+{created} -{removed} ~{renamed})"
                     );
-                    if let Some(snapshot) = snapshot {
-                        self.pending_snapshot = Some(snapshot);
-                    }
                 }
                 IndexEvent::Failed(message) => {
                     self.building = false;
@@ -338,6 +341,10 @@ impl FileIndex {
                 IndexEvent::Reconcile => {
                     self.needs_reconcile = true;
                 }
+                IndexEvent::Rebuild => {
+                    self.building = false;
+                    self.needs_rebuild = true;
+                }
             }
         }
         changed
@@ -348,15 +355,9 @@ impl FileIndex {
         std::mem::take(&mut self.needs_reconcile)
     }
 
-    /// Take the snapshot waiting to be written, if any.
-    ///
-    /// The worker encodes it (it holds the index) and the launcher writes it (it
-    /// holds the SQLite connection), so this is the hand-off between them. Live
-    /// updates are throttled (see [`LIVE_PERSIST_INTERVAL`]): the newest
-    /// snapshot stays pending and is returned once the interval elapses, while
-    /// a build snapshot goes out at once.
-    pub(crate) fn take_pending_snapshot(&mut self) -> Option<Vec<u8>> {
-        self.pending_snapshot.take()
+    /// Take the "this volume's journal is dead, rebuild" flag, if set.
+    pub(crate) fn take_rebuild_request(&mut self) -> bool {
+        std::mem::take(&mut self.needs_rebuild)
     }
 
     /// Run `query` against the index, cancelling any search still in flight.
@@ -378,6 +379,56 @@ impl FileIndex {
                 cancel,
             })
             .is_ok()
+    }
+}
+
+/// Streams snapshots from the index worker into SQLite.
+///
+/// The worker owns the `FileDb` exclusively, so it is the only place that can
+/// encode a snapshot without copying the index. It opens its own WAL connection
+/// (lazily, on the first persist) and streams the encoding straight into the
+/// `settings_blob` row, so neither thread ever holds an index-sized `Vec`.
+struct SnapshotWriter {
+    storage: Option<steward_storage::Storage>,
+    /// Set when the database could not be opened; persistence is then skipped
+    /// for the rest of the session instead of retrying (and logging) on every
+    /// batch.
+    unavailable: bool,
+}
+
+impl SnapshotWriter {
+    fn new() -> Self {
+        Self {
+            storage: None,
+            unavailable: false,
+        }
+    }
+
+    /// Write `db` as the persisted snapshot, if persistence is available.
+    fn store(&mut self, db: &FileDb, truncated_names: usize) {
+        if self.unavailable {
+            return;
+        }
+        if self.storage.is_none() {
+            match steward_storage::Storage::open() {
+                Ok(storage) => self.storage = Some(storage),
+                Err(error) => {
+                    eprintln!("file index: cannot open the snapshot database: {error:#}");
+                    self.unavailable = true;
+                    return;
+                }
+            }
+        }
+        let storage = self.storage.as_ref().expect("opened just above");
+        let taken_at = unix_seconds();
+        let length = file_index::persist::encoded_len(db);
+        let result =
+            storage.set_setting_blob_streaming(file_index::persist::SETTING_KEY, length, |sink| {
+                file_index::persist::encode_to(db, truncated_names, taken_at, sink)
+            });
+        if let Err(error) = result {
+            eprintln!("file index: failed to persist the snapshot: {error:#}");
+        }
     }
 }
 
@@ -404,6 +455,8 @@ fn worker_loop(
     // write-behind: most batches mutate the index in place and skip the O(n)
     // snapshot encode entirely.
     let mut last_encode = Instant::now();
+    // Persistence: streams a snapshot straight into SQLite from this thread.
+    let mut writer = SnapshotWriter::new();
     // Live helper deltas, when the helper built the index. While this is set the
     // worker ignores its own watcher: the helper's USN stream is the single
     // source of truth, and two sources would duplicate every change.
@@ -424,6 +477,7 @@ fn worker_loop(
                     &mut pending,
                     MAX_PENDING_CHANGES,
                     &mut last_encode,
+                    &mut writer,
                 );
                 continue;
             }
@@ -457,15 +511,13 @@ fn worker_loop(
                         {
                             let _ = result.session;
                         }
-                        let snapshot =
-                            file_index::persist::encode(&built, truncated, unix_seconds());
                         let records = built.len();
                         let directories = built.dir_count();
                         let journal = has_journal(&built);
+                        writer.store(&built, truncated);
                         index = Some(built);
                         last_encode = Instant::now();
                         let _ = events.send(IndexEvent::Ready {
-                            snapshot,
                             records,
                             directories,
                             journal,
@@ -479,38 +531,38 @@ fn worker_loop(
                 }
             }
             Command::ReplayJournal => {
-                let Some(current) = index.as_ref() else {
+                let Some(current) = index.as_mut() else {
                     let _ = events.send(IndexEvent::Failed("no index to update".into()));
                     continue;
                 };
-                match replay_journal(current) {
-                    Ok(Some((updated, replayed, created, removed, renamed))) => {
-                        let records = updated.len();
-                        let journal = has_journal(&updated);
-                        let snapshot = if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
-                            last_encode = Instant::now();
-                            Some(file_index::persist::encode(&updated, 0, unix_seconds()))
-                        } else {
-                            None
-                        };
-                        index = Some(updated);
-                        let _ = events.send(IndexEvent::Updated {
-                            snapshot,
-                            records,
-                            journal,
-                            replayed,
-                            created,
-                            removed,
-                            renamed,
-                        });
+                let report = replay_journal(current);
+                // The `id → record` map only exists for the batch; release it
+                // so it does not stay resident between catch-up passes.
+                current.clear_key_map();
+                if let Some(counts) = report.counts {
+                    if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
+                        last_encode = Instant::now();
+                        writer.store(current, 0);
                     }
-                    Ok(None) => {
+                    let _ = events.send(IndexEvent::Updated {
+                        records: current.len(),
+                        journal: has_journal(current),
+                        replayed: counts.replayed,
+                        created: counts.created,
+                        removed: counts.removed,
+                        renamed: counts.renamed,
+                    });
+                }
+                if report.needs_rebuild {
+                    eprintln!("file index: a volume's journal cannot be replayed; rebuilding");
+                    let _ = events.send(IndexEvent::Rebuild);
+                } else if report.counts.is_none() {
+                    if report.errors.is_empty() {
                         // Nothing new on any volume (or no journal at all). Not
                         // an error; just clear the busy flag.
                         let _ = events.send(IndexEvent::Idle);
-                    }
-                    Err(error) => {
-                        let _ = events.send(IndexEvent::Failed(error));
+                    } else {
+                        let _ = events.send(IndexEvent::Failed(report.errors.join("; ")));
                     }
                 }
             }
@@ -554,6 +606,7 @@ fn worker_loop(
             &mut pending,
             MAX_PENDING_CHANGES,
             &mut last_encode,
+            &mut writer,
         );
     }
 }
@@ -575,14 +628,23 @@ fn pump_sources(
     pending: &mut Vec<FsChange>,
     max_pending: usize,
     last_encode: &mut Instant,
+    writer: &mut SnapshotWriter,
 ) {
     if let Some(receiver) = helper_rx.as_ref() {
-        if drain_helper(index, receiver, events, last_encode) {
+        if drain_helper(index, receiver, events, last_encode, writer) {
             *helper_rx = None;
             eprintln!("file index: helper session ended; resuming the local watcher");
         }
     } else {
-        drain_watcher(watcher, index, events, pending, max_pending, last_encode);
+        drain_watcher(
+            watcher,
+            index,
+            events,
+            pending,
+            max_pending,
+            last_encode,
+            writer,
+        );
     }
 }
 
@@ -597,6 +659,7 @@ fn drain_helper(
     receiver: &crossbeam_channel::Receiver<steward_index_helper::protocol::Frame>,
     events: &crossbeam_channel::Sender<IndexEvent>,
     last_encode: &mut Instant,
+    writer: &mut SnapshotWriter,
 ) -> bool {
     use steward_index_helper::protocol::Frame;
 
@@ -629,14 +692,11 @@ fn drain_helper(
     if outcome.is_empty() {
         return ended;
     }
-    let snapshot = if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
+    if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
         *last_encode = Instant::now();
-        Some(file_index::persist::encode(index, 0, unix_seconds()))
-    } else {
-        None
-    };
+        writer.store(index, 0);
+    }
     let _ = events.send(IndexEvent::Updated {
-        snapshot,
         records: index.len(),
         journal: has_journal(index),
         replayed: changes.len(),
@@ -680,6 +740,7 @@ fn drain_watcher(
     pending: &mut Vec<FsChange>,
     max_pending: usize,
     last_encode: &mut Instant,
+    writer: &mut SnapshotWriter,
 ) {
     let mut overflow = false;
     while let Some(batch) = watcher.try_recv() {
@@ -707,17 +768,14 @@ fn drain_watcher(
     if outcome.is_empty() {
         return;
     }
-    // Write-behind: encode at most once per interval. A busy disk (a build, an
+    // Write-behind: persist at most once per interval. A busy disk (a build, an
     // unzip) produces many batches; each one still updates the searchable index
     // immediately, only the SQLite snapshot is deferred.
-    let snapshot = if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
+    if last_encode.elapsed() >= LIVE_PERSIST_INTERVAL {
         *last_encode = Instant::now();
-        Some(file_index::persist::encode(index, 0, unix_seconds()))
-    } else {
-        None
-    };
+        writer.store(index, 0);
+    }
     let _ = events.send(IndexEvent::Updated {
-        snapshot,
         records: index.len(),
         journal: has_journal(index),
         replayed: changes.len(),
@@ -772,7 +830,13 @@ fn build_index(
             }
         }
     }
-    let mut builder = FileDbBuilder::new();
+    // Pre-size the builder from the record count of the index being replaced
+    // (when one is loaded): a multi-million-record build otherwise doubles a
+    // multi-hundred-megabyte arena several times on the way up.
+    let mut builder = match options.records_hint {
+        Some(expected) => FileDbBuilder::with_capacity(expected),
+        None => FileDbBuilder::new(),
+    };
     let mut backends = Vec::new();
     let mut walk_roots: Vec<PathBuf> = Vec::new();
 
@@ -894,15 +958,46 @@ fn build_volume_from_mft(
     Ok(records)
 }
 
-/// Replay the USN journal of **every** indexed volume into `db`.
+/// What one catch-up pass did, across every volume.
+#[derive(Debug, Default)]
+struct ReplayReport {
+    /// `Some` when at least one volume applied journal records.
+    counts: Option<ReplayCounts>,
+    /// A volume's journal can never be replayed again; only a rebuild fixes it.
+    needs_rebuild: bool,
+    /// Per-volume failures. Only reported when no volume applied anything.
+    errors: Vec<String>,
+}
+
+/// Why one volume's journal could not be replayed.
+#[cfg(target_os = "windows")]
+enum VolumeReplayError {
+    /// The journal was recreated, wrapped, or the cursor is ahead of it, so the
+    /// volume has to be rebuilt rather than caught up.
+    NeedsRebuild(String),
+    /// A transient failure (volume locked, unreadable, no root record).
+    Other(String),
+}
+
+#[cfg(target_os = "windows")]
+impl VolumeReplayError {
+    fn into_message(self) -> String {
+        match self {
+            VolumeReplayError::NeedsRebuild(message) | VolumeReplayError::Other(message) => message,
+        }
+    }
+}
+
+/// Replay the USN journal of **every** indexed volume into `db`, in place.
 ///
 /// Each volume keeps its own cursor, so a multi-disk index catches up each one
 /// independently: a locked or disconnected volume is reported and skipped while
-/// the others still advance. Returns `None` when there is nothing to replay on
-/// this platform or no journal cursor exists (a walk-built index), and an error
-/// string when no volume could be read at all.
+/// the others still advance. The index is mutated directly instead of being
+/// cloned first: the worker owns it exclusively, and a clone would double the
+/// resident footprint on every two-second catch-up tick even when the journal
+/// turned out to be empty.
 #[cfg(target_os = "windows")]
-fn replay_journal(db: &FileDb) -> Result<Option<CatchUpOutput>, String> {
+fn replay_journal(db: &mut FileDb) -> ReplayReport {
     let mut cursors: Vec<(u8, JournalState)> = db
         .journals()
         .iter()
@@ -911,37 +1006,31 @@ fn replay_journal(db: &FileDb) -> Result<Option<CatchUpOutput>, String> {
         .collect();
     cursors.sort_by_key(|(letter, _)| *letter);
     if cursors.is_empty() {
-        return Ok(None);
+        return ReplayReport::default();
     }
 
-    let mut updated = db.duplicate();
-    let mut replayed = 0usize;
-    let mut created = 0usize;
-    let mut removed = 0usize;
-    let mut renamed = 0usize;
+    let mut counts = ReplayCounts::default();
     let mut any = false;
-    let mut errors: Vec<String> = Vec::new();
+    let mut report = ReplayReport::default();
     for (letter, stored) in cursors {
-        match replay_one_volume(&mut updated, letter, stored) {
+        match replay_one_volume(db, letter, stored) {
             Ok(Some((volume_replayed, outcome))) => {
                 any = true;
-                replayed += volume_replayed;
-                created += outcome.created;
-                removed += outcome.removed;
-                renamed += outcome.renamed;
+                counts.replayed += volume_replayed;
+                counts.created += outcome.created;
+                counts.removed += outcome.removed;
+                counts.renamed += outcome.renamed;
             }
             Ok(None) => {}
-            Err(error) => errors.push(error),
+            Err(VolumeReplayError::NeedsRebuild(message)) => {
+                report.needs_rebuild = true;
+                report.errors.push(message);
+            }
+            Err(error) => report.errors.push(error.into_message()),
         }
     }
-    if any {
-        return Ok(Some((updated, replayed, created, removed, renamed)));
-    }
-    if errors.is_empty() {
-        Ok(None)
-    } else {
-        Err(errors.join("; "))
-    }
+    report.counts = any.then_some(counts);
+    report
 }
 
 /// Replay one volume's journal into `db`, advancing that volume's cursor.
@@ -953,27 +1042,33 @@ fn replay_one_volume(
     db: &mut FileDb,
     letter: u8,
     stored: JournalState,
-) -> Result<Option<(usize, file_index::UsnOutcome)>, String> {
-    let volume = file_index::RawVolume::open(letter)
-        .map_err(|error| format!("cannot open {}: for USN catch-up ({error})", letter as char))?;
-    let live = volume.query_journal().map_err(|error| error.to_string())?;
+) -> Result<Option<(usize, file_index::UsnOutcome)>, VolumeReplayError> {
+    let volume = file_index::RawVolume::open(letter).map_err(|error| {
+        VolumeReplayError::Other(format!(
+            "cannot open {}: for USN catch-up ({error})",
+            letter as char
+        ))
+    })?;
+    let live = volume
+        .query_journal()
+        .map_err(|error| VolumeReplayError::Other(error.to_string()))?;
     if !file_index::cursor_is_usable(Some(stored), live) {
-        return Err(format!(
+        return Err(VolumeReplayError::NeedsRebuild(format!(
             "the USN journal of {}: changed; a rebuild is required",
             letter as char
-        ));
+        )));
     }
     let mut records = Vec::new();
     let read = volume
         .read_usn(stored.next_usn, live.journal_id, |record| {
             records.push(record)
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| VolumeReplayError::Other(error.to_string()))?;
     let Some(root_index) = file_index::volume_root(db, letter) else {
-        return Err(format!(
+        return Err(VolumeReplayError::Other(format!(
             "no root record for {}: in the index",
             letter as char
-        ));
+        )));
     };
     let outcome = if records.is_empty() {
         file_index::UsnOutcome::default()
@@ -999,8 +1094,8 @@ fn replay_one_volume(
 
 /// Non-Windows builds have no USN journal to replay.
 #[cfg(not(target_os = "windows"))]
-fn replay_journal(_db: &FileDb) -> Result<Option<CatchUpOutput>, String> {
-    Ok(None)
+fn replay_journal(_db: &mut FileDb) -> ReplayReport {
+    ReplayReport::default()
 }
 
 /// Bridges the directory walker to the index builder.
@@ -1098,16 +1193,6 @@ pub(crate) fn load_snapshot(storage: &steward_storage::Storage) -> Option<Vec<u8
     None
 }
 
-/// Persist `snapshot` as a BLOB in the shared database.
-pub(crate) fn store_snapshot(
-    storage: &Rc<RefCell<steward_storage::Storage>>,
-    snapshot: &[u8],
-) -> anyhow::Result<()> {
-    storage
-        .borrow()
-        .set_setting_blob(file_index::persist::SETTING_KEY, snapshot)
-}
-
 #[cfg(all(test, target_os = "windows"))]
 mod helper_delta_tests {
     use super::*;
@@ -1162,12 +1247,19 @@ mod helper_delta_tests {
             .unwrap();
         let (events, published) = crossbeam_channel::unbounded();
         let mut last_encode = Instant::now();
+        // Persistence is disabled in this test: it exercises the in-place
+        // apply, not the SQLite write.
+        let mut writer = SnapshotWriter {
+            storage: None,
+            unavailable: true,
+        };
 
         assert!(!drain_helper(
             &mut index,
             &receiver,
             &events,
-            &mut last_encode
+            &mut last_encode,
+            &mut writer,
         ));
         let hits = file_index::search(
             index.as_ref().unwrap(),
@@ -1188,7 +1280,8 @@ mod helper_delta_tests {
             &mut index,
             &receiver,
             &events,
-            &mut last_encode
+            &mut last_encode,
+            &mut writer,
         ));
 
         std::fs::remove_dir_all(&root).unwrap();

@@ -51,7 +51,7 @@ fn a_streamed_walk_builds_a_searchable_index() {
     client
         .send_request(&StreamRequest::new([root.to_string_lossy().into_owned()]))
         .unwrap();
-    let (index, backends, _truncated) = client::read_index(&mut client).unwrap();
+    let (index, backends, _truncated) = client::read_index(&mut client, None).unwrap();
 
     assert_eq!(backends.len(), 1);
     assert_eq!(backends[0].1, IndexBackend::Walk);

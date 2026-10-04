@@ -50,10 +50,17 @@ impl Client {
 
 /// Consume a stream into a fresh index: `(index, backends, truncated names)`.
 ///
+/// `records_hint` is the client's expectation of the stream's size (the count
+/// of the index being replaced); it only pre-sizes the builder so a
+/// multi-million-record arena is not grown by repeated doubling.
+///
 /// This is the client half the app runs; keeping it here means the pipe test can
 /// cover the exact materialisation path instead of only the framing.
-pub fn read_index(client: &mut Client) -> Result<BuiltIndex, String> {
-    let mut builder = FileDbBuilder::new();
+pub fn read_index(client: &mut Client, records_hint: Option<u64>) -> Result<BuiltIndex, String> {
+    let mut builder = match records_hint.and_then(|hint| usize::try_from(hint).ok()) {
+        Some(expected) if expected > 0 => FileDbBuilder::with_capacity(expected),
+        _ => FileDbBuilder::new(),
+    };
     let mut backends: Vec<(PathBuf, IndexBackend)> = Vec::new();
     loop {
         match client.read_frame() {

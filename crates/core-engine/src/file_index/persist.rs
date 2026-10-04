@@ -19,6 +19,7 @@
 //!   is discarded so a long-dormant index is not trusted as current.
 
 use std::collections::HashMap;
+use std::io::{self, Write};
 
 use super::db::{
     FileDb, FileDbBuilder, IndexError, JournalState, BLOCKS, FORMAT_VERSION, MAGIC, MAX_NAME_BYTES,
@@ -38,13 +39,34 @@ pub const SNAPSHOT_VERSION: u32 = 2;
 /// count, truncated-name count and the arena length.
 const HEADER_BYTES: usize = 4 + 4 + 8 + 8 + 8 + 8;
 
-/// Encode an index into its compact binary snapshot.
+/// Bytes [`encode_to`] writes for `db` (the fixed header, the arena, the
+/// parallel arrays and the journal cursors).
+///
+/// Callers that stream the snapshot into a fixed-size destination (the
+/// `zeroblob` + incremental BLOB write in `steward-storage`) need the exact
+/// length up front; keeping the arithmetic here keeps it next to the encoder
+/// that must match it.
+pub fn encoded_len(db: &FileDb) -> usize {
+    let count = db.offsets.len();
+    HEADER_BYTES
+        + db.data.len()
+        + count * (4 + 2 + 4 + 8 + 4 + 1 + 4)
+        + 4
+        + db.journals().len() * (1 + 8 + 8)
+}
+
+/// Encode an index into its compact binary snapshot, written to `sink`.
 ///
 /// The layout is positional and little-endian (see the module docs). It carries
 /// the same data the in-memory index holds, at its native width, so decoding is
 /// a bounds-checked `try_into` per element instead of a JSON parse plus a base64
 /// decode.
-pub fn encode(db: &FileDb, truncated_names: usize, taken_at: u64) -> Vec<u8> {
+pub fn encode_to<W: Write + ?Sized>(
+    db: &FileDb,
+    truncated_names: usize,
+    taken_at: u64,
+    sink: &mut W,
+) -> io::Result<()> {
     let count = db.offsets.len();
     let mut journals: Vec<(u8, JournalState)> = db
         .journals()
@@ -55,46 +77,74 @@ pub fn encode(db: &FileDb, truncated_names: usize, taken_at: u64) -> Vec<u8> {
     // produce equal snapshots.
     journals.sort_by_key(|(drive, _)| *drive);
 
-    let mut out = Vec::with_capacity(
-        HEADER_BYTES
-            + db.data.len()
-            + count * (4 + 2 + 4 + 8 + 4 + 1 + 4)
-            + 4
-            + journals.len() * (1 + 8 + 8),
-    );
-    out.extend_from_slice(&MAGIC.to_le_bytes());
-    out.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
-    out.extend_from_slice(&taken_at.to_le_bytes());
-    out.extend_from_slice(&(count as u64).to_le_bytes());
-    out.extend_from_slice(&(truncated_names as u64).to_le_bytes());
-    out.extend_from_slice(&(db.data.len() as u64).to_le_bytes());
-    out.extend_from_slice(&db.data);
-    for value in &db.offsets {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in &db.lengths {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in &db.parent {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in &db.ids {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    for value in &db.name_index {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    out.extend_from_slice(&db.removed);
-    for value in &db.depths {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    out.extend_from_slice(&(journals.len() as u32).to_le_bytes());
+    sink.write_all(&MAGIC.to_le_bytes())?;
+    sink.write_all(&SNAPSHOT_VERSION.to_le_bytes())?;
+    sink.write_all(&taken_at.to_le_bytes())?;
+    sink.write_all(&(count as u64).to_le_bytes())?;
+    sink.write_all(&(truncated_names as u64).to_le_bytes())?;
+    sink.write_all(&(db.data.len() as u64).to_le_bytes())?;
+    sink.write_all(&db.data)?;
+    write_u32s(sink, &db.offsets)?;
+    write_u16s(sink, &db.lengths)?;
+    write_u32s(sink, &db.parent)?;
+    write_u64s(sink, &db.ids)?;
+    write_u32s(sink, &db.name_index)?;
+    sink.write_all(&db.removed)?;
+    write_u32s(sink, &db.depths)?;
+    sink.write_all(&(journals.len() as u32).to_le_bytes())?;
     for (drive, state) in journals {
-        out.push(drive);
-        out.extend_from_slice(&state.journal_id.to_le_bytes());
-        out.extend_from_slice(&state.next_usn.to_le_bytes());
+        sink.write_all(&[drive])?;
+        sink.write_all(&state.journal_id.to_le_bytes())?;
+        sink.write_all(&state.next_usn.to_le_bytes())?;
     }
+    Ok(())
+}
+
+/// Encode a snapshot into a fresh buffer (tests and in-memory callers).
+pub fn encode(db: &FileDb, truncated_names: usize, taken_at: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(encoded_len(db));
+    encode_to(db, truncated_names, taken_at, &mut out).expect("writing into a Vec cannot fail");
     out
+}
+
+/// Elements converted per scratch buffer, so a multi-million-record array is
+/// never materialized a second time just to write it.
+const WRITE_CHUNK: usize = 8192;
+
+fn write_u16s<W: Write + ?Sized>(sink: &mut W, values: &[u16]) -> io::Result<()> {
+    let mut scratch = Vec::with_capacity(WRITE_CHUNK.min(values.len().max(1)) * 2);
+    for chunk in values.chunks(WRITE_CHUNK) {
+        scratch.clear();
+        for value in chunk {
+            scratch.extend_from_slice(&value.to_le_bytes());
+        }
+        sink.write_all(&scratch)?;
+    }
+    Ok(())
+}
+
+fn write_u32s<W: Write + ?Sized>(sink: &mut W, values: &[u32]) -> io::Result<()> {
+    let mut scratch = Vec::with_capacity(WRITE_CHUNK.min(values.len().max(1)) * 4);
+    for chunk in values.chunks(WRITE_CHUNK) {
+        scratch.clear();
+        for value in chunk {
+            scratch.extend_from_slice(&value.to_le_bytes());
+        }
+        sink.write_all(&scratch)?;
+    }
+    Ok(())
+}
+
+fn write_u64s<W: Write + ?Sized>(sink: &mut W, values: &[u64]) -> io::Result<()> {
+    let mut scratch = Vec::with_capacity(WRITE_CHUNK.min(values.len().max(1)) * 8);
+    for chunk in values.chunks(WRITE_CHUNK) {
+        scratch.clear();
+        for value in chunk {
+            scratch.extend_from_slice(&value.to_le_bytes());
+        }
+        sink.write_all(&scratch)?;
+    }
+    Ok(())
 }
 
 /// Decode a binary snapshot, rejecting anything that fails the invariants.
@@ -444,12 +494,40 @@ mod tests {
         ));
     }
 
+    /// The streamed encoder has to produce exactly the buffered bytes (and
+    /// `encoded_len` has to match), whatever chunk sizes the destination
+    /// happens to accept. `zeroblob` + incremental BLOB I/O relies on both.
+    #[test]
+    fn the_streamed_encoding_matches_the_buffered_one() {
+        let (db, truncated) = sample();
+        let expected = encode(&db, truncated, 1_000);
+        assert_eq!(encoded_len(&db), expected.len());
+
+        /// Accepts at most 7 bytes per `write`, forcing `write_all` to loop and
+        /// exercising every partial-write path in the encoder.
+        struct Trickle(Vec<u8>);
+        impl std::io::Write for Trickle {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let take = buf.len().min(7);
+                self.0.extend_from_slice(&buf[..take]);
+                Ok(take)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut streamed = Trickle(Vec::new());
+        encode_to(&db, truncated, 1_000, &mut streamed).expect("a Vec never fails");
+        assert_eq!(streamed.0, expected);
+    }
+
     /// A snapshot carries record ids but not the derived `id → record` map, so
-    /// a restored index has to re-derive it — otherwise USN catch-up silently
-    /// discards every change that names a pre-existing file.
+    /// a USN batch has to open a lookup session before it can resolve a change
+    /// that names a pre-existing file.
     ///
     /// This is the cold-start path: the app decodes the snapshot, then replays
-    /// the journal onto a duplicate of it (`crates/app/src/file_index.rs`).
+    /// the journal over it (`crates/app/src/file_index.rs`).
     #[cfg(target_os = "windows")]
     #[test]
     fn a_restored_index_can_still_apply_usn_records() {
@@ -468,9 +546,12 @@ mod tests {
         let blob = encode(&db, truncated, 1_000);
         let mut db = decode(&blob, 1_000).expect("snapshot decodes");
 
-        // The map is derived, not persisted, so it must be back after decoding.
-        assert_eq!(db.index_of_id(3), Some(2), "id → record map was rebuilt");
+        // The map is derived state and stays released after decoding; the USN
+        // batch below is what opens it.
+        assert_eq!(db.index_of_id(3), None, "no lookup session yet");
         assert_eq!(db.path_of(2).to_string_lossy(), "C:\\Users\\a.txt");
+        db.rebuild_key_map();
+        assert_eq!(db.index_of_id(3), Some(2), "id → record map was rebuilt");
 
         let root = volume_root(&db, b'C').expect("volume root survives the snapshot");
         // `FILE_ATTRIBUTE_DIRECTORY`: a rename record for a directory has to say

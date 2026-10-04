@@ -28,4 +28,7 @@ Steward's first release: an instant, low-memory launcher for Windows with a proc
 - **Native Windows polish**: per-monitor DPI awareness, dark native tray menu and title bar, a borderless draggable launcher bar, and no console window in debug or release builds.
 - **Fast by design**: GPUI, the app index and the plugin metadata cache load at startup so summoning the bar never waits on a scan; heavier capabilities stay behind the plugin process boundary.
 
+### 🐛 Bug Fixes
+- **Stable memory while the file index runs**: the full-disk index no longer copies itself on every background refresh — catch-up updates it in place, the index-to-file-id map is only built while a change batch needs it, and snapshots stream straight into the database. A machine with a million files no longer sees large periodic memory spikes after startup.
+
 ---

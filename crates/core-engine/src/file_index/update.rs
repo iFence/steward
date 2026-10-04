@@ -61,6 +61,17 @@ pub fn apply_usn_records(db: &mut FileDb, volume_root: u32, records: &[UsnRecord
         seen: records.len(),
         ..UsnOutcome::default()
     };
+    if records.is_empty() {
+        return outcome;
+    }
+    // USN records identify files by reference number, so the `id → record` map
+    // has to exist for this batch. It is derived state (a snapshot does not
+    // carry it, and the index does not keep it resident), so open the lookup
+    // session here; the caller releases it with `clear_key_map` once the whole
+    // catch-up pass is done.
+    if !db.key_lookup {
+        db.rebuild_key_map();
+    }
     // Renames arrive as two records (old name, then new name); pair them.
     // File ids whose "rename old name" half has arrived and whose paired
     // "rename new name" has not yet. Only the id matters: the
@@ -485,6 +496,7 @@ mod tests {
     use super::*;
     use crate::file_index::db::FileDbBuilder;
     use crate::file_index::ntfs::UsnRecord;
+    use crate::file_index::{search, SearchOptions};
     use std::path::PathBuf;
     use windows::Win32::System::Ioctl::{
         USN_REASON_DATA_EXTEND, USN_REASON_FILE_CREATE, USN_REASON_FILE_DELETE,
@@ -610,6 +622,7 @@ mod tests {
         builder.add_entry(&EntryInfo::dir("to").with_id(9, 5));
         builder.add_entry(&EntryInfo::file("a.txt").with_id(7, 6));
         let mut db = builder.finalize();
+        db.rebuild_key_map();
         assert_eq!(
             db.path_of(db.index_of_id(7).expect("indexed"))
                 .to_string_lossy(),
@@ -668,6 +681,56 @@ mod tests {
         let index = db.index_of_id(7).expect("indexed");
         assert_eq!(db.entry(index).expect("live").size, Some(10));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// A catch-up batch mutates the index in place (the worker owns it), so the
+    /// 3-gram accelerator has to survive and learn the new records through its
+    /// overflow; before this, the app cloned the index and dropped the
+    /// accelerator on every catch-up tick.
+    #[test]
+    fn a_usn_batch_keeps_the_name_index_usable() {
+        let (mut db, root) = populated();
+        assert!(
+            db.build_name_index_with_min(1),
+            "the test's tiny index still builds an accelerator"
+        );
+
+        let outcome = apply_usn_records(
+            &mut db,
+            root,
+            &[record(8, 6, "quarterly-report.txt", USN_REASON_FILE_CREATE)],
+        );
+        assert_eq!(outcome.created, 1);
+        assert!(
+            db.name_index().is_some(),
+            "an in-place batch must not drop the accelerator"
+        );
+
+        // "report" is answered from the accelerator's postings + overflow, so
+        // this fails if the new record never reached it.
+        let options = SearchOptions::with_limit(5);
+        let hits = search(&db, "report", &options);
+        assert_eq!(hits.hits.len(), 1);
+        assert_eq!(hits.hits[0].name, "quarterly-report.txt");
+    }
+
+    /// The common catch-up tick has nothing to replay, and it must stay free:
+    /// no lookup session, no index change. This is the tick that used to clone
+    /// the whole index every two seconds.
+    #[test]
+    fn an_empty_batch_changes_nothing() {
+        let (mut db, root) = populated();
+        assert!(db.build_name_index_with_min(1));
+        let records = db.len();
+
+        let outcome = apply_usn_records(&mut db, root, &[]);
+        assert!(outcome.is_empty());
+        assert_eq!(db.len(), records);
+        assert_eq!(db.name_index().unwrap().records(), records);
+        assert!(
+            db.key_map.is_empty(),
+            "an empty batch must not build the derived id map"
+        );
     }
 
     #[test]

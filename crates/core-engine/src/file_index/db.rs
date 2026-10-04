@@ -208,8 +208,17 @@ pub struct FileDb {
     pub(crate) live: usize,
     pub(crate) dirs: usize,
     pub(crate) max_depth: u32,
-    /// `file id → record index`, kept for incremental (USN) updates.
+    /// `file id → record index`, derived state for incremental (USN) updates.
+    ///
+    /// This map is *not* resident by default: it is derived on demand from
+    /// `ids` when a USN batch needs it and released again afterwards (see
+    /// [`FileDb::rebuild_key_map`] / [`FileDb::clear_key_map`]). Every MFT
+    /// record carries a file id, so keeping the map alive would cost roughly
+    /// 20 bytes per record on top of an index that already stores `ids`.
     pub(crate) key_map: HashMap<u64, u32>,
+    /// Whether [`FileDb::key_map`] currently reflects `ids`. `false` means the
+    /// map was released (or never built); `index_of_id` then returns `None`.
+    pub(crate) key_lookup: bool,
     pub(crate) journals: HashMap<u8, JournalState>,
     /// Optional 3-gram accelerator over names. Derived state: built on demand
     /// by the app after a build, never persisted.
@@ -234,6 +243,7 @@ impl FileDb {
             dirs: 0,
             max_depth: 1,
             key_map: HashMap::new(),
+            key_lookup: false,
             journals: HashMap::new(),
             trigram_index: None,
         }
@@ -256,6 +266,30 @@ impl FileDb {
     /// Bytes held by the record arena (the dominant memory cost).
     pub fn arena_bytes(&self) -> usize {
         self.data.capacity()
+    }
+
+    /// Approximate resident bytes of every structure the index owns: the
+    /// arena, the parallel arrays, the derived id map (present only while a
+    /// USN batch holds one) and the 3-gram accelerator.
+    ///
+    /// Used by the scale benchmark and the memory budget in
+    /// `docs/benchmarks.md`; it is deliberately an estimate (capacity plus a
+    /// fixed per-slot width), not an allocator measurement.
+    pub fn resident_bytes(&self) -> usize {
+        self.data.capacity()
+            + self.offsets.capacity() * std::mem::size_of::<u32>()
+            + self.lengths.capacity() * std::mem::size_of::<u16>()
+            + self.parent.capacity() * std::mem::size_of::<u32>()
+            + self.ids.capacity() * std::mem::size_of::<u64>()
+            + self.name_index.capacity() * std::mem::size_of::<u32>()
+            + self.blocks.capacity() * std::mem::size_of::<u32>()
+            + self.removed.capacity()
+            + self.depths.capacity() * std::mem::size_of::<u32>()
+            + key_map_bytes(&self.key_map)
+            + self
+                .trigram_index
+                .as_ref()
+                .map_or(0, NameIndex::approx_bytes)
     }
 
     /// Number of search blocks.
@@ -514,23 +548,40 @@ impl FileDb {
 
     /// Record index for a file reference number, via the `id → record` map.
     ///
-    /// The map is derived, never persisted: it is built incrementally as
-    /// records are inserted and re-derived by [`Self::rebuild_key_map`] when an
-    /// index is restored from a snapshot ([`Self::from_parts`]).
+    /// The map is derived state and is released by default: call
+    /// [`Self::rebuild_key_map`] to open a lookup session (what a USN batch
+    /// does) and [`Self::clear_key_map`] to release it. Without a session every
+    /// id looks unknown, which is why a decoded snapshot cannot resolve USN
+    /// records until the batch that needs them opens one.
     pub fn index_of_id(&self, id: u64) -> Option<u32> {
         self.key_map.get(&id).copied()
     }
 
-    /// Re-derive the `id → record` map from the record ids. Called by
-    /// [`Self::from_parts`], because a snapshot carries ids but not the map.
+    /// Open an `id → record` lookup session: re-derive the map from `ids` and
+    /// remember that it is valid.
+    ///
+    /// A snapshot carries ids but not the map, so every USN batch starts with
+    /// this. The caller is expected to call [`Self::clear_key_map`] when the
+    /// batch (or the whole catch-up pass) is done, which returns the memory to
+    /// the allocator instead of keeping a second per-record array alive for
+    /// the process lifetime.
     pub fn rebuild_key_map(&mut self) {
-        self.key_map.clear();
-        self.key_map.reserve(self.ids.len() / 4);
+        self.key_map = HashMap::with_capacity(self.ids.len());
         for (index, id) in self.ids.iter().enumerate() {
             if *id != NO_ID && self.removed[index] == 0 {
                 self.key_map.insert(*id, index as u32);
             }
         }
+        self.key_lookup = true;
+    }
+
+    /// Release the `id → record` map built by [`Self::rebuild_key_map`].
+    ///
+    /// Dropping the table instead of clearing it is what actually returns the
+    /// memory to the allocator (a `HashMap` keeps its capacity across `clear`).
+    pub fn clear_key_map(&mut self) {
+        self.key_map = HashMap::new();
+        self.key_lookup = false;
     }
 
     /// Append a record under an existing directory, as USN-style incremental
@@ -799,17 +850,15 @@ impl FileDb {
             live,
             dirs,
             max_depth,
-            // Filled in by `rebuild_key_map` below: `key_map` is derived state
-            // and is deliberately not persisted (see `persist::encode`), so
-            // every restore has to re-derive it. Leaving it empty here made
-            // restored indexes silently un-maintainable — `index_of_id` returns
-            // `None` for every pre-existing file, so `apply_usn_records` counted
-            // each delete/rename/metadata change as `skipped` and dropped it.
+            // Derived state, deliberately not persisted (see `persist::encode`)
+            // and not rebuilt here either: a snapshot restore is hot (cold
+            // start) and `apply_usn_records` opens the lookup session it needs,
+            // so building a second per-record table would only cost memory.
             key_map: HashMap::new(),
+            key_lookup: false,
             journals,
             trigram_index: None,
         };
-        db.rebuild_key_map();
         // `grouped` is derived, not persisted: the snapshot on disk may predate
         // the parent-grouped order, so normalise it once here.
         db.grouped = 0;
@@ -1061,12 +1110,9 @@ impl FileDbBuilder {
                 remap[parent as usize]
             };
         }
-        for (id, index) in std::mem::take(&mut self.key_map) {
-            let mapped = remap.get(index as usize).copied().unwrap_or(ROOT_PARENT);
-            if mapped != ROOT_PARENT && id != NO_ID {
-                db.key_map.insert(id, mapped);
-            }
-        }
+        // The builder's `id → record` map is dropped with the builder: the
+        // finalized index starts without one, and `apply_usn_records` re-derives
+        // it (remapped to the compacted slots) when a USN batch needs it.
         db.removed = vec![0; db.offsets.len()];
         db.live = db.offsets.len();
         // The arena moves into the index here: the pruning passes above read
@@ -1295,32 +1341,12 @@ impl FileDb {
     pub fn name_index(&self) -> Option<&NameIndex> {
         self.trigram_index.as_ref()
     }
+}
 
-    /// An independent copy of the index.
-    ///
-    /// The persistence path uses this so a snapshot can be encoded and written
-    /// while the search workers keep reading the live index through their
-    /// `Arc<FileDb>` clones.
-    pub fn duplicate(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            offsets: self.offsets.clone(),
-            lengths: self.lengths.clone(),
-            parent: self.parent.clone(),
-            ids: self.ids.clone(),
-            name_index: self.name_index.clone(),
-            grouped: self.grouped,
-            blocks: self.blocks.clone(),
-            removed: self.removed.clone(),
-            depths: self.depths.clone(),
-            live: self.live,
-            dirs: self.dirs,
-            max_depth: self.max_depth,
-            key_map: self.key_map.clone(),
-            journals: self.journals.clone(),
-            trigram_index: None,
-        }
-    }
+/// Approximate bytes a `HashMap<u64, u32>` occupies: a 16-byte key/value slot
+/// per bucket plus one control byte, at hashbrown's ~7/8 load factor.
+fn key_map_bytes(map: &HashMap<u64, u32>) -> usize {
+    map.capacity().saturating_mul(17)
 }
 
 /// Convert a Windows `FILETIME` (100 ns ticks since 1601) to the stored mtime.
@@ -1588,10 +1614,16 @@ mod tests {
 
     #[test]
     fn key_map_resolves_file_ids() {
-        let (db, file) = one_file();
+        let (mut db, file) = one_file();
+        // The map is derived state: a freshly finalized index does not carry
+        // one until a USN batch opens a lookup session.
+        assert_eq!(db.index_of_id(102), None);
+        db.rebuild_key_map();
         assert_eq!(db.index_of_id(102), Some(file));
         assert_eq!(db.index_of_id(101), Some(db.parent_of(file)));
         assert_eq!(db.index_of_id(9999), None);
+        db.clear_key_map();
+        assert_eq!(db.index_of_id(102), None, "released with the session");
     }
 
     #[test]
