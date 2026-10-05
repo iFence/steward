@@ -7,6 +7,7 @@
 //! process per `dedicated-process` plugin), invokes commands over NDJSON
 //! JSON-RPC, and recycles crashed runtimes with exponential backoff.
 
+pub mod capability;
 pub mod host;
 pub mod route;
 

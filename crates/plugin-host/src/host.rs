@@ -24,7 +24,7 @@ use steward_ipc_protocol::{
     code, decode_line, encode_line, is_host_request, method, ClipboardEntry, Message, Notification,
     Request, Response, RpcError,
 };
-use steward_plugin_registry::{Isolation, Permission, PluginMeta};
+use steward_plugin_registry::{HttpGrant, Isolation, Permission, PluginMeta};
 
 use crate::route::{RouteHit, RouteIndex};
 
@@ -735,22 +735,14 @@ impl PluginHost {
                 ),
             );
         };
-        let target = PathBuf::from(path);
-        let Ok(canonical) = std::fs::canonicalize(&target) else {
-            return Response::error(
-                request.id,
-                RpcError::new(
-                    code::INTERNAL_ERROR,
-                    format!("fs.read: cannot resolve path '{}'", target.display()),
-                ),
-            );
-        };
-        let allowed = roots.iter().any(|root| {
-            std::fs::canonicalize(PathBuf::from(root))
-                .map(|root| canonical.starts_with(&root))
-                .unwrap_or(false)
-        });
-        if !allowed {
+        // Resolve through a directory handle: the operation is performed with
+        // `openat`-style semantics relative to the grant, so a symlink planted
+        // after the check cannot escape it.
+        let Some(grant) = crate::capability::open_in_roots(
+            &roots,
+            Path::new(path),
+            crate::capability::Access::Read,
+        ) else {
             return Response::error(
                 request.id,
                 RpcError::new(
@@ -758,8 +750,8 @@ impl PluginHost {
                     "permission denied: fs.read path outside fs_roots",
                 ),
             );
-        }
-        let Ok(meta) = std::fs::metadata(&canonical) else {
+        };
+        let Ok(meta) = grant.dir().metadata(grant.relative()) else {
             return Response::error(
                 request.id,
                 RpcError::new(code::INTERNAL_ERROR, "fs.read: cannot stat file"),
@@ -779,7 +771,7 @@ impl PluginHost {
             .and_then(Value::as_str)
             .unwrap_or("utf8");
         if encoding == "base64" {
-            match std::fs::read(&canonical) {
+            match grant.dir().read(grant.relative()) {
                 Ok(bytes) => Response::ok(
                     request.id,
                     json!({ "data": base64_encode(&bytes), "base64": true }),
@@ -790,7 +782,7 @@ impl PluginHost {
                 ),
             }
         } else {
-            match std::fs::read_to_string(&canonical) {
+            match grant.dir().read_to_string(grant.relative()) {
                 Ok(text) => Response::ok(request.id, json!({ "data": text, "base64": false })),
                 Err(error) => Response::error(
                     request.id,
@@ -857,23 +849,11 @@ impl PluginHost {
                 ),
             );
         }
-        let target = PathBuf::from(path);
-        let parent = target.parent().map(Path::to_path_buf).unwrap_or_default();
-        let Ok(canonical_dir) = std::fs::canonicalize(&parent) else {
-            return Response::error(
-                request.id,
-                RpcError::new(
-                    code::INTERNAL_ERROR,
-                    "fs.write: parent directory does not exist",
-                ),
-            );
-        };
-        let allowed = roots.iter().any(|root| {
-            std::fs::canonicalize(PathBuf::from(root))
-                .map(|root_canonical| canonical_dir.starts_with(&root_canonical))
-                .unwrap_or(false)
-        });
-        if !allowed {
+        let Some(grant) = crate::capability::open_in_roots(
+            &roots,
+            Path::new(path),
+            crate::capability::Access::Write,
+        ) else {
             return Response::error(
                 request.id,
                 RpcError::new(
@@ -881,10 +861,8 @@ impl PluginHost {
                     "permission denied: fs.write path outside fs_roots",
                 ),
             );
-        }
-        let file_name = target.file_name().unwrap_or_default();
-        let final_target = canonical_dir.join(file_name);
-        match std::fs::write(&final_target, &bytes) {
+        };
+        match grant.dir().write(grant.relative(), &bytes) {
             Ok(()) => Response::ok(request.id, json!({})),
             Err(error) => Response::error(
                 request.id,
@@ -935,6 +913,19 @@ impl PluginHost {
             .and_then(Value::as_str)
             .unwrap_or("GET")
             .to_uppercase();
+        // Scoped grants: when the manifest declares any, the request must match
+        // one of them (scheme/host/port/method/path); otherwise the `network`
+        // permission alone allows any host, which is the legacy behaviour.
+        let grants = self.plugin_http_grants(plugin_id);
+        if !grants.is_empty() && !request_allowed_by_grants(&grants, url, &method) {
+            return Response::error(
+                request.id,
+                RpcError::new(
+                    code::PERMISSION_DENIED,
+                    "permission denied: network request outside the plugin's http grants",
+                ),
+            );
+        }
         let timeout_ms = params
             .get("timeout_ms")
             .and_then(Value::as_u64)
@@ -1010,6 +1001,14 @@ impl PluginHost {
             .get(plugin_id)
             .map(|(_, meta)| meta.manifest.fs_roots.clone())
             .filter(|roots| !roots.is_empty())
+    }
+
+    /// The plugin's fine-grained HTTP grants (empty means "any host").
+    fn plugin_http_grants(&self, plugin_id: &str) -> Vec<HttpGrant> {
+        self.loaded
+            .get(plugin_id)
+            .map(|(_, meta)| meta.manifest.http.clone())
+            .unwrap_or_default()
     }
 
     /// Stop every runtime process and drop all state.
@@ -1880,6 +1879,19 @@ impl PluginHost {
             SHARED_POOL_KEY.to_string()
         }
     }
+}
+
+/// Whether any fine-grained grant permits the parsed request.
+fn request_allowed_by_grants(grants: &[HttpGrant], url: &str, method: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    grants
+        .iter()
+        .any(|grant| grant.allows(parsed.scheme(), host, parsed.port(), method, parsed.path()))
 }
 
 /// Exponential backoff: `base * 2^(attempts-1)`, capped at `max`.

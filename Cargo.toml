@@ -46,6 +46,8 @@ dirs = "6"
 crossbeam-channel = "0.5"
 tyme4rs = "1.5"
 ureq = "2.9"
+url = "2"
+cap-std = "4"
 
 # i18n (Fluent — Zed's localization stack)
 i18n-embed = { version = "0.16", features = ["desktop-requester", "fluent-system"] }

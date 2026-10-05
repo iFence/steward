@@ -13,3 +13,5 @@ regex.workspace = true
 crossbeam-channel.workspace = true
 nucleo.workspace = true
 ureq.workspace = true
+url.workspace = true
+cap-std.workspace = true

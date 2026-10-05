@@ -35,6 +35,11 @@ pub struct PluginManifest {
     /// `fs.read` to these. Empty by default: no filesystem access.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fs_roots: Vec<String>,
+    /// Fine-grained outbound HTTP grants. When present, a `net.request` must
+    /// match one of them (method and path included); when absent, the `network`
+    /// permission alone allows any host — the legacy behaviour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub http: Vec<HttpGrant>,
     #[serde(default)]
     pub commands: Vec<PluginCommand>,
     /// Capability whitelist; empty by default (zero permissions).
@@ -124,8 +129,128 @@ impl PluginManifest {
                 )));
             }
         }
+        if !self.http.is_empty() && !self.permissions.contains(&Permission::Network) {
+            return Err(ManifestError(format!(
+                "plugin '{}': 'http' grants require the 'network' permission",
+                self.id
+            )));
+        }
+        for grant in &self.http {
+            grant.validate(&self.id)?;
+        }
         Ok(())
     }
+}
+
+/// A fine-grained outbound HTTP grant: one host, optionally narrowed by scheme,
+/// effective port, method and path. When a plugin declares any grants, a
+/// `net.request` must match one of them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpGrant {
+    /// Host only (no scheme, no port, no path).
+    pub host: String,
+    /// `http` or `https`; defaults to `https`.
+    #[serde(default = "default_http_scheme")]
+    pub scheme: String,
+    /// Non-default effective port, when the endpoint uses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Allowed methods (uppercased at validation).
+    pub methods: Vec<String>,
+    /// Exact allowed paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    /// Allowed path prefixes (a prefix ending in `/` matches any suffix; other
+    /// prefixes match only at a `/` boundary).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_prefixes: Vec<String>,
+}
+
+fn default_http_scheme() -> String {
+    "https".to_string()
+}
+
+const ALLOWED_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+
+impl HttpGrant {
+    fn validate(&self, plugin_id: &str) -> Result<(), ManifestError> {
+        if self.host.trim().is_empty()
+            || self.host.contains('/')
+            || self.host.contains(':')
+            || self.host.contains(char::is_whitespace)
+        {
+            return Err(ManifestError(format!(
+                "plugin '{}': http grant host must be a bare host name, not '{}'",
+                plugin_id, self.host
+            )));
+        }
+        if !matches!(self.scheme.as_str(), "http" | "https") {
+            return Err(ManifestError(format!(
+                "plugin '{}': http grant scheme must be 'http' or 'https', not '{}'",
+                plugin_id, self.scheme
+            )));
+        }
+        if self.methods.is_empty() {
+            return Err(ManifestError(format!(
+                "plugin '{}': http grant for '{}' lists no methods",
+                plugin_id, self.host
+            )));
+        }
+        for method in &self.methods {
+            if !ALLOWED_METHODS
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(method))
+            {
+                return Err(ManifestError(format!(
+                    "plugin '{}': http grant for '{}' has an invalid method '{method}'",
+                    plugin_id, self.host
+                )));
+            }
+        }
+        for path in self.paths.iter().chain(self.path_prefixes.iter()) {
+            if !path.starts_with('/') {
+                return Err(ManifestError(format!(
+                    "plugin '{}': http grant path '{path}' must start with '/'",
+                    plugin_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this grant permits the given request.
+    pub fn allows(
+        &self,
+        scheme: &str,
+        host: &str,
+        port: Option<u16>,
+        method: &str,
+        path: &str,
+    ) -> bool {
+        self.scheme.eq_ignore_ascii_case(scheme)
+            && self.host.eq_ignore_ascii_case(host)
+            && effective_port(&self.scheme, self.port) == effective_port(scheme, port)
+            && self
+                .methods
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(method))
+            && (self.paths.iter().any(|allowed| allowed == path)
+                || self.path_prefixes.iter().any(|prefix| {
+                    path == prefix
+                        || path
+                            .strip_prefix(prefix.as_str())
+                            .is_some_and(|rest| prefix.ends_with('/') || rest.starts_with('/'))
+                }))
+    }
+}
+
+fn effective_port(scheme: &str, port: Option<u16>) -> Option<u16> {
+    port.or(match scheme {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })
 }
 
 /// One launcher command exposed by a plugin.
@@ -632,5 +757,88 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("clipboard.erase"));
+    }
+
+    #[test]
+    fn http_grants_validate_and_match() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "com.example.net",
+                "name": "Net",
+                "version": "1.0.0",
+                "commands": [
+                    { "name": "net", "title": "Net", "trigger": { "type": "command" } }
+                ],
+                "permissions": ["network"],
+                "http": [
+                    {
+                        "host": "api.example.com",
+                        "methods": ["GET"],
+                        "paths": ["/v1/account"],
+                        "path_prefixes": ["/v1/items/"]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        manifest.validate().unwrap();
+
+        let grant = &manifest.http[0];
+        assert!(grant.allows("https", "API.Example.COM", None, "get", "/v1/account"));
+        assert!(grant.allows("https", "api.example.com", None, "GET", "/v1/items/42"));
+        assert!(!grant.allows("https", "api.example.com", None, "POST", "/v1/account"));
+        assert!(!grant.allows("https", "evil.example.com", None, "GET", "/v1/account"));
+        assert!(!grant.allows("http", "api.example.com", None, "GET", "/v1/account"));
+        assert!(!grant.allows("https", "api.example.com", None, "GET", "/v1/other"));
+
+        // An empty grant list serializes away, so old caches stay compact.
+        let mut empty = manifest;
+        empty.http.clear();
+        assert!(!serde_json::to_string(&empty).unwrap().contains("\"http\""));
+    }
+
+    #[test]
+    fn http_grants_require_the_network_permission() {
+        let mut manifest = calendar();
+        manifest.http = vec![HttpGrant {
+            host: "api.example.com".into(),
+            scheme: "https".into(),
+            port: None,
+            methods: vec!["GET".into()],
+            paths: Vec::new(),
+            path_prefixes: Vec::new(),
+        }];
+        assert!(manifest.validate().is_err());
+        manifest.permissions = vec![Permission::Network];
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_http_grants_are_rejected() {
+        let mut manifest = calendar();
+        manifest.permissions = vec![Permission::Network];
+        let grant = |scheme: &str, host: &str, method: &str, path: &str| HttpGrant {
+            host: host.into(),
+            scheme: scheme.into(),
+            port: None,
+            methods: vec![method.into()],
+            paths: vec![path.into()],
+            path_prefixes: Vec::new(),
+        };
+        for bad in [
+            grant("ftp", "api.example.com", "GET", "/x"),
+            grant("https", "https://api.example.com", "GET", "/x"),
+            grant("https", "api.example.com", "GETT", "/x"),
+            grant("https", "api.example.com", "GET", "x"),
+        ] {
+            manifest.http = vec![bad];
+            assert!(
+                manifest.validate().is_err(),
+                "grant should be rejected: {:?}",
+                manifest.http[0]
+            );
+        }
+        manifest.http = vec![grant("https", "api.example.com", "GET", "/x")];
+        manifest.validate().unwrap();
     }
 }
