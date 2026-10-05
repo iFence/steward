@@ -792,3 +792,22 @@ steward/
   与 `view_invoke_unknown_callback_is_callback_not_found`；`STEWARD_DATA_DIR` 指向可写目录时全绿）、
   `cargo test -p steward-ui-components --lib`（25 项，含样式表↔物化器覆盖与校验上限）、`cargo build -p
   steward-app`；TS 侧 `pnpm lint` / `typecheck` / `build`，并新增官方示例插件 `packages/plugins/ui-showcase`。
+
+### 2026-10-05（能力模型加固：cap-std 目录句柄 + 细粒度 HTTP 授权）
+
+- 问题：`fs.read` / `fs.write` 原来先 `canonicalize` 再比较字符串前缀。检查与使用之间存在窗口
+  （TOCTOU）：插件（或同机其他进程）可以在判定通过后把路径中的某一环换成指向授权根之外的符号链接，
+  于是随后的 `std::fs` 调用会跟随它越界。网络权限则只有布尔 `network`，无法表达"只允许某主机的某路径"。
+- 方案（fs）：新增 `crates/plugin-host/src/capability.rs`。每个 `fs_roots` 根被 `cap-std` 打开为
+  `Dir` 能力句柄，所有读写都以相对路径通过对句柄的 `openat` 式调用完成——路径由内核相对句柄解析，
+  链接在被检查后替换也无法逃逸。写授权允许物化尚不存在的根（与旧行为一致），读授权不物化。
+- 方案（网络）：manifest 新增可选 `http` 数组，每条授权限定 `scheme` / `host` / `port` / `method` /
+  `paths` / `path_prefixes`；声明任意一条后，`net.request` 必须匹配其中之一，否则拒绝。未声明时
+  `network` 保持旧语义（任意 http/https 主机）。`http` 必须与 `network` 权限同时声明，避免"声明了
+  却永远不生效"的静默配置。旧 manifest 无需迁移。
+- 取舍：不引入 gpui-shell/gpui-ce；只新增通用 crate `cap-std`（4.0.3）与 `url`。`process.run` /
+  执行授权仍不开放；`commands` 仍留在 manifest（路由表必须先于执行代码构建）。
+- 验证：`crates/plugin-host/src/capability.rs` 单测覆盖越界与相对路径解析、写授权物化缺失根；registry
+  单测覆盖 `http` 授权的校验、匹配矩阵（大小写、端口、方法、路径前缀）、与 `network` 权限的联动，以及
+  旧库迁移（新增 `http` 列）。`cargo clippy --workspace --all-targets -- -D warnings` 与
+  `cargo test --workspace` 全绿。

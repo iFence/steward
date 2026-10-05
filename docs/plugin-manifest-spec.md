@@ -71,3 +71,29 @@ manifest 只描述身份、路由、权限与隔离级别，**不描述视图**�
 M3.5 新增的 `{ "type": "ui" }` Virtual UI Tree 与 `list` / `calendar` / `detail` / `form` / `grid` /
 `search` 并列，不引入新的 manifest 字段，也不需要新的权限——插件只返回一棵可序列化的元素树，渲染始终
 由宿主完成（见 `docs/extension-api.md`）。
+
+## fs 沙箱与 `http` 细粒度授权（M3.8）
+
+- **fs 能力化**：`fs.read` / `fs.write` 不再用「canonicalize + 字符串前缀」判定，而是把每个 `fs_roots`
+  根打开为 `cap-std` 的目录句柄（`Dir`），所有读写都以相对路径**经该句柄**执行。路径由内核相对句柄解析，
+  因此检查后再被替换的符号链接也无法把操作带出授权根（消除 TOCTOU 窗口）。
+- **`http` 细粒度授权**（可选字段）：声明后，`net.request` 必须匹配其中一条授权的
+  `scheme`/`host`/`port`/`method`/`path`（或 `path_prefixes`）；未声明时 `network` 权限保持旧行为
+  （允许任意主机）。`http` 必须与 `network` 权限同时声明。
+
+```json
+{
+  "permissions": ["network"],
+  "http": [
+    {
+      "host": "api.example.com",
+      "methods": ["GET"],
+      "paths": ["/v1/account"],
+      "path_prefixes": ["/v1/items/"]
+    }
+  ]
+}
+```
+
+`scheme` 默认 `https`（可为 `http`）；`port` 省略表示该 scheme 的标准端口。旧 manifest（只有 `network`、
+没有 `http`）无需改动，行为不变。
