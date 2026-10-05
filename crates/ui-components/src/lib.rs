@@ -11,6 +11,7 @@ pub mod lunar;
 pub mod palette;
 pub mod results_list;
 pub mod search_bar;
+pub mod virtual_tree;
 
 pub use action_bar::*;
 pub use calendar::*;

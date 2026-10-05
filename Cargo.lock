@@ -7037,6 +7037,8 @@ version = "0.1.0"
 dependencies = [
  "gpui-component",
  "gpui-pre",
+ "serde",
+ "serde_json",
  "steward-core-engine",
  "tyme4rs",
 ]
