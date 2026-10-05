@@ -13,6 +13,7 @@ Conventions:
 - **Virtual UI Trees**: plugins can return a `{ "type": "ui" }` view — a serializable element tree built with a React-style builder (`div()`, `col()`, `text()`, `button()`, `input()`, …). The host validates the tree and renders it with the same gpui components as the launcher, so plugins get real layout and styling without running any UI code and without leaving the plugin process.
 - **Interactive elements**: buttons and links deliver `click`, inputs deliver `change` and `submit`, and a handler that returns a new tree redraws the view. Input text is owned by the host, so typing stays responsive even when a plugin is slow.
 - **UI Showcase plugin**: an official example plugin (`uishowcase`) demonstrating layout containers, styled text, a click handler and a host-owned input, with the view poppable into its own window.
+- **Dockable plugin workspace**: a plugin `ui` view can open into a workspace window where panels are tabbed, dragged, split and closed; the arrangement is saved and restored on the next launch.
 
 ---
 
