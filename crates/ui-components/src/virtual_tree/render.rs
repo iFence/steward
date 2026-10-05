@@ -20,6 +20,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::ActiveTheme;
+use serde_json::Value;
 
 use super::input::InputStore;
 use super::spec::{Axis, Color, EventKind, Kind, Length, Node, StyleValue};
@@ -94,6 +95,14 @@ fn render_node(node: &Node, env: &RenderEnv, window: &mut Window, cx: &mut App) 
         }
         Kind::Icon => render_icon(node, cx),
         Kind::Image => render_image(node, cx),
+        Kind::Heading => render_heading(node, cx),
+        Kind::Tag => render_tag(node, cx),
+        Kind::Spinner => render_spinner(node, cx),
+        Kind::Skeleton => render_skeleton(node, cx),
+        Kind::DescriptionList => render_description_list(node, cx),
+        Kind::Checkbox => render_checkbox(node, env, cx),
+        Kind::Switch => render_switch(node, env, cx),
+        Kind::Select => render_select(node, env, cx),
         Kind::Input => {
             let el = apply_styles(div().w_full(), node, cx);
             match env.inputs.get(&node.id) {
@@ -102,6 +111,205 @@ fn render_node(node: &Node, env: &RenderEnv, window: &mut Window, cx: &mut App) 
             }
         }
     }
+}
+
+fn prop_bool(node: &Node, key: &str) -> bool {
+    node.props
+        .get(key)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn prop_str(node: &Node, key: &str) -> String {
+    node.props
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn render_heading(node: &Node, cx: &mut App) -> AnyElement {
+    let level = node.props.get("level").and_then(Value::as_u64).unwrap_or(2);
+    let mut el = div();
+    el = match level {
+        1 => el.text_xl().font_weight(FontWeight::SEMIBOLD),
+        2 => el.text_lg().font_weight(FontWeight::SEMIBOLD),
+        3 => el.text_base().font_weight(FontWeight::MEDIUM),
+        _ => el.text_sm().font_weight(FontWeight::MEDIUM),
+    };
+    el = apply_styles(el, node, cx);
+    el.child(text_of(node)).into_any_element()
+}
+
+fn render_tag(node: &Node, cx: &mut App) -> AnyElement {
+    let mut el = div()
+        .px_2()
+        .py(px(2.0))
+        .rounded_sm()
+        .bg(cx.theme().secondary)
+        .text_color(cx.theme().secondary_foreground)
+        .text_xs();
+    el = apply_styles(el, node, cx);
+    el.child(text_of(node)).into_any_element()
+}
+
+/// A static activity ring. (Animation is a later concern; the element is a
+/// steady ring so a plugin can still indicate "working".)
+fn render_spinner(node: &Node, cx: &mut App) -> AnyElement {
+    let el = div()
+        .size(px(14.0))
+        .rounded_full()
+        .border_2()
+        .border_color(cx.theme().muted);
+    apply_styles(el, node, cx).into_any_element()
+}
+
+/// A placeholder block; size it with `w` / `h`.
+fn render_skeleton(node: &Node, cx: &mut App) -> AnyElement {
+    let el = div()
+        .h(px(12.0))
+        .w_full()
+        .rounded_sm()
+        .bg(cx.theme().skeleton);
+    apply_styles(el, node, cx).into_any_element()
+}
+
+fn render_description_list(node: &Node, cx: &mut App) -> AnyElement {
+    let items = node
+        .props
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut el = div().flex().flex_col().gap_1();
+    el = apply_styles(el, node, cx);
+    for item in &items {
+        let label = item["label"].as_str().unwrap_or("").to_string();
+        let value = item["value"].as_str().unwrap_or("").to_string();
+        el = el.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(120.0))
+                        .flex_shrink_0()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(cx.theme().foreground)
+                        .child(value),
+                ),
+        );
+    }
+    el.into_any_element()
+}
+
+fn render_checkbox(node: &Node, env: &RenderEnv, cx: &mut App) -> AnyElement {
+    let checked = prop_bool(node, "checked");
+    let label = prop_str(node, "label");
+    let mut el = div()
+        .id(ElementId::from(node.id.clone()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2();
+    el = apply_styles(el, node, cx);
+    let el = attach_change(el, node, env, (!checked).to_string());
+    let marker = div()
+        .size(px(16.0))
+        .rounded_sm()
+        .border_1()
+        .border_color(if checked {
+            cx.theme().primary
+        } else {
+            cx.theme().border
+        })
+        .when(checked, |this| this.bg(cx.theme().primary))
+        .flex()
+        .items_center()
+        .justify_center();
+    el.child(marker)
+        .when(!label.is_empty(), |this| this.child(label))
+        .into_any_element()
+}
+
+fn render_switch(node: &Node, env: &RenderEnv, cx: &mut App) -> AnyElement {
+    let checked = prop_bool(node, "checked");
+    let mut el = div()
+        .id(ElementId::from(node.id.clone()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2();
+    el = apply_styles(el, node, cx);
+    let el = attach_change(el, node, env, (!checked).to_string());
+    let track = div()
+        .w(px(32.0))
+        .h(px(18.0))
+        .rounded_full()
+        .bg(if checked {
+            cx.theme().primary
+        } else {
+            cx.theme().muted
+        })
+        .flex()
+        .items_center()
+        .px_1()
+        .when(checked, |this| this.justify_end())
+        .when(!checked, |this| this.justify_start())
+        .child(
+            div()
+                .size(px(14.0))
+                .rounded_full()
+                .bg(cx.theme().background),
+        );
+    let label = prop_str(node, "label");
+    el.child(track)
+        .when(!label.is_empty(), |this| this.child(label))
+        .into_any_element()
+}
+
+fn render_select(node: &Node, env: &RenderEnv, cx: &mut App) -> AnyElement {
+    let value = prop_str(node, "value");
+    let options = node
+        .props
+        .get("options")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut el = div().flex().flex_row().gap_2().flex_wrap();
+    el = apply_styles(el, node, cx);
+    for option in &options {
+        let id = option["id"].as_str().unwrap_or("").to_string();
+        let label = option["label"].as_str().unwrap_or("").to_string();
+        let selected = id == value;
+        let chip = div()
+            .id(ElementId::from(format!("{}-{}", node.id, id)))
+            .px_3()
+            .py(px(2.0))
+            .rounded_full()
+            .border_1()
+            .border_color(if selected {
+                cx.theme().primary
+            } else {
+                cx.theme().border
+            })
+            .when(selected, |this| {
+                this.bg(cx.theme().primary)
+                    .text_color(cx.theme().primary_foreground)
+            })
+            .when(!selected, |this| {
+                this.text_color(cx.theme().muted_foreground)
+            })
+            .child(label);
+        el = el.child(attach_change(chip, node, env, id));
+    }
+    el.into_any_element()
 }
 
 fn text_of(node: &Node) -> String {
@@ -178,6 +386,29 @@ fn attach_click<T: Styled + StatefulInteractiveElement + IntoElement>(
     let node_id = node.id.clone();
     el.cursor_pointer().on_click(move |_, _, _| {
         sink(Some(&callback), &node_id, EventKind::Click, None);
+    })
+}
+
+/// Attach a `change` handler that reports `value` (used by the plugin-owned
+/// controls: the plugin flips its own state and returns a new tree).
+fn attach_change<T: Styled + StatefulInteractiveElement + IntoElement>(
+    el: T,
+    node: &Node,
+    env: &RenderEnv,
+    value: String,
+) -> T {
+    let Some(callback) = node.callback(EventKind::Change).map(str::to_string) else {
+        return el;
+    };
+    let sink = env.sink.clone();
+    let node_id = node.id.clone();
+    el.cursor_pointer().on_click(move |_, _, _| {
+        sink(
+            Some(&callback),
+            &node_id,
+            EventKind::Change,
+            Some(value.clone()),
+        );
     })
 }
 

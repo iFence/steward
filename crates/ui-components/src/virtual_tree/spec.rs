@@ -12,7 +12,7 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Maximum nesting depth of a rendered tree.
 pub const MAX_DEPTH: usize = 32;
@@ -79,6 +79,14 @@ pub enum Kind {
     Separator,
     Progress,
     Spacer,
+    Heading,
+    Tag,
+    Spinner,
+    Skeleton,
+    DescriptionList,
+    Checkbox,
+    Switch,
+    Select,
 }
 
 impl Kind {
@@ -99,6 +107,14 @@ impl Kind {
             "separator" => Self::Separator,
             "progress" => Self::Progress,
             "spacer" => Self::Spacer,
+            "heading" => Self::Heading,
+            "tag" => Self::Tag,
+            "spinner" => Self::Spinner,
+            "skeleton" => Self::Skeleton,
+            "description_list" => Self::DescriptionList,
+            "checkbox" => Self::Checkbox,
+            "switch" => Self::Switch,
+            "select" => Self::Select,
             _ => return None,
         })
     }
@@ -113,7 +129,10 @@ impl Kind {
 
     /// Whether the kind accepts `text`.
     pub fn accepts_text(self) -> bool {
-        matches!(self, Self::Text | Self::Button | Self::Link | Self::Badge)
+        matches!(
+            self,
+            Self::Text | Self::Button | Self::Link | Self::Badge | Self::Heading | Self::Tag
+        )
     }
 }
 
@@ -293,6 +312,9 @@ pub struct Node {
     pub icon_svg: Option<String>,
     pub image_data: Option<String>,
     pub progress: Option<ProgressProps>,
+    /// Validated, kind-specific props for the newer leaves (heading level,
+    /// description items, control options, ...).
+    pub props: serde_json::Map<String, Value>,
 }
 
 impl Node {
@@ -348,6 +370,7 @@ struct KindProps {
     icon_svg: Option<String>,
     image_data: Option<String>,
     progress: Option<ProgressProps>,
+    extra: serde_json::Map<String, Value>,
 }
 
 impl ValidateState {
@@ -458,6 +481,7 @@ impl ValidateState {
             icon_svg: props.icon_svg,
             image_data: props.image_data,
             progress: props.progress,
+            props: props.extra,
         })
     }
 
@@ -554,6 +578,84 @@ impl ValidateState {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                 });
+            }
+            Kind::Heading => {
+                let level = get("level").and_then(Value::as_u64).unwrap_or(2);
+                if !(1..=4).contains(&level) {
+                    return Err(err(format!(
+                        "element at {path}: 'heading.level' must be 1..=4"
+                    )));
+                }
+                out.extra.insert("level".into(), json!(level));
+            }
+            Kind::DescriptionList => {
+                let items = get("items").and_then(Value::as_array).ok_or_else(|| {
+                    err(format!(
+                        "element at {path}: 'description_list.items' is required"
+                    ))
+                })?;
+                if items.is_empty() || items.len() > 64 {
+                    return Err(err(format!(
+                        "element at {path}: 'description_list.items' must hold 1..=64 entries"
+                    )));
+                }
+                let mut normalized = Vec::with_capacity(items.len());
+                for item in items {
+                    let label = item.get("label").and_then(Value::as_str).ok_or_else(|| {
+                        err(format!(
+                            "element at {path}: each description item needs 'label'"
+                        ))
+                    })?;
+                    let value = item.get("value").and_then(Value::as_str).ok_or_else(|| {
+                        err(format!(
+                            "element at {path}: each description item needs 'value'"
+                        ))
+                    })?;
+                    if label.len() > MAX_TEXT_BYTES || value.len() > MAX_TEXT_BYTES {
+                        return Err(err(format!(
+                            "element at {path}: description item is too large"
+                        )));
+                    }
+                    normalized.push(json!({ "label": label, "value": value }));
+                }
+                out.extra.insert("items".into(), Value::Array(normalized));
+            }
+            Kind::Checkbox | Kind::Switch => {
+                out.extra.insert(
+                    "checked".into(),
+                    Value::Bool(get("checked").and_then(Value::as_bool).unwrap_or(false)),
+                );
+                if let Some(label) = get("label") {
+                    out.extra.insert(
+                        "label".into(),
+                        Value::String(short_string(label, path, "label")?),
+                    );
+                }
+            }
+            Kind::Select => {
+                let options = get("options").and_then(Value::as_array).ok_or_else(|| {
+                    err(format!("element at {path}: 'select.options' is required"))
+                })?;
+                if options.is_empty() || options.len() > 64 {
+                    return Err(err(format!(
+                        "element at {path}: 'select.options' must hold 1..=64 entries"
+                    )));
+                }
+                let mut normalized = Vec::with_capacity(options.len());
+                for option in options {
+                    let id = option.get("id").and_then(Value::as_str).ok_or_else(|| {
+                        err(format!("element at {path}: each select option needs 'id'"))
+                    })?;
+                    let label = option.get("label").and_then(Value::as_str).unwrap_or(id);
+                    normalized.push(json!({ "id": id, "label": label }));
+                }
+                out.extra.insert("options".into(), Value::Array(normalized));
+                if let Some(value) = get("value") {
+                    out.extra.insert(
+                        "value".into(),
+                        Value::String(short_string(value, path, "value")?),
+                    );
+                }
             }
             _ => {}
         }
@@ -930,5 +1032,41 @@ mod tests {
             "root": { "kind": "input", "id": "q", "props": { "placeholder": "q" } }
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn newer_leaves_validate_their_props() {
+        validate(json!({
+            "type": "ui",
+            "root": {
+                "kind": "col",
+                "children": [
+                    { "kind": "heading", "text": "H", "props": { "level": 1 } },
+                    { "kind": "tag", "text": "new" },
+                    { "kind": "spinner" },
+                    { "kind": "skeleton", "style": { "h": 40 } },
+                    { "kind": "description_list", "props": { "items": [
+                        { "label": "Owner", "value": "Ada" }
+                    ] } },
+                    { "kind": "checkbox", "id": "c", "props": { "checked": true, "label": "On" }, "on": { "change": "c:change" } },
+                    { "kind": "switch", "id": "s", "props": { "checked": false } },
+                    { "kind": "select", "id": "sel", "props": {
+                        "value": "x",
+                        "options": [ { "id": "x" }, { "id": "y", "label": "Y" } ]
+                    } }
+                ]
+            }
+        }))
+        .unwrap();
+
+        for bad in [
+            json!({ "type": "ui", "root": { "kind": "heading", "text": "H", "props": { "level": 9 } } }),
+            json!({ "type": "ui", "root": { "kind": "description_list" } }),
+            json!({ "type": "ui", "root": { "kind": "description_list", "props": { "items": [] } } }),
+            json!({ "type": "ui", "root": { "kind": "select", "props": {} } }),
+            json!({ "type": "ui", "root": { "kind": "select", "props": { "options": [ { "label": "no id" } ] } } }),
+        ] {
+            assert!(validate(bad).is_err());
+        }
     }
 }

@@ -59,6 +59,9 @@ fn list_height(count: usize) -> f32 {
 
 /// The view payload a detached window renders. The host dispatches on the
 /// `type` field of the raw plugin view.
+// The `Ui` variant carries a full validated tree; boxing it would churn every
+// construction site for no meaningful win (one panel per command).
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum PanelKind {
     Calendar(ActiveCalendar),
     List(Vec<ResultItem>),

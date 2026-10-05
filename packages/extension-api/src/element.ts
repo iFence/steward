@@ -268,3 +268,89 @@ export const input = (id: string, options: InputOptions = {}): Element => {
 
 /** Wrap a root element as a `ui` view. */
 export const ui = (root: Element): UiView => ({ type: "ui", root: finalize(root, "r") });
+
+/** A section heading; `level` is 1..=4 (default 2). */
+export const heading = (text: string, level: 1 | 2 | 3 | 4 = 2): Element => {
+  const element = new Element("heading");
+  element.text = text;
+  element.prop("level", level);
+  return element;
+};
+
+/** A small inline tag. */
+export const tag = (label: string): Element => {
+  const element = new Element("tag");
+  element.text = label;
+  return element;
+};
+
+/** A static activity ring. */
+export const spinner = (): Element => new Element("spinner");
+
+/** A placeholder block; size it with `.w()` / `.h()`. */
+export const skeleton = (): Element => new Element("skeleton");
+
+/** One row of a {@link descriptionList}. */
+export interface DescriptionItem {
+  label: string;
+  value: string;
+}
+
+/** A label/value list. */
+export const descriptionList = (items: DescriptionItem[]): Element =>
+  new Element("description_list").prop("items", items);
+
+/** Options for {@link checkbox} / {@link switchControl}. */
+export interface ToggleOptions {
+  checked?: boolean;
+  label?: string;
+}
+
+function toggle(kind: "checkbox" | "switch", id: string, options: ToggleOptions): Element {
+  const element = new Element(kind).id(id);
+  if (options.checked !== undefined) {
+    element.prop("checked", options.checked);
+  }
+  if (options.label !== undefined) {
+    element.prop("label", options.label);
+  }
+  return element;
+}
+
+/**
+ * A checkbox. The plugin owns the value: render it from `checked` and flip it
+ * in the `change` handler, which receives the negation as `event.value`.
+ */
+export const checkbox = (id: string, options: ToggleOptions = {}): Element =>
+  toggle("checkbox", id, options);
+
+/**
+ * A toggle switch. Same ownership model as {@link checkbox}; named
+ * `switchControl` because `switch` is a reserved word.
+ */
+export const switchControl = (id: string, options: ToggleOptions = {}): Element =>
+  toggle("switch", id, options);
+
+/** One option of a {@link select}. */
+export interface SelectOption {
+  id: string;
+  label?: string;
+}
+
+export interface SelectOptions {
+  value?: string;
+  options: SelectOption[];
+}
+
+/** A chip row of options; the plugin owns `value` and updates it on `change`. */
+export const select = (id: string, options: SelectOptions): Element => {
+  const element = new Element("select").id(id);
+  element.prop(
+    "options",
+    options.options.map((option) => ({ id: option.id, label: option.label ?? option.id })),
+  );
+  if (options.value !== undefined) {
+    element.prop("value", options.value);
+  }
+  return element;
+};
