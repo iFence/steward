@@ -192,16 +192,16 @@ Raycast / Vicinae Extension
 - [x] 输入框宿主持有状态（`change` / `submit` 事件，输入延迟与插件往返无关）
 - [x] 启动器内联渲染与 detached 面板渲染共用同一物化器；新增官方示例插件 `packages/plugins/ui-showcase`
 
-### M3.6 - Dockable Plugin Workspace（WIP）
+### M3.6 - Dockable Plugin Workspace（DONE）
 
 目标：用 gpui-component 的 `DockArea` 统一承载插件视图，替换自绘的独立面板窗口。
 
 - [x] `PluginWorkspace` 窗口 + `DockArea`/`DockSkin`；注册 `steward.plugin` 面板类型
-- [x] `PluginDockPanel`：`ui` 视图作为可停靠面板，支持标签页/拖拽/分屏/关闭
+- [x] `PluginDockPanel`：全部视图（`ui`/calendar/list/detail/form/grid/search）作为可停靠面板，支持标签页/拖拽/分屏/关闭
+- [x] 面板尺寸测量（`on_children_prepainted`）驱动固定高度视图的渲染
 - [x] 布局通过 settings 表持久化，重启后经 `PanelRegistry` 重建
 - [x] 停靠面板与启动器内联视图共享同一 `view.invoke` 事件路径；docked 视为"已弹出"
-- [ ] 其余视图类型（calendar/list/detail/form/grid/search）迁移进 dock（需要可测量的面板高度）
-- [ ] `RootPlugin` 第一方 overlay（toast/通知）
+- [x] 第一方 overlay：`ToastCenter` + `RootPlugin`（Root 根窗口自动挂载）；启动器窗口根不是 `Root`，改为在自身视图里渲染同一 toast 栈
 
 ### M4 - Windows Support（TODO）
 
