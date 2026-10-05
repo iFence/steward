@@ -42,6 +42,7 @@ mod hotkeys;
 mod i18n;
 mod launch;
 mod launcher;
+mod overlay;
 mod platform;
 mod plugin_panel_window;
 mod plugin_workspace;
@@ -248,7 +249,9 @@ fn main() {
         let focus = init_ui_common(cx, &state);
         // Register the dockable plugin panel type and share the app state the
         // registry builder needs to rebuild panels from a persisted layout.
-        crate::plugin_workspace::init(cx, &state);
+        crate::plugin_workspace::init(cx, &state, i18n.clone());
+        // First-party overlay: plugin toasts.
+        crate::overlay::init(cx);
 
         // Watch the Start Menu (and reconcile on a timer) *before* the first
         // scan, so a shortcut written while that scan runs is not missed.

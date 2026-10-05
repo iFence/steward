@@ -12,9 +12,9 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyWindowHandle, App, Bounds, Context, ElementId, Entity,
-    FocusHandle, KeyDownEvent, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowKind, WindowOptions,
+    div, prelude::*, px, rgb, size, svg, AnyElement, AnyWindowHandle, App, Bounds, Context,
+    ElementId, Entity, FocusHandle, KeyDownEvent, TitlebarOptions, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowOptions,
 };
 use steward_ui_components::virtual_tree::{validate_view, Node as UiNode, VirtualTreeView};
 use steward_ui_components::{
@@ -59,7 +59,7 @@ fn list_height(count: usize) -> f32 {
 
 /// The view payload a detached window renders. The host dispatches on the
 /// `type` field of the raw plugin view.
-enum PanelKind {
+pub(crate) enum PanelKind {
     Calendar(ActiveCalendar),
     List(Vec<ResultItem>),
     Detail(DetailData),
@@ -96,12 +96,23 @@ pub(crate) struct PluginPanelWindow {
     actions: Vec<ActionRef>,
     /// Keyboard-selected ISO date for a calendar panel (`YYYY-MM-DD`).
     selection: String,
+    /// Whether this panel draws its own title bar and drag strip. `true` for a
+    /// standalone window; `false` when embedded in the dock, which draws the
+    /// tab and title instead.
+    chrome: bool,
     focus: FocusHandle,
 }
 
-impl Render for PluginPanelWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let scrim = self.state.borrow().scrim_alpha;
+impl PluginPanelWindow {
+    /// Render the nav toolbar and content body. `content_height` overrides the
+    /// viewport-derived height when the panel is embedded in a dock and the
+    /// host has measured the available area.
+    pub(crate) fn render_body(
+        &mut self,
+        content_height: Option<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let padding = PLUGIN_WIDGET_PADDING;
         let has_nav = matches!(self.kind, PanelKind::Calendar(_));
         let nav_h = if has_nav { PANEL_NAV_HEIGHT } else { 0.0 };
@@ -109,11 +120,14 @@ impl Render for PluginPanelWindow {
         // fixed, everything else fills the client area so resizing the window
         // (larger or smaller) scales the calendar/list rather than adding dead
         // space or clipping it.
-        let content_h = (window.viewport_size().height.as_f32()
-            - PANEL_TITLEBAR_HEIGHT
-            - nav_h
-            - padding * 2.0)
-            .max(120.0);
+        let content_h = match content_height {
+            Some(height) => (height - nav_h - padding * 2.0).max(120.0),
+            None => (window.viewport_size().height.as_f32()
+                - PANEL_TITLEBAR_HEIGHT
+                - nav_h
+                - padding * 2.0)
+                .max(120.0),
+        };
         let nav_toolbar = if has_nav {
             self.nav_toolbar(cx).into_any_element()
         } else {
@@ -213,7 +227,22 @@ impl Render for PluginPanelWindow {
                             .clone(),
                     ),
             });
-        let root = div()
+        div()
+            .id(ElementId::from("panel-body"))
+            .flex_1()
+            .flex_col()
+            .w_full()
+            .child(nav_toolbar)
+            .child(content)
+            .into_any_element()
+    }
+}
+
+impl Render for PluginPanelWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let scrim = self.state.borrow().scrim_alpha;
+        let body = self.render_body(None, window, cx);
+        let mut root = div()
             .id(ElementId::from("plugin-panel"))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -224,11 +253,12 @@ impl Render for PluginPanelWindow {
             .size_full()
             .bg(rgb(palette::BACKGROUND).opacity(scrim))
             .text_lg()
-            .text_color(rgb(palette::FOREGROUND))
+            .text_color(rgb(palette::FOREGROUND));
+        if self.chrome {
             // A visible title bar: most of it is a drag handle (move the
             // window), with the icon action bar (if any) and a close button on
             // the right. Interactive children sit above the drag surface.
-            .child(
+            root = root.child(
                 div()
                     .id(ElementId::from("panel-titlebar"))
                     .h(px(PANEL_TITLEBAR_HEIGHT))
@@ -249,10 +279,9 @@ impl Render for PluginPanelWindow {
                         this.child(bar.render(cx))
                     })
                     .child(self.close_button(cx)),
-            )
-            .child(nav_toolbar)
-            .child(content);
-        root
+            );
+        }
+        root.child(body)
     }
 }
 
@@ -288,11 +317,40 @@ impl PluginPanelWindow {
             action_bar: None,
             actions: Vec::new(),
             selection: String::new(),
+            chrome: true,
             focus,
         };
         this.init_views(kind, panel_actions, window, cx);
         this.focus.focus(window, cx);
         this
+    }
+
+    /// Like [`Self::new`], but without window chrome: the panel is embedded in
+    /// a dock, which draws its own tab and title. Used by
+    /// [`crate::plugin_workspace`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_docked(
+        state: Rc<RefCell<LauncherState>>,
+        i18n: Rc<Localization>,
+        plugin_id: String,
+        command: String,
+        kind: PanelKind,
+        panel_actions: Vec<ActionRef>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut panel = Self::new(
+            state,
+            i18n,
+            plugin_id,
+            command,
+            kind,
+            panel_actions,
+            window,
+            cx,
+        );
+        panel.chrome = false;
+        panel
     }
 
     /// Rebuild the sub-views (calendar / list / detail / form) and the action
@@ -934,21 +992,27 @@ pub(crate) fn open_plugin_panel(
 ) -> Option<AnyWindowHandle> {
     let (kind, actions) = parse_panel_view(&view, &plugin_id, &command, detachable)?;
 
-    // A Virtual UI Tree renders in the dockable workspace: flexible layout,
-    // tabs/drag/close, and a persisted arrangement.
-    if matches!(kind, PanelKind::Ui(_)) {
-        let title: gpui::SharedString = {
-            let state_ref = state.borrow();
-            let hits = state_ref.plugin_hits.borrow();
-            hits.iter()
-                .find(|hit| hit.plugin_id == plugin_id && hit.command == command)
-                .map(|hit| hit.title.clone())
-                .unwrap_or_else(|| command.clone())
-                .into()
-        };
-        return crate::plugin_workspace::open_ui_panel(
-            state, i18n, plugin_id, command, title, view, cx,
-        );
+    // Every panel view renders in the dockable workspace: tabs/drag/close and
+    // a persisted arrangement. The standalone window below is only a fallback
+    // for the (unexpected) case the workspace cannot be created.
+    let title: gpui::SharedString = {
+        let state_ref = state.borrow();
+        let hits = state_ref.plugin_hits.borrow();
+        hits.iter()
+            .find(|hit| hit.plugin_id == plugin_id && hit.command == command)
+            .map(|hit| hit.title.clone())
+            .unwrap_or_else(|| command.clone())
+            .into()
+    };
+    if let Some(handle) = crate::plugin_workspace::open_panel(
+        state,
+        plugin_id.clone(),
+        command.clone(),
+        title,
+        view.clone(),
+        cx,
+    ) {
+        return Some(handle);
     }
 
     // Already open: re-target it to the new view and bring it forward.
@@ -1061,7 +1125,7 @@ pub(crate) fn dock_panel_back(
     // A panel docked in the workspace is removed from the dock instead of
     // closing a standalone window.
     if crate::plugin_workspace::is_panel_open(&state.borrow(), plugin_id, command) {
-        crate::plugin_workspace::close_ui_panel(state, plugin_id, command, cx);
+        crate::plugin_workspace::close_panel(state, plugin_id, command, cx);
         let launcher = state.borrow().window;
         if let Some(launcher) = launcher {
             if let Some(app) = launcher.downcast::<StewardApp>() {
@@ -1208,7 +1272,7 @@ fn list_items(view: &serde_json::Value, plugin_id: &str, command: &str) -> Vec<R
 
 /// Parse a plugin view into a `PanelKind` plus the actions declared by its
 /// `actionPanel`. Returns `None` for a view type the panel cannot host.
-fn parse_panel_view(
+pub(crate) fn parse_panel_view(
     view: &serde_json::Value,
     plugin_id: &str,
     command: &str,
@@ -1282,16 +1346,9 @@ pub(crate) fn apply_view_update_to_panel(
     let Ok(node) = validate_view(view) else {
         return;
     };
-    // A docked panel owns its tree entity directly; update it in place.
-    let docked = state
-        .borrow()
-        .workspace_panels
-        .borrow()
-        .get(&(plugin_id.to_string(), command.to_string()))
-        .cloned();
-    if let Some(panel) = docked {
-        let view = view.clone();
-        panel.update(cx, |panel, cx| panel.set_view(view, cx));
+    // A docked panel owns its body directly; update it in place.
+    if crate::plugin_workspace::is_panel_open(&state.borrow(), plugin_id, command) {
+        crate::plugin_workspace::replace_panel_view(state, plugin_id, command, view, cx);
         return;
     }
     let Some(handle) = state.borrow().plugin_window(plugin_id, command) else {

@@ -120,9 +120,12 @@ fn drain_plugin_events(
                 rerender = true;
             }
             steward_plugin_host::HostEvent::Toast { params } => {
-                let message = params["message"].as_str().unwrap_or("");
-                eprintln!("[steward] plugin toast: {message}");
-                // TODO(M3): render a real toast in the launcher UI.
+                let message = params["message"].as_str().unwrap_or("").to_string();
+                if !message.is_empty() {
+                    let kind = params["kind"].as_str().unwrap_or("info").to_string();
+                    let duration = params["durationMs"].as_u64().unwrap_or(3000);
+                    cx.update(move |cx| crate::overlay::show_toast(cx, message, kind, duration));
+                }
             }
             steward_plugin_host::HostEvent::OpenUrl { url } => {
                 if let Err(error) = crate::launch::open_url(&url) {

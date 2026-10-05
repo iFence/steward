@@ -1503,7 +1503,9 @@ impl gpui::Render for StewardApp {
             .when(self.directory_status_bar.read(cx).is_visible(), |this| {
                 this.child(self.directory_status_bar.clone())
             })
-            .child(drag_strip().h(px(LAUNCHER_MARGIN)));
+            .child(drag_strip().h(px(LAUNCHER_MARGIN)))
+            // First-party overlay: plugin toasts (absolute, out of flow).
+            .child(crate::overlay::render_toasts(cx));
 
         // One-shot entrance fade: the launcher eases from transparent to its
         // frosted-glass scrim on every summon (the key includes the show epoch,

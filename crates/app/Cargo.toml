@@ -21,6 +21,7 @@ path = "src/main.rs"
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
+gpui-base.workspace = true
 global-hotkey.workspace = true
 anyhow.workspace = true
 raw-window-handle = "0.6"

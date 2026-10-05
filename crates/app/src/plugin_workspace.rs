@@ -3,18 +3,25 @@
 //! The workspace window owns a gpui-component [`DockArea`]; each plugin view
 //! becomes a [`PluginDockPanel`] that can be tabbed, dragged, split and closed.
 //! Element events still travel to the plugin as `view.invoke` exactly as they
-//! do for the launcher's inline rendering, so a docked view is the same tree,
+//! do for the launcher's inline rendering, so a docked view is the same view,
 //! just hosted in a window the user can rearrange.
 //!
-//! Layout is persisted through the storage settings table, and panels are
-//! rebuilt on the next launch through the dock's `PanelRegistry`.
+//! Because the fixed-height views (calendar/list/detail/form/grid/search) need
+//! a pixel height to virtualize and the dock decides that height at layout
+//! time, the dock panel measures its own content area through
+//! `on_children_prepainted` and re-renders the body once the measurement is
+//! known. Layout is persisted through the storage settings table and rebuilt on
+//! the next launch through the dock's `PanelRegistry`.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gpui::{
-    div, prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, Render, SharedString, Subscription, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    div, prelude::*, px, size, AnyElement, AnyWindowHandle, App, Bounds, Context, Entity,
+    EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString, Subscription,
+    TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 use gpui_component::dock::{
     register_panel, BasePanelView, DockArea, DockEvent, DockPlacement, DockSkin,
@@ -27,6 +34,7 @@ use steward_ui_components::virtual_tree::{validate_view, VirtualTreeView};
 use crate::i18n::Localization;
 use crate::launcher::LauncherState;
 use crate::platform;
+use crate::plugin_panel_window::{parse_panel_view, PluginPanelWindow};
 
 /// Storage key holding the serialized `DockAreaState`.
 const WORKSPACE_LAYOUT_KEY: &str = "plugin_workspace_layout";
@@ -64,6 +72,14 @@ fn workspace_event_sink(
     })
 }
 
+/// The rendered body of a docked panel: a Virtual UI Tree entity, or the
+/// existing fixed-view renderer (`calendar`/`list`/`detail`/`form`/`grid`/
+/// `search`) running without its own window chrome.
+enum DockBody {
+    Ui(Entity<VirtualTreeView>),
+    Panel(Entity<PluginPanelWindow>),
+}
+
 /// One plugin view hosted in the workspace dock.
 pub struct PluginDockPanel {
     plugin_id: String,
@@ -71,55 +87,102 @@ pub struct PluginDockPanel {
     title: SharedString,
     /// The raw view, persisted so a panel can be rebuilt after a restart.
     view: Value,
-    tree: Entity<VirtualTreeView>,
+    i18n: Rc<Localization>,
+    state: Rc<RefCell<LauncherState>>,
+    body: DockBody,
+    /// Measured content height; `0.0` until the first prepaint.
+    height: Cell<f32>,
     focus: FocusHandle,
 }
 
 impl PluginDockPanel {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         plugin_id: String,
         command: String,
         title: SharedString,
         view: Value,
+        i18n: Rc<Localization>,
         state: Rc<RefCell<LauncherState>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sink = workspace_event_sink(state.clone(), plugin_id.clone(), command.clone());
-        // A tree that fails validation still yields a panel; it just renders an
-        // empty body. The launcher validates before opening, so this is a
-        // belt-and-braces path for a restored layout.
-        let node = validate_view(&view).ok();
-        let tree = cx.new(|cx| match node {
-            Some(node) => VirtualTreeView::new(node, sink, cx),
-            None => {
-                let empty =
-                    steward_ui_components::virtual_tree::validate_view(&serde_json::json!({
-                        "type": "ui",
-                        "root": { "kind": "col" }
-                    }))
-                    .expect("the empty view is valid");
-                VirtualTreeView::new(empty, sink, cx)
-            }
-        });
+        let body = build_body(&plugin_id, &command, &view, &i18n, &state, window, cx);
         Self {
             plugin_id,
             command,
             title,
             view,
-            tree,
+            i18n,
+            state,
+            body,
+            height: Cell::new(0.0),
             focus: cx.focus_handle(),
         }
     }
 
-    /// Replace the displayed tree (an element handler returned a new one).
-    pub(crate) fn set_view(&mut self, view: Value, cx: &mut Context<Self>) {
-        let Ok(node) = validate_view(&view) else {
+    /// Replace the displayed view (an element handler or `select` returned a
+    /// new one). A `ui` tree replacing another `ui` tree updates in place so
+    /// host-owned input state survives; anything else rebuilds the body.
+    pub(crate) fn set_view(&mut self, view: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let node = validate_view(&view).ok();
+        if let (DockBody::Ui(tree), Some(node)) = (&self.body, node) {
+            self.view = view;
+            let tree = tree.clone();
+            tree.update(cx, |tree, cx| tree.set_tree(node, cx));
             return;
-        };
+        }
         self.view = view;
-        let tree = self.tree.clone();
-        tree.update(cx, |tree, cx| tree.set_tree(node, cx));
+        self.body = build_body(
+            &self.plugin_id,
+            &self.command,
+            &self.view,
+            &self.i18n,
+            &self.state,
+            window,
+            cx,
+        );
+        cx.notify();
     }
+}
+
+/// Build the rendered body for a raw plugin view.
+fn build_body(
+    plugin_id: &str,
+    command: &str,
+    view: &Value,
+    i18n: &Rc<Localization>,
+    state: &Rc<RefCell<LauncherState>>,
+    window: &mut Window,
+    cx: &mut Context<PluginDockPanel>,
+) -> DockBody {
+    if let Ok(node) = validate_view(view) {
+        let sink = workspace_event_sink(state.clone(), plugin_id.to_string(), command.to_string());
+        return DockBody::Ui(cx.new(|cx| VirtualTreeView::new(node, sink, cx)));
+    }
+    if let Some((kind, actions)) = parse_panel_view(view, plugin_id, command, true) {
+        let panel = cx.new(|cx| {
+            PluginPanelWindow::new_docked(
+                state.clone(),
+                i18n.clone(),
+                plugin_id.to_string(),
+                command.to_string(),
+                kind,
+                actions,
+                window,
+                cx,
+            )
+        });
+        return DockBody::Panel(panel);
+    }
+    // A view this build cannot host renders as an empty, valid tree.
+    let empty = validate_view(&serde_json::json!({
+        "type": "ui",
+        "root": { "kind": "col" }
+    }))
+    .expect("the empty view is valid");
+    let sink = workspace_event_sink(state.clone(), plugin_id.to_string(), command.to_string());
+    DockBody::Ui(cx.new(|cx| VirtualTreeView::new(empty, sink, cx)))
 }
 
 impl EventEmitter<PanelEvent> for PluginDockPanel {}
@@ -131,8 +194,40 @@ impl Focusable for PluginDockPanel {
 }
 
 impl Render for PluginDockPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().p(px(8.0)).child(self.tree.clone())
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let height = self.height.get();
+        let content: AnyElement = if height > 0.0 {
+            match &self.body {
+                DockBody::Ui(tree) => tree.clone().into_any_element(),
+                DockBody::Panel(panel) => {
+                    panel.update(cx, |panel, cx| panel.render_body(Some(height), window, cx))
+                }
+            }
+        } else {
+            div().into_any_element()
+        };
+        let weak = cx.weak_entity();
+        div()
+            .relative()
+            .size_full()
+            .on_children_prepainted(move |bounds, _window, cx| {
+                let Some(bounds) = bounds.first() else {
+                    return;
+                };
+                let measured = bounds.size.height.as_f32();
+                if let Some(entity) = weak.upgrade() {
+                    cx.defer(move |cx| {
+                        entity.update(cx, |this, cx| {
+                            if (this.height.get() - measured).abs() > 0.5 {
+                                this.height.set(measured);
+                                cx.notify();
+                            }
+                        });
+                    });
+                }
+            })
+            .child(div().absolute().inset_0())
+            .child(div().size_full().child(content))
     }
 }
 
@@ -175,11 +270,7 @@ pub struct PluginWorkspace {
 }
 
 impl PluginWorkspace {
-    pub(crate) fn new(
-        state: Rc<RefCell<LauncherState>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(state: Rc<RefCell<LauncherState>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (dock_area, skin) = DockSkin::dock_area(
             "steward.plugin-workspace",
             Some(WORKSPACE_VERSION),
@@ -187,7 +278,6 @@ impl PluginWorkspace {
             cx,
         );
 
-        // Restore the previous layout, if the stored schema still parses.
         let stored = state
             .borrow()
             .storage
@@ -224,6 +314,10 @@ impl PluginWorkspace {
                 .set_setting(WORKSPACE_LAYOUT_KEY, &json);
         }
     }
+
+    fn dock_area(&self) -> Entity<DockArea> {
+        self.dock_area.clone()
+    }
 }
 
 impl Render for PluginWorkspace {
@@ -236,7 +330,7 @@ impl Render for PluginWorkspace {
 /// persisted `PanelInfo`.
 fn build_restored_panel(
     context: PanelBuildContext,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> std::sync::Arc<dyn BasePanelView> {
     let info = match &context.state().info {
@@ -251,38 +345,41 @@ fn build_restored_panel(
         .to_string()
         .into();
     let view = info.get("view").cloned().unwrap_or(Value::Null);
-    let state = workspace_state(cx);
-    let panel = cx.new(|cx| PluginDockPanel::new(plugin_id, command, title, view, state, cx));
+    let (state, i18n) = workspace_context(cx);
+    let panel =
+        cx.new(|cx| PluginDockPanel::new(plugin_id, command, title, view, i18n, state, window, cx));
     std::sync::Arc::new(PanelHandle::new(panel))
 }
 
-/// Where the workspace keeps its handle on the shared launcher state. The
-/// registry builder is registered once and cannot capture a per-app `Rc`, so it
-/// reads this global instead.
-struct WorkspaceContext(Rc<RefCell<LauncherState>>);
+/// Where the workspace keeps its handle on the shared launcher state and i18n.
+/// The registry builder is registered once and cannot capture a per-app `Rc`,
+/// so it reads this global instead.
+struct WorkspaceContext {
+    state: Rc<RefCell<LauncherState>>,
+    i18n: Rc<Localization>,
+}
 impl gpui::Global for WorkspaceContext {}
 
-fn workspace_state(cx: &App) -> Rc<RefCell<LauncherState>> {
-    cx.global::<WorkspaceContext>().0.clone()
+fn workspace_context(cx: &App) -> (Rc<RefCell<LauncherState>>, Rc<Localization>) {
+    let context = cx.global::<WorkspaceContext>();
+    (context.state.clone(), context.i18n.clone())
 }
 
 /// Register the plugin panel type. Call once, during application init.
-pub(crate) fn init(cx: &mut App, state: &Rc<RefCell<LauncherState>>) {
-    cx.set_global(WorkspaceContext(state.clone()));
-    // Re-registering would replace the factory, which is harmless, but the
-    // registry is per-app and init runs once.
+pub(crate) fn init(cx: &mut App, state: &Rc<RefCell<LauncherState>>, i18n: Rc<Localization>) {
+    cx.set_global(WorkspaceContext {
+        state: state.clone(),
+        i18n,
+    });
     register_panel(cx, PANEL_NAME, build_restored_panel);
 }
 
 /// Open (or focus) the workspace window and return its handle.
-pub(crate) fn ensure_workspace_window(
-    state: &Rc<RefCell<LauncherState>>,
-    i18n: Rc<Localization>,
-    cx: &mut App,
-) -> AnyWindowHandle {
+fn ensure_workspace_window(state: &Rc<RefCell<LauncherState>>, cx: &mut App) -> AnyWindowHandle {
     if let Some(handle) = *state.borrow().workspace_window.borrow() {
         return handle;
     }
+    let i18n = workspace_context(cx).1;
     let bounds = Bounds::centered(None, size(px(960.0), px(600.0)), cx);
     let state_for_window = state.clone();
     let mut workspace = None;
@@ -321,8 +418,7 @@ pub(crate) fn ensure_workspace_window(
     let dock = workspace
         .expect("the workspace window built its view")
         .read(cx)
-        .dock_area
-        .clone();
+        .dock_area();
     let state = state.borrow_mut();
     state.workspace_window.replace(Some(handle));
     state.workspace_dock.replace(Some(dock));
@@ -330,18 +426,19 @@ pub(crate) fn ensure_workspace_window(
 }
 
 /// Add a plugin panel to the workspace (creating the window if needed). When
-/// the same `(plugin_id, command)` is already docked, its tree is replaced and
-/// its window is brought forward.
-pub(crate) fn open_ui_panel(
+/// the same `(plugin_id, command)` is already docked, its view is replaced and
+/// the workspace is brought forward.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_panel(
     state: &Rc<RefCell<LauncherState>>,
-    i18n: Rc<Localization>,
     plugin_id: String,
     command: String,
     title: SharedString,
     view: Value,
     cx: &mut App,
 ) -> Option<AnyWindowHandle> {
-    let handle = ensure_workspace_window(state, i18n, cx);
+    let handle = ensure_workspace_window(state, cx);
+    let i18n = workspace_context(cx).1;
 
     let existing = state
         .borrow()
@@ -350,7 +447,10 @@ pub(crate) fn open_ui_panel(
         .get(&(plugin_id.clone(), command.clone()))
         .cloned();
     if let Some(panel) = existing {
-        panel.update(cx, |panel, cx| panel.set_view(view, cx));
+        let view = view.clone();
+        let _ = handle.update(cx, |_root, window, cx| {
+            panel.update(cx, |panel, cx| panel.set_view(view.clone(), window, cx));
+        });
         let _ = handle.update(cx, |_, window, cx| {
             cx.activate(true);
             window.refresh();
@@ -368,7 +468,9 @@ pub(crate) fn open_ui_panel(
                 command.clone(),
                 title.clone(),
                 view.clone(),
+                i18n.clone(),
                 state_for_panel.clone(),
+                window,
                 cx,
             )
         });
@@ -389,8 +491,34 @@ pub(crate) fn open_ui_panel(
     Some(handle)
 }
 
+/// Replace a docked panel's view (a `select` or element handler returned one).
+pub(crate) fn replace_panel_view(
+    state: &Rc<RefCell<LauncherState>>,
+    plugin_id: &str,
+    command: &str,
+    view: &Value,
+    cx: &mut App,
+) {
+    let panel = state
+        .borrow()
+        .workspace_panels
+        .borrow()
+        .get(&(plugin_id.to_string(), command.to_string()))
+        .cloned();
+    let Some(panel) = panel else {
+        return;
+    };
+    let Some(handle) = *state.borrow().workspace_window.borrow() else {
+        return;
+    };
+    let view = view.clone();
+    let _ = handle.update(cx, |_root, window, cx| {
+        panel.update(cx, |panel, cx| panel.set_view(view.clone(), window, cx));
+    });
+}
+
 /// Remove a docked plugin panel (dock-back / close).
-pub(crate) fn close_ui_panel(
+pub(crate) fn close_panel(
     state: &Rc<RefCell<LauncherState>>,
     plugin_id: &str,
     command: &str,

@@ -6925,6 +6925,7 @@ dependencies = [
  "dirs 6.0.0",
  "embed-resource",
  "global-hotkey",
+ "gpui-base",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
