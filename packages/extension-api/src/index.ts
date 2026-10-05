@@ -10,6 +10,10 @@
  * second M3 wave).
  */
 
+import type { UiView } from "./element";
+
+export * from "./element";
+
 /** One row rendered by the launcher's list view. */
 export interface ListItem {
   /** Stable id; the plugin's `select(itemId)` receives it. */
@@ -116,6 +120,7 @@ export type View =
       placeholder?: string;
       actionPanel?: ActionPanelSpec;
     }
+  | UiView
   | null;
 
 /**

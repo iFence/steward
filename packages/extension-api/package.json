@@ -9,7 +9,9 @@
     "src"
   ],
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.js --sourcemap",
+    "gen:styles": "node scripts/gen-styles.mjs",
+    "check:styles": "node scripts/gen-styles.mjs --check",
+    "build": "node scripts/gen-styles.mjs && esbuild src/index.ts --bundle --format=cjs --outfile=dist/index.js --sourcemap",
     "typecheck": "tsc --noEmit"
   }
 }

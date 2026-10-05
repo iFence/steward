@@ -1,0 +1,4 @@
+# Generated from crates/ui-components/src/virtual_tree/style_table.json and
+# checked byte-for-byte by `pnpm --filter @steward/extension-api check:styles`;
+# formatting it by hand would make the check fail.
+packages/extension-api/src/styles.generated.ts
