@@ -64,3 +64,10 @@
   roots 内）；`data` 可为 utf8 字符串或 `base64: true` 的 base64 文本；上限 4 MiB。
 - `network`：出站 HTTP(S) 请求（`net.request`）；宿主强制 `http/https`、超时上限 30s、
   回应体上限（默认 8 MiB，最大 64 MiB）。
+
+## 视图类型与 manifest
+
+manifest 只描述身份、路由、权限与隔离级别，**不描述视图**。命令返回的视图类型由运行时协议定义；
+M3.5 新增的 `{ "type": "ui" }` Virtual UI Tree 与 `list` / `calendar` / `detail` / `form` / `grid` /
+`search` 并列，不引入新的 manifest 字段，也不需要新的权限——插件只返回一棵可序列化的元素树，渲染始终
+由宿主完成（见 `docs/extension-api.md`）。

@@ -763,3 +763,32 @@ steward/
   说明，`v9.9.9` 正确失败）。
 - 未验证：`shell: bash` + `gh release create` 组合要等下一次打 tag 才能在 GitHub runner 上确认；
   `cargo fmt --check` / clippy / test 在 Windows 上本来就是原矩阵的一部分，无变化。
+
+### 2026-10-05（插件 Virtual UI Tree：进程隔离下的通用声明式 UI）
+
+- 问题：M3 承诺的「声明式 UI：React Style DSL → Virtual UI Tree → GPUI Renderer」实际只落地了固定视图词汇
+  （`list` / `calendar` / `detail` / `form` / `grid` / `search`）；每新增一种视图都要同时改宿主、协议与 SDK，
+  插件 UI 表现力见顶。
+- 备选调研：gpui-kit 生态确有「插件方案」，但不能直接复用。官方线 `gpui-shell` 在 crates.io 上仍是 0.1.0
+  空壳；真正可用的实现是分叉 `gpui-ce/gpui-component` 发布的 `gpui_ce_components_shell` 0.2.0（lib 名
+  `gpui_shell`），它绑定 `gpui-ce 0.2.2` / `gpui_ce_components_base 0.2.0`，与 Steward 的
+  `gpui-pre =0.3.7` + `gpui-component =0.7.0` 不是同一套 crate（元素类型不可互操作），自述 M0
+  「feasibility baseline, not a stable interface」，并把 JS 放在宿主进程内。结论：**不替换、不引入**。
+- 方案：保留自研 QuickJS + JSON-RPC 进程隔离，新增 `{ "type": "ui", "root": <node> }` 视图；插件用
+  `@steward/extension-api` 的元素构建器产出可序列化元素树，宿主把它当不可信数据校验后重放为真实 gpui 元素。
+  新增 JSON-RPC 方法 `view.invoke`（params `{ isolate_id, callback_id, event, deadline_ms }`）把 `click` /
+  `change` / `submit` 送回插件；处理函数返回新树即替换当前视图。输入框文本由**宿主持有**（`props.value`
+  仅初值），因此输入延迟与插件往返无关。
+- 单一来源：样式方法表与颜色 token 以 `crates/ui-components/src/virtual_tree/{style_table,color_tokens}.json`
+  为准；Rust 校验器/物化器与 SDK 生成代码共用它。`crates/ui-components` 单测断言物化器覆盖整张表，SDK 侧由
+  `packages/extension-api/scripts/gen-styles.mjs` 生成 `styles.generated.ts` 并由 CI 校验其最新。
+- 边界：树按不可信输入校验（深度 ≤ 32、节点 ≤ 2000、每节点子 ≤ 256、样式项 ≤ 64、文本 ≤ 8 KiB、整树 ≤ 1 MiB、
+  长度 0–4096、`opacity` 0–1、`columns` 1–16、颜色仅主题 token 或 `#rrggbb`）；v1 媒体仅内联 SVG / `data:`
+  URI，`link` 点击走回调（打开 URL 仍由权限化的 `openUrl` 负责）。首批叶子为 `text` / `icon` / `image` /
+  `button` / `input` / `link` / `badge` / `separator` / `progress` / `spacer`。
+- 未采纳：迁移到 `gpui-kit` facade；用 `gpui-shell` 替换自研运行时；`cap-std` 目录句柄式 fs 与细粒度 HTTP
+  授权（留作后续能力模型加固）；`DockArea` / `RootPlugin` 宿主 UI（后续独立计划）。
+- 验证：`cargo test -p steward-plugin-runtime --lib`（35 项，含新增 `view_invoke_runs_the_registered_callback`
+  与 `view_invoke_unknown_callback_is_callback_not_found`；`STEWARD_DATA_DIR` 指向可写目录时全绿）、
+  `cargo test -p steward-ui-components --lib`（25 项，含样式表↔物化器覆盖与校验上限）、`cargo build -p
+  steward-app`；TS 侧 `pnpm lint` / `typecheck` / `build`，并新增官方示例插件 `packages/plugins/ui-showcase`。

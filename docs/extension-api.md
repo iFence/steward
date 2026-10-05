@@ -74,3 +74,61 @@ deadline 内驱动 QuickJS 微任务队列直到 settled（`command`/`select`/`s
 `http` / `https` / `net` / `dns` / `child_process` / `crypto` / `zlib` / `stream` 为 stub，调用即抛
 "not supported in M3"；`network` 权限已支持（`net.request`）。`timers`、原生 binding、`worker_threads`
 明确不支持。plugin 内可直接 `require("path")` 或使用 `global.Buffer`。
+
+## M3.5：Virtual UI Tree（`{ "type": "ui" }`）
+
+除固定视图（`list` / `calendar` / `detail` / `form` / `grid` / `search`）外，插件可以返回一棵可序列化的
+元素树，由宿主校验后用与启动器相同的 gpui 组件渲染。插件依旧**不运行任何 UI 代码、也不离开插件进程**，
+进程隔离与低内存约束不变。
+
+```ts
+import { button, col, input, row, text, ui } from "@steward/extension-api";
+import type { View } from "@steward/extension-api";
+
+let clicks = 0;
+
+function render(): View {
+  return ui(
+    col()
+      .gap(8)
+      .p(12)
+      .child(text("Hello").text_color("primary").text_lg())
+      .child(
+        row()
+          .gap(8)
+          .items_center()
+          .child(button("Click").onClick(() => {
+            clicks += 1;
+            return render();
+          }))
+          .child(input("q", { placeholder: "type here" })),
+      ),
+  );
+}
+
+export function command(): View {
+  return render();
+}
+```
+
+### 元素与样式
+
+- 容器：`div` / `row` / `col` / `grid(columns)` / `scroll(axis)`；叶子：`text` / `icon`（内联 SVG）/
+  `image`（内联 `data:` URI）/ `button` / `input` / `link` / `badge` / `separator` / `progress` / `spacer`。
+- 样式方法与 gpui 同名，由宿主规范表（`style_table.json`）生成：布局/尺寸/flex/间距/边框圆角/颜色/文字等。
+  颜色取主题 token（如 `"primary"`、`"muted_foreground"`）或 `#rrggbb`；未知方法在调用点即报错。
+- `.id(name)` 提供稳定 id（`input` 必需）；`.child(...)` 追加子节点；`.style(name, value)` 是向前兼容的逃生口。
+
+### 事件与输入
+
+- 事件首批为 `click` / `change` / `submit`。处理函数可返回新的 `ui` 视图替换当前树；返回 `undefined`
+  表示不变。宿主用 `view.invoke` 把事件交给插件。
+- 输入框文本由**宿主持有**：`props.value` 只是初值，之后由宿主维护并派发 `change`；因此输入延迟与插件的
+  往返无关。提交（回车）派发 `submit`。输入实体按元素 id 在重绘间保留。
+
+### 边界与限制
+
+- 宿主把树当作不可信数据校验：深度 ≤ 32、节点 ≤ 2000、每节点子节点 ≤ 256、样式项 ≤ 64、文本 ≤ 8 KiB、
+  整树 ≤ 1 MiB，长度 0–4096、`opacity` 0–1、`columns` 1–16；越界或未知字段会被拒绝。
+- v1 媒体仅限内联 SVG 与 `data:` URI；`link` 的点击走回调（打开 URL 仍由权限化的 `openUrl` 负责）。
+- 代码编辑器 / LSP、WebView、`table` / `tree` / `markdown` / `chart` 等更丰富的叶子留待后续批次。

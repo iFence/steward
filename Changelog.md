@@ -7,6 +7,15 @@ Conventions:
 - The content below the heading is what appears in the GitHub Release body and the in-app update dialog
 - End each version section with `---` or by starting the next version heading
 
+## v0.2.0
+
+### ✨ New Features
+- **Virtual UI Trees**: plugins can return a `{ "type": "ui" }` view — a serializable element tree built with a React-style builder (`div()`, `col()`, `text()`, `button()`, `input()`, …). The host validates the tree and renders it with the same gpui components as the launcher, so plugins get real layout and styling without running any UI code and without leaving the plugin process.
+- **Interactive elements**: buttons and links deliver `click`, inputs deliver `change` and `submit`, and a handler that returns a new tree redraws the view. Input text is owned by the host, so typing stays responsive even when a plugin is slow.
+- **UI Showcase plugin**: an official example plugin (`uishowcase`) demonstrating layout containers, styled text, a click handler and a host-owned input, with the view poppable into its own window.
+
+---
+
 ## v0.1.0
 
 Steward's first release: an instant, low-memory launcher for Windows with a process-isolated plugin platform.

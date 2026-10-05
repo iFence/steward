@@ -50,6 +50,8 @@ jobs:
           cache: pnpm
       - name: install
         run: pnpm install --frozen-lockfile
+      - name: check generated styles
+        run: pnpm --filter @steward/extension-api check:styles
       - name: lint
         run: pnpm lint
       - name: typecheck

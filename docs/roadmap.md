@@ -178,6 +178,20 @@ Raycast / Vicinae Extension
 - [x] 第二个官方插件 `clipboard-history` 验证 API 可用性
 - [x] 主题 / 深色模式 / 动画细节打磨（深色优先 + accent 一致性 + 启动器入场动画；浅色主题与更多过渡动画后续补齐）
 
+### M3.5 - Plugin Virtual UI Tree（DONE）
+
+目标：补齐 M3 承诺的「React Style DSL → Virtual UI Tree → GPUI Renderer」，消除固定视图词汇的表现力天花板，
+同时保持进程隔离与低内存。
+
+- [x] 新视图类型 `{ "type": "ui", "root": <node> }`；宿主把树当不可信数据校验后重放为 gpui 元素
+  （`crates/ui-components/src/virtual_tree`：`spec` + `render`）
+- [x] `@steward/extension-api` 元素构建器（`div` / `row` / `col` / `grid` / `scroll` + 常用叶子），
+  样式方法表 `style_table.json` 单一来源，`scripts/gen-styles.mjs` 生成类型
+- [x] JSON-RPC `view.invoke` + 运行时回调注册（`__stewardPrepareView` / `__stewardInvokeCallback`），
+  宿主 `HostEvent::ViewUpdate`；未知回调映射为 `CALLBACK_NOT_FOUND` 并静默丢弃
+- [x] 输入框宿主持有状态（`change` / `submit` 事件，输入延迟与插件往返无关）
+- [x] 启动器内联渲染与 detached 面板渲染共用同一物化器；新增官方示例插件 `packages/plugins/ui-showcase`
+
 ### M4 - Windows Support（TODO）
 
 - [ ] 评估 GPUI / gpui-component 在 Windows 上的成熟度并定方案
