@@ -12,10 +12,11 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyWindowHandle, App, Bounds, Context, ElementId,
+    div, prelude::*, px, rgb, size, svg, AnyWindowHandle, App, Bounds, Context, ElementId, Entity,
     FocusHandle, KeyDownEvent, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowKind, WindowOptions,
 };
+use steward_ui_components::virtual_tree::{validate_view, Node as UiNode, VirtualTreeView};
 use steward_ui_components::{
     calendar_grid_height, days_in_month, iso_date, month_week_rows, palette, ActionBar, ActionRef,
     CalendarView, DetailBlock, DetailData, DetailView, FieldKind, FormData, FormField, FormOption,
@@ -65,6 +66,7 @@ enum PanelKind {
     Form(FormData),
     Grid(GridData),
     Search,
+    Ui(UiNode),
 }
 
 /// A detached plugin-view window: one entity per open widget.
@@ -84,6 +86,8 @@ pub(crate) struct PluginPanelWindow {
     /// The latest `search.query` result view (a `list`/`grid`) rendered below
     /// the search bar. `None` until the first result lands.
     search_results: Option<serde_json::Value>,
+    /// The rendered `ui` tree, when the panel hosts a Virtual UI Tree view.
+    ui: Option<Entity<VirtualTreeView>>,
     /// Generation for `search.query` invocations; a stale response is dropped.
     search_gen: u64,
     action_bar: Option<ActionBar>,
@@ -198,6 +202,16 @@ impl Render for PluginPanelWindow {
                     );
                     col
                 }
+                PanelKind::Ui(_) => div()
+                    .id(ElementId::from("panel-ui"))
+                    .h(px(content_h))
+                    .w_full()
+                    .child(
+                        self.ui
+                            .as_ref()
+                            .expect("ui panel has a VirtualTreeView")
+                            .clone(),
+                    ),
             });
         let root = div()
             .id(ElementId::from("plugin-panel"))
@@ -269,6 +283,7 @@ impl PluginPanelWindow {
             search_bar: None,
             search_list: None,
             search_results: None,
+            ui: None,
             search_gen: 0,
             action_bar: None,
             actions: Vec::new(),
@@ -299,6 +314,7 @@ impl PluginPanelWindow {
         self.search_bar = None;
         self.search_list = None;
         self.search_results = None;
+        self.ui = None;
         self.search_gen = 0;
         self.action_bar = None;
         self.actions = panel_actions.clone();
@@ -556,6 +572,15 @@ impl PluginPanelWindow {
                     });
                 self.search_list = Some(ResultList::new(delegate, window, cx));
             }
+            PanelKind::Ui(node) => {
+                let sink = panel_event_sink(
+                    self.state.clone(),
+                    self.plugin_id.clone(),
+                    self.command.clone(),
+                );
+                let view = cx.new(|cx| VirtualTreeView::new(node.clone(), sink, cx));
+                self.ui = Some(view);
+            }
         }
         self.kind = kind;
     }
@@ -786,7 +811,11 @@ impl PluginPanelWindow {
                 }
                 _ => {}
             },
-            PanelKind::Detail(_) | PanelKind::Form(_) | PanelKind::Grid(_) | PanelKind::Search => {
+            PanelKind::Detail(_)
+            | PanelKind::Form(_)
+            | PanelKind::Grid(_)
+            | PanelKind::Search
+            | PanelKind::Ui(_) => {
                 // Escape docks the detached detail / form / grid / search panel
                 // back into the
                 // launcher; everything else is handled by the widgets.
@@ -1084,6 +1113,7 @@ fn panel_height(kind: &PanelKind) -> f32 {
         PanelKind::Detail(_) | PanelKind::Form(_) => DETAIL_FORM_PANEL_HEIGHT,
         PanelKind::Grid(_) => 320.0,
         PanelKind::Search => 360.0,
+        PanelKind::Ui(_) => 360.0,
     };
     let nav = if matches!(kind, PanelKind::Calendar(_)) {
         PANEL_NAV_HEIGHT
@@ -1175,7 +1205,63 @@ fn parse_panel_view(
     if is_search_view(view) {
         return Some((PanelKind::Search, extract_actions(view)));
     }
+    if let Ok(node) = validate_view(view) {
+        return Some((PanelKind::Ui(node), extract_actions(view)));
+    }
     None
+}
+
+/// Build the event sink a rendered `ui` tree uses: every element event is
+/// forwarded to the plugin's isolate as a `view.invoke`.
+fn panel_event_sink(
+    state: Rc<RefCell<LauncherState>>,
+    plugin_id: String,
+    command: String,
+) -> steward_ui_components::virtual_tree::EventSink {
+    Rc::new(move |callback_id, node_id, event, value| {
+        let Some(callback_id) = callback_id else {
+            return;
+        };
+        let mut payload = serde_json::json!({
+            "type": event.as_str(),
+            "node_id": node_id,
+        });
+        if let Some(value) = value {
+            payload["value"] = serde_json::Value::String(value);
+        }
+        let host = state.borrow().plugin_host.clone();
+        if host
+            .borrow_mut()
+            .invoke_view(&plugin_id, &command, callback_id, &payload)
+            .is_none()
+        {
+            eprintln!("[steward] plugin {plugin_id} not ready for view.invoke");
+        }
+    })
+}
+
+/// Apply a `view.invoke` result to an open `ui` panel (no-op when the panel is
+/// not open or no longer hosts a `ui` tree).
+pub(crate) fn apply_view_update_to_panel(
+    state: &Rc<RefCell<LauncherState>>,
+    plugin_id: &str,
+    command: &str,
+    view: &serde_json::Value,
+    cx: &mut App,
+) {
+    let Ok(node) = validate_view(view) else {
+        return;
+    };
+    let Some(handle) = state.borrow().plugin_window(plugin_id, command) else {
+        return;
+    };
+    if let Some(panel) = handle.downcast::<PluginPanelWindow>() {
+        let _ = panel.update(cx, |panel, _window, cx| {
+            if let Some(ui) = panel.ui.clone() {
+                ui.update(cx, |view, cx| view.set_tree(node.clone(), cx));
+            }
+        });
+    }
 }
 
 /// The raw view payload, unwrapping the runtime's `{ "view": ... }` envelope.

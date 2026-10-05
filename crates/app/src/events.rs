@@ -198,6 +198,40 @@ fn drain_plugin_events(
                     );
                 }
             }
+            steward_plugin_host::HostEvent::ViewUpdate {
+                plugin_id,
+                command,
+                view,
+            } => {
+                // A `ui` tree element handler returned a new tree. Feed an open
+                // detached panel first (it owns the rendered entity); an inline
+                // slot is refreshed so the launcher's own render picks it up.
+                {
+                    let state_clone = state.clone();
+                    let plugin_id_clone = plugin_id.clone();
+                    let command_clone = command.clone();
+                    let view_clone = view.clone();
+                    cx.update(|cx| {
+                        crate::plugin_panel_window::apply_view_update_to_panel(
+                            &state_clone,
+                            &plugin_id_clone,
+                            &command_clone,
+                            &view_clone,
+                            cx,
+                        );
+                    });
+                }
+                let index = {
+                    let state_ref = state.borrow();
+                    let hits = state_ref.plugin_hits.borrow();
+                    hits.iter()
+                        .position(|hit| hit.plugin_id == plugin_id && hit.command == command)
+                };
+                if let Some(index) = index {
+                    state.borrow().plugin_views.borrow_mut()[index] = Some(view);
+                    rerender = true;
+                }
+            }
         }
     }
     if rerender {

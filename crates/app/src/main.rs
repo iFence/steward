@@ -220,6 +220,7 @@ fn main() {
         plugin_search_results: RefCell::new(HashMap::new()),
         show_epoch: Cell::new(0),
         plugin_calendar: RefCell::new(None),
+        plugin_ui_inline: Cell::new(false),
         panel_view_windows: RefCell::new(HashMap::new()),
         hotkey_manager: None,
         summon_hotkey: None,

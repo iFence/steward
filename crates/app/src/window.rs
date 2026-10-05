@@ -464,6 +464,8 @@ pub(crate) fn open_launcher_window(
                     results_query: String::new(),
                     state: state.clone(),
                     detachable_list_target: None,
+                    ui_view: None,
+                    ui_target: None,
                     _activation_subscription: activation_subscription,
                     mouse_selecting: false,
                     mouse_anchor: 0,

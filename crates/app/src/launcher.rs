@@ -277,6 +277,16 @@ fn calendar_height(data: &CalendarData) -> f32 {
     LAUNCHER_HEIGHT + 2.0 * LAUNCHER_MARGIN + calendar_grid_height(rows)
 }
 
+/// Height of the drop-down area a plugin `ui` tree occupies when rendered
+/// inline in the launcher. Rich interactive trees are better popped out; the
+/// inline rendering is for compact, mostly-display views.
+const UI_INLINE_HEIGHT: f32 = 320.0;
+
+/// Total window height while an inline `ui` tree is displayed.
+fn ui_inline_height() -> f32 {
+    LAUNCHER_HEIGHT + 2.0 * LAUNCHER_MARGIN + UI_INLINE_HEIGHT
+}
+
 /// A plugin `calendar` view currently displayed in the launcher, plus the
 /// plugin that produced it (needed for `item.invoke` on day selection).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,6 +380,11 @@ pub(crate) struct StewardApp {
     /// set when the active query has exactly one detachable list panel so the
     /// target is unambiguous.
     pub(crate) detachable_list_target: Option<(String, String)>,
+    /// Inline Virtual UI Tree for the current query, when the active plugin
+    /// view is a `ui` tree and is not popped out into its own window.
+    pub(crate) ui_view: Option<gpui::Entity<steward_ui_components::virtual_tree::VirtualTreeView>>,
+    /// The `(plugin_id, command)` [`StewardApp::ui_view`] belongs to.
+    pub(crate) ui_target: Option<(String, String)>,
     /// Keeps the window-activation observer alive for the view's lifetime.
     pub(crate) _activation_subscription: Subscription,
     /// Whether a left-button drag is actively extending a text selection in
@@ -474,6 +489,9 @@ pub(crate) struct LauncherState {
     /// The active calendar view (from the first calendar-typed plugin view of
     /// the current query), if any.
     pub(crate) plugin_calendar: RefCell<Option<ActiveCalendar>>,
+    /// Whether an inline `ui` tree is currently occupying the drop-down, so
+    /// the summon path sizes the window like the calendar path does.
+    pub(crate) plugin_ui_inline: Cell<bool>,
     /// Open plugin-view windows, keyed by `(plugin_id, command)`. Each entry
     /// is an independent PopUp that lives outside the launcher (never toggled
     /// by the summon hotkey and never hidden on launcher blur). Generic: any
@@ -573,6 +591,9 @@ impl LauncherState {
             if !self.is_active_panel_detached() {
                 return calendar_height(&active.data);
             }
+        }
+        if self.plugin_ui_inline.get() {
+            return ui_inline_height();
         }
         launcher_height(self.result_count.get())
     }
@@ -862,7 +883,7 @@ pub(crate) fn is_detail_or_form_view(view: &serde_json::Value) -> bool {
     let view = view.get("view").unwrap_or(view);
     matches!(
         view.get("type").and_then(|kind| kind.as_str()),
-        Some("detail") | Some("form")
+        Some("detail") | Some("form") | Some("ui")
     )
 }
 
@@ -872,8 +893,37 @@ pub(crate) fn is_panel_view(view: &serde_json::Value) -> bool {
     let view = view.get("view").unwrap_or(view);
     matches!(
         view.get("type").and_then(|kind| kind.as_str()),
-        Some("list" | "grid" | "search" | "detail" | "form")
+        Some("list" | "grid" | "search" | "detail" | "form" | "ui")
     )
+}
+
+/// Build the event sink an inline `ui` tree uses: every element event is
+/// forwarded to the plugin's isolate as a `view.invoke`.
+fn launcher_event_sink(
+    state: Rc<RefCell<LauncherState>>,
+    plugin_id: String,
+    command: String,
+) -> steward_ui_components::virtual_tree::EventSink {
+    Rc::new(move |callback_id, node_id, event, value| {
+        let Some(callback_id) = callback_id else {
+            return;
+        };
+        let mut payload = serde_json::json!({
+            "type": event.as_str(),
+            "node_id": node_id,
+        });
+        if let Some(value) = value {
+            payload["value"] = serde_json::Value::String(value);
+        }
+        let host = state.borrow().plugin_host.clone();
+        if host
+            .borrow_mut()
+            .invoke_view(&plugin_id, &command, callback_id, &payload)
+            .is_none()
+        {
+            eprintln!("[steward] plugin {plugin_id} not ready for view.invoke");
+        }
+    })
 }
 
 /// Parse a plugin `calendar` view (wrapped or bare) into the display data.
@@ -1296,6 +1346,7 @@ impl gpui::Render for StewardApp {
         let state = self.state.borrow();
         let calendar_active =
             state.plugin_calendar.borrow().is_some() && !state.is_active_panel_detached();
+        let ui_active = self.ui_view.is_some() && !calendar_active;
         // The month grid's height follows the actual number of week rows the
         // displayed month spans (4..=6), so a short month makes the bar shorter
         // instead of leaving an empty six-row grid.
@@ -1393,7 +1444,24 @@ impl gpui::Render for StewardApp {
                             .child(self.calendar.render(calendar_grid_h, cx)),
                     )
             })
-            .when(!calendar_active && result_count > 0, |this| {
+            .when(ui_active, |this| {
+                let Some(ui) = self.ui_view.clone() else {
+                    return this;
+                };
+                this.child(
+                    div()
+                        .w_full()
+                        .h(px(1.0))
+                        .bg(rgb(0xffffff).opacity(0.10)),
+                )
+                .child(
+                    div()
+                        .h(px(UI_INLINE_HEIGHT))
+                        .mx(px(LAUNCHER_MARGIN))
+                        .child(ui),
+                )
+            })
+            .when(!calendar_active && !ui_active && result_count > 0, |this| {
                 // A subtle light hairline separates the search box from the
                 // results list (Tinycast's `separator`, white 0.10); it only
                 // shows while the drop-down is open.
@@ -2330,6 +2398,51 @@ impl StewardApp {
             }
             target
         };
+        // Inline Virtual UI Tree: the first `ui` view among the current hits
+        // that is not popped out. It replaces the results list, like the
+        // calendar does, at a fixed height.
+        let active_ui = {
+            let state_ref = self.state.borrow();
+            let hits = state_ref.plugin_hits.borrow();
+            let views = state_ref.plugin_views.borrow();
+            let mut found = None;
+            for (hit, view) in hits.iter().zip(views.iter()) {
+                let Some(view) = view.as_ref() else {
+                    continue;
+                };
+                if state_ref.plugin_window_open(&hit.plugin_id, &hit.command) {
+                    continue;
+                }
+                if let Ok(node) = steward_ui_components::virtual_tree::validate_view(view) {
+                    found = Some((hit.plugin_id.clone(), hit.command.clone(), node));
+                    break;
+                }
+            }
+            found
+        };
+        match active_ui {
+            Some((plugin_id, command, node)) => {
+                if self.ui_target.as_ref() == Some(&(plugin_id.clone(), command.clone())) {
+                    if let Some(entity) = self.ui_view.clone() {
+                        entity.update(cx, |view, cx| view.set_tree(node, cx));
+                    }
+                } else {
+                    let sink =
+                        launcher_event_sink(self.state.clone(), plugin_id.clone(), command.clone());
+                    let entity = cx.new(|cx| {
+                        steward_ui_components::virtual_tree::VirtualTreeView::new(node, sink, cx)
+                    });
+                    self.ui_view = Some(entity);
+                    self.ui_target = Some((plugin_id, command));
+                }
+            }
+            None => {
+                self.ui_view = None;
+                self.ui_target = None;
+            }
+        }
+        let ui_inline = self.ui_view.is_some();
+        self.state.borrow().plugin_ui_inline.set(ui_inline);
         if show_calendar_grid {
             // A calendar view replaces the results list: push the month grid's
             // data, localized labels and selection into the calendar widget.
@@ -2489,6 +2602,8 @@ impl StewardApp {
                 .as_ref()
                 .expect("show_calendar_grid implies Some");
             calendar_height(&active.data)
+        } else if ui_inline {
+            ui_inline_height()
         } else {
             launcher_height(count)
         };
