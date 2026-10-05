@@ -123,6 +123,14 @@ pub enum HostEvent {
         item_id: String,
         view: Value,
     },
+    /// A `ui` view element event returned a new tree (e.g. a click handler that
+    /// redraws the view). The launcher/panel replaces the current view with
+    /// `view`; `None` is never sent (an unchanged handler produces no event).
+    ViewUpdate {
+        plugin_id: String,
+        command: String,
+        view: Value,
+    },
     /// A runtime process died; the host schedules a restart with backoff.
     RuntimeCrashed {
         /// `None` for the shared pool, `Some(plugin_id)` for a dedicated
@@ -182,6 +190,11 @@ enum Pending {
         command: String,
         query: String,
     },
+    View {
+        plugin_id: String,
+        command: String,
+        callback_id: String,
+    },
 }
 
 /// A call that must wait for its plugin's isolate to be (re)loaded before it
@@ -212,6 +225,12 @@ enum QueuedCall {
         plugin_id: String,
         command: String,
         query: String,
+    },
+    View {
+        plugin_id: String,
+        command: String,
+        callback_id: String,
+        event: Value,
     },
 }
 
@@ -550,6 +569,53 @@ impl PluginHost {
                 plugin_id: plugin_id.to_string(),
                 command: command.to_string(),
                 query: query.to_string(),
+            });
+        self.ensure_loaded(&conn_key, plugin_id);
+        Some(0)
+    }
+
+    /// Deliver one element event for a rendered `ui` view. Like [`invoke_item`],
+    /// a not-yet-loaded plugin is lazy-loaded here (`Some(0)` is the queued
+    /// sentinel); the plugin's handler may return a replacement tree, which the
+    /// host surfaces as [`HostEvent::ViewUpdate`].
+    pub fn invoke_view(
+        &mut self,
+        plugin_id: &str,
+        command: &str,
+        callback_id: &str,
+        event: &Value,
+    ) -> Option<u64> {
+        let conn_key = self.conn_key_for(plugin_id);
+        if !self.conns.contains_key(&conn_key) {
+            return None;
+        }
+        if self
+            .conns
+            .get(&conn_key)
+            .is_some_and(|conn| conn.isolates.contains_key(plugin_id))
+        {
+            let id = self.dispatch_view(&conn_key, plugin_id, callback_id, event)?;
+            self.pending.insert(
+                id,
+                Pending::View {
+                    plugin_id: plugin_id.to_string(),
+                    command: command.to_string(),
+                    callback_id: callback_id.to_string(),
+                },
+            );
+            return Some(id);
+        }
+        if !self.loaded.contains_key(plugin_id) {
+            return None;
+        }
+        self.queued
+            .entry(plugin_id.to_string())
+            .or_default()
+            .push(QueuedCall::View {
+                plugin_id: plugin_id.to_string(),
+                command: command.to_string(),
+                callback_id: callback_id.to_string(),
+                event: event.clone(),
             });
         self.ensure_loaded(&conn_key, plugin_id);
         Some(0)
@@ -1142,6 +1208,32 @@ impl PluginHost {
         Some(id)
     }
 
+    /// Send a `view.invoke` for a loaded isolate.
+    fn dispatch_view(
+        &mut self,
+        conn_key: &str,
+        plugin_id: &str,
+        callback_id: &str,
+        event: &Value,
+    ) -> Option<u64> {
+        let conn = self.conns.get_mut(conn_key)?;
+        let isolate_id = *conn.isolates.get(plugin_id)?;
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        let request = Request::new(
+            id,
+            method::VIEW_INVOKE,
+            json!({
+                "isolate_id": isolate_id,
+                "callback_id": callback_id,
+                "event": event,
+                "deadline_ms": crate::route::STATIC_DEADLINE_MS,
+            }),
+        );
+        conn.send(&request).ok()?;
+        Some(id)
+    }
+
     /// Whether the plugin's manifest grants the `clipboard.history` permission.
     fn plugin_has_history(&self, plugin_id: &str) -> bool {
         self.loaded.get(plugin_id).is_some_and(|(_, meta)| {
@@ -1232,6 +1324,24 @@ impl PluginHost {
                         );
                     }
                 }
+                QueuedCall::View {
+                    plugin_id: pid,
+                    command,
+                    callback_id,
+                    event,
+                } => {
+                    let id = self.dispatch_view(conn_key, &pid, &callback_id, &event);
+                    if let Some(id) = id {
+                        self.pending.insert(
+                            id,
+                            Pending::View {
+                                plugin_id: pid,
+                                command,
+                                callback_id,
+                            },
+                        );
+                    }
+                }
             }
         }
     }
@@ -1253,6 +1363,7 @@ impl PluginHost {
             QueuedCall::Action { plugin_id, .. } => plugin_id.clone(),
             QueuedCall::Submit { plugin_id, .. } => plugin_id.clone(),
             QueuedCall::Search { plugin_id, .. } => plugin_id.clone(),
+            QueuedCall::View { plugin_id, .. } => plugin_id.clone(),
         };
         if let Some(conn) = self.conns.get_mut(conn_key) {
             conn.isolates.remove(&plugin_id);
@@ -1314,6 +1425,12 @@ impl PluginHost {
                         "plugin isolate is not loaded",
                     )),
                 }),
+                QueuedCall::View { plugin_id, .. } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id}: plugin isolate is not loaded"),
+                        "kind": "error",
+                    }),
+                }),
             }
             return;
         }
@@ -1342,7 +1459,8 @@ impl PluginHost {
                 | Pending::Item { plugin_id, .. }
                 | Pending::Action { plugin_id, .. }
                 | Pending::Submit { plugin_id, .. }
-                | Pending::Search { plugin_id, .. } => plugin_id,
+                | Pending::Search { plugin_id, .. }
+                | Pending::View { plugin_id, .. } => plugin_id,
                 Pending::Invoke { hit, .. } => &hit.plugin_id,
             };
             !affected.contains(plugin_id)
@@ -1527,6 +1645,49 @@ impl PluginHost {
                     result,
                 });
             }
+            Pending::View {
+                plugin_id,
+                command,
+                callback_id,
+            } => {
+                if let Some(error) = &response.error {
+                    if error.code == code::PLUGIN_NOT_FOUND {
+                        self.handle_stale_isolate(
+                            conn_key,
+                            QueuedCall::View {
+                                plugin_id: plugin_id.clone(),
+                                command: command.clone(),
+                                callback_id: callback_id.clone(),
+                                event: Value::Null,
+                            },
+                            events,
+                        );
+                        return;
+                    }
+                    // A callback that no longer exists (the isolate reloaded,
+                    // or the element left the tree) is dropped silently: it is
+                    // a stale UI interaction, not a plugin error.
+                    if error.code != code::CALLBACK_NOT_FOUND {
+                        events.push(HostEvent::Toast {
+                            params: json!({
+                                "message": format!("{plugin_id}: {}", error.message),
+                                "kind": "error",
+                            }),
+                        });
+                    }
+                } else if let Some(view) = response
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("view"))
+                    .cloned()
+                {
+                    events.push(HostEvent::ViewUpdate {
+                        plugin_id,
+                        command,
+                        view,
+                    });
+                }
+            }
         }
     }
 
@@ -1579,6 +1740,12 @@ impl PluginHost {
                     command,
                     query,
                     result: Err(error.clone()),
+                }),
+                QueuedCall::View { plugin_id, .. } => events.push(HostEvent::Toast {
+                    params: json!({
+                        "message": format!("{plugin_id}: {}", error.message),
+                        "kind": "error",
+                    }),
                 }),
             }
         }

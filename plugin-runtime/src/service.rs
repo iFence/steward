@@ -113,6 +113,17 @@ struct SearchQueryParams {
     deadline_ms: u64,
 }
 
+/// Parameters of `view.invoke`.
+#[derive(Debug, Deserialize)]
+struct ViewInvokeParams {
+    isolate_id: IsolateId,
+    callback_id: String,
+    #[serde(default)]
+    event: Value,
+    #[serde(default = "default_deadline")]
+    deadline_ms: u64,
+}
+
 /// Parameters of `plugin.unload`.
 #[derive(Debug, Deserialize)]
 struct UnloadParams {
@@ -413,6 +424,40 @@ fn dispatch(pool: &mut IsolatePool, request: &Request) -> Dispatch {
                 Err(error) => Dispatch::Reply(invoke_error(request.id, "search", error)),
             }
         }
+        method::VIEW_INVOKE => {
+            let params = match parse_params::<ViewInvokeParams>(request) {
+                Ok(params) => params,
+                Err(error) => return Dispatch::Reply(Response::error(request.id, error)),
+            };
+            if pool.is_parked(params.isolate_id) {
+                return Dispatch::Reply(Response::error(
+                    request.id,
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "plugin is busy; a prior invocation is pending",
+                    ),
+                ));
+            }
+            match pool.invoke_view(
+                params.isolate_id,
+                &params.callback_id,
+                &params.event,
+                params.deadline_ms,
+            ) {
+                Ok(view) => {
+                    let mut result = json!({});
+                    if let Some(view) = view {
+                        result["view"] = view;
+                    }
+                    Dispatch::Reply(Response::ok(request.id, result))
+                }
+                Err(InvokeError::Pending) => Dispatch::Parked {
+                    isolate_id: params.isolate_id,
+                    request: request.clone(),
+                },
+                Err(error) => Dispatch::Reply(invoke_error(request.id, "view", error)),
+            }
+        }
         method::PLUGIN_UNLOAD => {
             let params = match parse_params::<UnloadParams>(request) {
                 Ok(params) => params,
@@ -452,6 +497,10 @@ fn invoke_error(id: u64, command: &str, error: InvokeError) -> Response {
         InvokeError::CommandNotFound => (
             code::COMMAND_NOT_FOUND,
             format!("command '{command}' is not registered by the plugin"),
+        ),
+        InvokeError::CallbackNotFound => (
+            code::CALLBACK_NOT_FOUND,
+            "the element callback is no longer registered".to_string(),
         ),
         InvokeError::Timeout => (
             code::TIMEOUT,

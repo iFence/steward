@@ -53,6 +53,8 @@ pub enum InvokeError {
     NotFound,
     /// The plugin did not register the requested command.
     CommandNotFound,
+    /// A `view.invoke` named a callback the plugin no longer registers.
+    CallbackNotFound,
     /// The plugin did not answer within its deadline; the isolate was killed.
     Timeout,
     /// The plugin exceeded its heap limit; the isolate was killed.
@@ -245,6 +247,7 @@ impl IsolatePool {
             let command_fn: Function = module.get("command")?;
             let result: JsValue = command_fn.call((command, input_text))?;
             let result = await_view(&ctx, result)?;
+            let result = prepare_view(&ctx, result)?;
             js_value_to_json(&ctx, &result)
         })
     }
@@ -346,6 +349,7 @@ impl IsolatePool {
             })?;
             let result: JsValue = select_fn.call((item_id,))?;
             let result = await_view(&ctx, result)?;
+            let result = prepare_view(&ctx, result)?;
             let json = js_value_to_json(&ctx, &result)?;
             if json.is_null() {
                 Ok(None)
@@ -382,6 +386,43 @@ impl IsolatePool {
             })?;
             let result: JsValue = search_fn.call((query,))?;
             let result = await_view(&ctx, result)?;
+            let result = prepare_view(&ctx, result)?;
+            let json = js_value_to_json(&ctx, &result)?;
+            if json.is_null() {
+                Ok(None)
+            } else {
+                Ok(Some(json))
+            }
+        })
+    }
+
+    /// Deliver one element event to the plugin's registered callback for a
+    /// rendered `ui` view. The SDK's `__stewardInvokeCallback` hook resolves the
+    /// callback id and runs the handler; a handler that returns a view yields
+    /// the new serialized tree (the host replaces the current one), and a
+    /// handler that returns nothing yields `Ok(None)`.
+    pub fn invoke_view(
+        &mut self,
+        id: IsolateId,
+        callback_id: &str,
+        event: &Json,
+        deadline_ms: u64,
+    ) -> Result<Option<Json>, InvokeError> {
+        let callback_id = callback_id.to_string();
+        let event_text = serde_json::to_string(event)
+            .map_err(|error| InvokeError::Internal(format!("cannot encode event: {error}")))?;
+        self.run_in_isolate(id, deadline_ms, move |ctx| {
+            let invoke: JsValue = ctx.globals().get("__stewardInvokeCallback")?;
+            let Some(invoke) = invoke.into_function() else {
+                return Err(rquickjs::Error::new_from_js_message(
+                    "globalThis.__stewardInvokeCallback",
+                    "function",
+                    "unknown callback: the bundle does not expose the SDK event bridge",
+                ));
+            };
+            let result: JsValue = invoke.call((callback_id, event_text))?;
+            let result = await_view(&ctx, result)?;
+            let result = prepare_view(&ctx, result)?;
             let json = js_value_to_json(&ctx, &result)?;
             if json.is_null() {
                 Ok(None)
@@ -603,6 +644,8 @@ impl IsolatePool {
                 }
                 if message.contains("permission denied") {
                     Err(InvokeError::PermissionDenied(message))
+                } else if message.contains("unknown callback") {
+                    Err(InvokeError::CallbackNotFound)
                 } else {
                     Err(InvokeError::Plugin(message))
                 }
@@ -762,6 +805,18 @@ fn await_view<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsVa
         }
         Err(error) => Err(error),
     }
+}
+
+/// Let the SDK finalize a value the plugin returned as a view: the extension API
+/// installs `globalThis.__stewardPrepareView`, which assigns stable element ids
+/// and registers the event callbacks a `ui` tree declares. A bundle without the
+/// hook (e.g. a hand-written test bundle) passes through unchanged.
+fn prepare_view<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    let hook: JsValue = ctx.globals().get("__stewardPrepareView")?;
+    let Some(hook) = hook.into_function() else {
+        return Ok(value);
+    };
+    hook.call((value,))
 }
 
 /// Resolve (or reject) a plugin's pending host request and re-drain the parked
@@ -2091,6 +2146,69 @@ mod tests {
             matches!(&error, InvokeError::PermissionDenied(message) if message.contains("network")),
             "unexpected error: {error:?}"
         );
+        assert_eq!(pool.active_count(), 1);
+    }
+
+    #[test]
+    fn view_invoke_runs_the_registered_callback() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                var handlers = {};
+                globalThis.__stewardPrepareView = function (view) { return view; };
+                globalThis.__stewardInvokeCallback = function (id, eventJson) {
+                    var handler = handlers[id];
+                    if (!handler) { throw new Error("unknown callback: " + id); }
+                    return handler(JSON.parse(eventJson));
+                };
+                function command(name, input) {
+                    handlers["b:click"] = function (event) {
+                        return { type: "ui", root: { kind: "text", text: "clicked " + event.node_id } };
+                    };
+                    return { type: "ui", root: { kind: "button", text: "Go", on: { click: "b:click" } } };
+                }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let view = pool.invoke_command(id, "echo", &Json::Null, 1000).unwrap();
+        assert_eq!(view["type"], "ui");
+
+        let event = serde_json::json!({ "type": "click", "node_id": "b" });
+        let updated = pool
+            .invoke_view(id, "b:click", &event, 1000)
+            .unwrap()
+            .expect("a view was returned");
+        assert_eq!(updated["root"]["text"], "clicked b");
+        assert_eq!(pool.active_count(), 1);
+    }
+
+    #[test]
+    fn view_invoke_unknown_callback_is_callback_not_found() {
+        let _guard = lock_test();
+        let entry = write_bundle(
+            r#"
+            var __stewardPlugin = (() => {
+                globalThis.__stewardPrepareView = function (view) { return view; };
+                globalThis.__stewardInvokeCallback = function (id) {
+                    throw new Error("unknown callback: " + id);
+                };
+                function command() { return { type: "ui", root: { kind: "text", text: "x" } }; }
+                return { command: command };
+            })();
+            "#,
+        );
+        let mut pool = IsolatePool::new(false, 8, DEFAULT_HEAP_LIMIT, DEFAULT_MAX_STACK);
+        let id = pool.load(&entry, &manifest(&[])).unwrap();
+        let error = pool
+            .invoke_view(id, "gone:click", &Json::Null, 1000)
+            .unwrap_err();
+        assert_eq!(error, InvokeError::CallbackNotFound);
+        // A missing callback is a stale UI interaction, not a crash: the
+        // isolate stays alive.
         assert_eq!(pool.active_count(), 1);
     }
 }

@@ -151,6 +151,9 @@ pub mod code {
     pub const PLUGIN_NOT_FOUND: i64 = -32002;
     /// The requested command does not exist on the plugin.
     pub const COMMAND_NOT_FOUND: i64 = -32003;
+    /// A `view.invoke` named a callback the plugin no longer registers (the
+    /// isolate was reloaded, or the element left the tree).
+    pub const CALLBACK_NOT_FOUND: i64 = -32004;
 }
 
 /// Main process -> runtime methods.
@@ -177,6 +180,11 @@ pub mod method {
     /// handler runs and returns a view (usually a `list` or `grid`) that
     /// replaces the search view's results area.
     pub const SEARCH_QUERY: &str = "search.query";
+    /// Deliver one element event for a rendered `ui` view. Params:
+    /// `{ isolate_id, callback_id, event, deadline_ms }`; result: `{ view? }`.
+    /// The plugin's registered handler runs; when it returns a view the host
+    /// replaces the current tree with it, and `{}` means the view is unchanged.
+    pub const VIEW_INVOKE: &str = "view.invoke";
     /// Drop a plugin's isolate. Params: `{ isolate_id }`; result: `{}`.
     pub const PLUGIN_UNLOAD: &str = "plugin.unload";
     /// Liveness probe. Params: `{}`; result: `{ pong: true }`.
