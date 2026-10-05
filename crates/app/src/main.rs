@@ -44,6 +44,7 @@ mod launch;
 mod launcher;
 mod platform;
 mod plugin_panel_window;
+mod plugin_workspace;
 mod search_input;
 mod settings;
 mod theme;
@@ -222,6 +223,9 @@ fn main() {
         plugin_calendar: RefCell::new(None),
         plugin_ui_inline: Cell::new(false),
         panel_view_windows: RefCell::new(HashMap::new()),
+        workspace_panels: RefCell::new(HashMap::new()),
+        workspace_window: RefCell::new(None),
+        workspace_dock: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
         settings_hotkey: None,
@@ -242,6 +246,9 @@ fn main() {
     // record in docs/architecture.md).
     application().run(move |cx: &mut App| {
         let focus = init_ui_common(cx, &state);
+        // Register the dockable plugin panel type and share the app state the
+        // registry builder needs to rebuild panels from a persisted layout.
+        crate::plugin_workspace::init(cx, &state);
 
         // Watch the Start Menu (and reconcile on a timer) *before* the first
         // scan, so a shortcut written while that scan runs is not missed.

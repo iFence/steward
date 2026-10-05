@@ -934,6 +934,23 @@ pub(crate) fn open_plugin_panel(
 ) -> Option<AnyWindowHandle> {
     let (kind, actions) = parse_panel_view(&view, &plugin_id, &command, detachable)?;
 
+    // A Virtual UI Tree renders in the dockable workspace: flexible layout,
+    // tabs/drag/close, and a persisted arrangement.
+    if matches!(kind, PanelKind::Ui(_)) {
+        let title: gpui::SharedString = {
+            let state_ref = state.borrow();
+            let hits = state_ref.plugin_hits.borrow();
+            hits.iter()
+                .find(|hit| hit.plugin_id == plugin_id && hit.command == command)
+                .map(|hit| hit.title.clone())
+                .unwrap_or_else(|| command.clone())
+                .into()
+        };
+        return crate::plugin_workspace::open_ui_panel(
+            state, i18n, plugin_id, command, title, view, cx,
+        );
+    }
+
     // Already open: re-target it to the new view and bring it forward.
     if let Some(handle) = state.borrow().plugin_window(&plugin_id, &command) {
         // An already-open panel just comes to the front (the caller replaces a
@@ -1041,6 +1058,18 @@ pub(crate) fn dock_panel_back(
     command: &str,
     cx: &mut App,
 ) {
+    // A panel docked in the workspace is removed from the dock instead of
+    // closing a standalone window.
+    if crate::plugin_workspace::is_panel_open(&state.borrow(), plugin_id, command) {
+        crate::plugin_workspace::close_ui_panel(state, plugin_id, command, cx);
+        let launcher = state.borrow().window;
+        if let Some(launcher) = launcher {
+            if let Some(app) = launcher.downcast::<StewardApp>() {
+                let _ = app.update(cx, |app, window, cx| app.apply_plugin_views(window, cx));
+            }
+        }
+        return;
+    }
     let handle = state
         .borrow_mut()
         .panel_view_windows
@@ -1074,6 +1103,7 @@ pub(crate) fn panel_window_closed(
     window_id: gpui::WindowId,
     cx: &mut App,
 ) {
+    crate::plugin_workspace::window_closed(state, window_id);
     let key = {
         let s = state.borrow();
         let windows = s.panel_view_windows.borrow();
@@ -1252,6 +1282,18 @@ pub(crate) fn apply_view_update_to_panel(
     let Ok(node) = validate_view(view) else {
         return;
     };
+    // A docked panel owns its tree entity directly; update it in place.
+    let docked = state
+        .borrow()
+        .workspace_panels
+        .borrow()
+        .get(&(plugin_id.to_string(), command.to_string()))
+        .cloned();
+    if let Some(panel) = docked {
+        let view = view.clone();
+        panel.update(cx, |panel, cx| panel.set_view(view, cx));
+        return;
+    }
     let Some(handle) = state.borrow().plugin_window(plugin_id, command) else {
         return;
     };

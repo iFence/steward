@@ -497,6 +497,16 @@ pub(crate) struct LauncherState {
     /// by the summon hotkey and never hidden on launcher blur). Generic: any
     /// command whose manifest sets `detachable` can pop a view here.
     pub(crate) panel_view_windows: RefCell<HashMap<(String, String), gpui::AnyWindowHandle>>,
+    /// Plugin panels docked in the workspace window, keyed by
+    /// `(plugin_id, command)`. A docked panel counts as "popped out": the
+    /// launcher shows the command row rather than the inline view.
+    pub(crate) workspace_panels:
+        RefCell<HashMap<(String, String), gpui::Entity<crate::plugin_workspace::PluginDockPanel>>>,
+    /// The plugin workspace window, when open.
+    pub(crate) workspace_window: RefCell<Option<gpui::AnyWindowHandle>>,
+    /// The workspace's dock area, so panels can be added and removed from
+    /// outside the workspace view.
+    pub(crate) workspace_dock: RefCell<Option<gpui::Entity<gpui_component::dock::DockArea>>>,
     /// Logical launcher height last requested from a resize, so `search` can
     /// skip redundant resize calls when the result-count-driven height has not
     /// changed (e.g. every IME composition update).
@@ -616,6 +626,7 @@ impl LauncherState {
         self.panel_view_windows
             .borrow()
             .contains_key(&(plugin_id.to_string(), command.to_string()))
+            || crate::plugin_workspace::is_panel_open(self, plugin_id, command)
     }
 
     /// The open detached window handle for a plugin view, if any.
@@ -628,6 +639,13 @@ impl LauncherState {
             .borrow()
             .get(&(plugin_id.to_string(), command.to_string()))
             .cloned()
+            .or_else(|| {
+                if crate::plugin_workspace::is_panel_open(self, plugin_id, command) {
+                    *self.workspace_window.borrow()
+                } else {
+                    None
+                }
+            })
     }
 
     /// Whether the active calendar panel is detached into its own window.
