@@ -113,8 +113,11 @@ export function command(): View {
 
 ### 元素与样式
 
-- 容器：`div` / `row` / `col` / `grid(columns)` / `scroll(axis)`；叶子：`text` / `icon`（内联 SVG）/
-  `image`（内联 `data:` URI）/ `button` / `input` / `link` / `badge` / `separator` / `progress` / `spacer`。
+- 容器：`div` / `row` / `col` / `grid(columns)` / `scroll(axis)`。
+- 显示叶子：`text` / `heading(level)` / `tag` / `badge` / `icon`（内联 SVG）/ `image`（内联 `data:` URI）/
+  `separator` / `progress(0..1)` / `spinner` / `skeleton` / `description_list([{label,value}])` / `spacer`。
+- 交互叶子：`button` / `link` / `input`（宿主持有文本）/ `checkbox` / `switch` / `select`。控件值由**插件
+  自持**：树里携带当前 `checked` / `value`，点击经 `change` 事件（值为新值）回报，插件翻转状态并返回新树。
 - 样式方法与 gpui 同名，由宿主规范表（`style_table.json`）生成：布局/尺寸/flex/间距/边框圆角/颜色/文字等。
   颜色取主题 token（如 `"primary"`、`"muted_foreground"`）或 `#rrggbb`；未知方法在调用点即报错。
 - `.id(name)` 提供稳定 id（`input` 必需）；`.child(...)` 追加子节点；`.style(name, value)` 是向前兼容的逃生口。
@@ -131,4 +134,6 @@ export function command(): View {
 - 宿主把树当作不可信数据校验：深度 ≤ 32、节点 ≤ 2000、每节点子节点 ≤ 256、样式项 ≤ 64、文本 ≤ 8 KiB、
   整树 ≤ 1 MiB，长度 0–4096、`opacity` 0–1、`columns` 1–16；越界或未知字段会被拒绝。
 - v1 媒体仅限内联 SVG 与 `data:` URI；`link` 的点击走回调（打开 URL 仍由权限化的 `openUrl` 负责）。
-- 代码编辑器 / LSP、WebView、`table` / `tree` / `markdown` / `chart` 等更丰富的叶子留待后续批次。
+- 仍需宿主托管状态的控件（`slider` / `combobox` / `stepper` / `tabs` / `accordion`）、数据展示
+  （`table` / `tree` / `pagination`）与富内容（`markdown` / `code` / `chart`）留待后续批次；代码编辑器 /
+  LSP、WebView 明确不做。

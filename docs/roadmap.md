@@ -203,6 +203,17 @@ Raycast / Vicinae Extension
 - [x] 停靠面板与启动器内联视图共享同一 `view.invoke` 事件路径；docked 视为"已弹出"
 - [x] 第一方 overlay：`ToastCenter` + `RootPlugin`（Root 根窗口自动挂载）；启动器窗口根不是 `Root`，改为在自身视图里渲染同一 toast 栈
 
+### M3.7 - Advanced Leaves（PARTIAL）
+
+目标：把虚拟 UI 树的叶子从首批扩展到高级控件与数据展示。
+
+- [x] 显示叶子：`heading` / `tag` / `spinner` / `skeleton` / `description_list`
+- [x] 控件（插件自持值）：`checkbox` / `switch` / `select`——树携带当前值，点击经 `change` 事件回报，插件翻转状态并返回新树
+- [x] SDK 构建器与类型：`heading` / `tag` / `spinner` / `skeleton` / `descriptionList` / `checkbox` / `switchControl` / `select`
+- [ ] 需宿主托管状态的控件：`slider` / `combobox` / `stepper` / `tabs` / `accordion`
+- [ ] 数据展示：`table`（虚拟滚动/排序）/ `tree` / `pagination`
+- [ ] 富内容：`markdown` / `code`（语法高亮）/ `chart`
+
 ### M4 - Windows Support（TODO）
 
 - [ ] 评估 GPUI / gpui-component 在 Windows 上的成熟度并定方案
