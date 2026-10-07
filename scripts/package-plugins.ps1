@@ -36,7 +36,9 @@ foreach ($name in $names) {
         Write-Warning "skip $name (no plugin.json in $dir)"
         continue
     }
-    $meta = Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json
+    # Read UTF-8 explicitly: Windows PowerShell 5.1 defaults to the ANSI code
+    # page, which mangles the non-ASCII keywords a manifest may carry (`日历`).
+    $meta = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifest | ConvertFrom-Json
     $version = $meta.version
     if (-not $version) {
         throw "plugin.json in $dir has no version"
