@@ -14,7 +14,7 @@
 //! through the `on_confirm` callback so the app can launch the application and
 //! bump its usage frequency.
 
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::Arc};
 
 use gpui::{
     div, img, prelude::FluentBuilder, px, rgb, App, AppContext, Context, ElementId, Entity, Image,
@@ -28,32 +28,6 @@ use steward_core_engine::AppEntry;
 /// Returns whether the launcher should hide after confirming (`true`). Plugin
 /// rows return `false` so the bar stays open after an `item.invoke`.
 pub type ConfirmCallback = Rc<dyn Fn(usize, &mut App) -> bool>;
-
-/// Observer for confirmation attempts (see [`set_confirm_trace`]).
-pub type ConfirmTrace = Rc<dyn Fn(&str)>;
-
-thread_local! {
-    /// The installed [`ConfirmTrace`], if any. The host app installs one when
-    /// its diagnostics are on.
-    static CONFIRM_TRACE: RefCell<Option<ConfirmTrace>> = const { RefCell::new(None) };
-}
-
-/// Install an observer for every confirmation attempt, accepted or refused.
-///
-/// The host app sets this when its diagnostics are on, so a key that appears to
-/// do nothing can say *why*: rows that are not confirmable, a selection past the
-/// end, no callback. The widget never prints on its own.
-pub fn set_confirm_trace(trace: Option<ConfirmTrace>) {
-    CONFIRM_TRACE.with(|slot| *slot.borrow_mut() = trace);
-}
-
-fn trace_confirm(message: &str) {
-    CONFIRM_TRACE.with(|slot| {
-        if let Some(trace) = slot.borrow().as_ref() {
-            trace(message);
-        }
-    });
-}
 
 /// A row in the launcher drop-down. Either a launchable application or a
 /// one-off action such as a calculator result — an action row shows its own
@@ -69,12 +43,6 @@ fn trace_confirm(message: &str) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultItem {
     App(AppEntry),
-    /// A filesystem directory offered to an open/save dialog.
-    Directory {
-        path: std::path::PathBuf,
-        title: String,
-        subtitle: String,
-    },
     Action {
         title: String,
         subtitle: String,
@@ -164,9 +132,9 @@ pub struct ResultListState {
     /// scrim (raised over bright backdrops, where a fixed 0.10 wash reads too
     /// faint against the lightened bar).
     selected_wash: f32,
-    /// Whether the displayed rows may be confirmed. The directory picker turns
-    /// this off while a search is in flight, so rows kept on screen for a smooth
-    /// repaint cannot be navigated to by mistake. See [`ResultList::set_confirmable`].
+    /// Whether the displayed rows may be confirmed. The launcher turns this off
+    /// while a search is in flight, so rows kept on screen for a smooth repaint
+    /// cannot be confirmed by mistake. See [`ResultList::set_confirmable`].
     confirmable: bool,
 }
 
@@ -292,7 +260,6 @@ fn render_row(
 ) -> impl IntoElement {
     let id = match item {
         ResultItem::App(app) => ElementId::from(app.path.to_string_lossy().into_owned()),
-        ResultItem::Directory { path, .. } => ElementId::from(path.to_string_lossy().into_owned()),
         ResultItem::Action { .. } => ElementId::from(format!("result-action-{index}")),
         ResultItem::Link { .. } => ElementId::from(format!("result-link-{index}")),
         ResultItem::Plugin { .. } => ElementId::from(format!("result-plugin-{index}")),
@@ -344,12 +311,6 @@ fn render_row(
             Some(type_label.to_owned()),
             icon,
         ),
-        // A directory picker row is the whole path and nothing else: the path is
-        // what Enter navigates to, so a separate name and parent column would
-        // only ask the user to reassemble it by eye.
-        ResultItem::Directory { path, .. } => {
-            (row, path.to_string_lossy().into_owned(), None, None, None)
-        }
         ResultItem::Action { title, subtitle } => {
             (row, title.to_owned(), None, Some(subtitle.to_owned()), None)
         }
@@ -419,8 +380,8 @@ fn render_row(
     // the name gives way to the size and the size never moves: the name is the
     // flexible column and the two trailing ones are reserved on every row that
     // has them, which is what keeps the columns on one axis down the drop-down.
-    // A row with nothing to put in them (a picker's path) drops them entirely
-    // instead of reserving two empty columns against its own text.
+    // A row with nothing to put in them drops them entirely instead of
+    // reserving two empty columns against its own text.
     let mut row = row.when_some(icon, |this, icon| {
         this.child(
             img(ImageSource::Image(icon))
@@ -563,11 +524,10 @@ impl ResultList {
 
     /// Allow or refuse confirmation of the displayed rows.
     ///
-    /// The directory picker keeps the previous rows on screen while it searches
-    /// for the new query (blanking them made the drop-down flash on every
-    /// keystroke), so for that window the rows are visible but must not be
-    /// actionable: confirming one would navigate to a folder the user did not
-    /// ask for.
+    /// The launcher keeps the previous rows on screen while a new search runs
+    /// (blanking them made the drop-down flash on every keystroke), so for that
+    /// window the rows are visible but must not be actionable: confirming one
+    /// would launch something the input no longer names.
     pub fn set_confirmable<C: AppContext>(&self, confirmable: bool, cx: &mut C) {
         self.state.update(cx, |this, cx| {
             if this.confirmable != confirmable {
@@ -612,31 +572,18 @@ impl ResultList {
     /// Confirm the currently selected row, invoking the delegate's `on_confirm`
     /// callback. Returns whether the launcher should hide afterwards (no-op
     /// when nothing is selected: `false`).
-    ///
-    /// Every refusal is reported through [`set_confirm_trace`]. "Nothing
-    /// happened when I pressed the key" is otherwise indistinguishable from a
-    /// broken keybinding, and the reason — the rows were stale, or nothing was
-    /// selected — is exactly what tells the two apart.
     pub fn confirm_selected<C>(&self, _window: &mut gpui::Window, cx: &mut Context<C>) -> bool {
         let mut should_hide = false;
         self.state.update(cx, |this, cx| {
             if !this.confirmable {
-                trace_confirm("refused: the displayed rows are not confirmable (stale)");
                 return;
             }
-            match this.selected {
-                None => trace_confirm("refused: nothing is selected"),
-                Some(index) if index >= this.items.len() => trace_confirm(&format!(
-                    "refused: selected row {index} is past the end ({} rows)",
-                    this.items.len()
-                )),
-                Some(index) => match this.on_confirm.clone() {
-                    Some(cb) => {
-                        trace_confirm(&format!("confirmed row {index}"));
+            if let Some(index) = this.selected {
+                if index < this.items.len() {
+                    if let Some(cb) = this.on_confirm.clone() {
                         should_hide = cb(index, cx);
                     }
-                    None => trace_confirm("refused: no confirm callback is registered"),
-                },
+                }
             }
             cx.notify();
         });

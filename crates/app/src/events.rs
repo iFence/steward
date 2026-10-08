@@ -308,16 +308,7 @@ fn drain_icon_batches(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
     let Some(app) = window.downcast::<StewardApp>() else {
         return;
     };
-    let _ = app.update(cx, |app, window, cx| {
-        // The picker's rows carry no icons, and its box answers folder paths
-        // only: a batch from the ordinary launcher's search must not re-run a
-        // picker search. The cache above is already filled for the next real
-        // render of those rows.
-        if app.is_directory_picker() {
-            return;
-        }
-        app.search(window, cx)
-    });
+    let _ = app.update(cx, |app, window, cx| app.search(window, cx));
 }
 
 /// Fold application-index news into the launcher.
@@ -351,11 +342,6 @@ fn drain_app_index(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
         return;
     };
     let _ = app.update(cx, |app, window, cx| {
-        // The directory picker answers folder paths only; app rows belong to
-        // the ordinary launcher and are picked up when its next search runs.
-        if app.is_directory_picker() {
-            return;
-        }
         app.search(window, cx);
     });
 }
@@ -440,13 +426,6 @@ fn drain_file_index(
         return;
     };
     let _ = app.update(cx, |app, window, cx| {
-        // While the directory picker owns the box, file-index news is not part
-        // of any visible query: the picker answers folder-path searches only.
-        // The hits stored above are picked up when the ordinary launcher's
-        // search runs again (the session ends, or the user types).
-        if app.is_directory_picker() {
-            return;
-        }
         // Nothing a render would show has changed: leave the rows — and the
         // selection the user is moving — exactly as they are.
         let before = crate::launcher::RenderSignature::capture(app);
@@ -568,9 +547,6 @@ pub(crate) fn spawn_event_poll_task(
                 launcher.file_index.request_catch_up();
             }
         }
-        #[cfg(target_os = "windows")]
-        crate::file_continuum::poll(&state, i18n.clone(), cx);
-
         while let Ok(event) = hotkey_events.try_recv() {
             if event.state != HotKeyState::Pressed {
                 continue;
@@ -645,15 +621,7 @@ pub(crate) fn spawn_event_poll_task(
                             // foreground while the user is still typing into
                             // the launcher. Detached plugin-view windows are
                             // independent and are never hidden here.
-                            // The picker follows its dialog through its own
-                            // session poll, including returning focus to that
-                            // dialog after editing a directory query.
-                            let picker_attached =
-                                state.borrow().file_continuum.borrow().target.is_some();
-                            if !picker_attached
-                                && foreground != hwnd
-                                && !platform::cursor_hits_window(hwnd)
-                            {
+                            if foreground != hwnd && !platform::cursor_hits_window(hwnd) {
                                 if let Some(handle) = state.borrow().window {
                                     let _ =
                                         handle.update(cx, |_, window, cx| hide_window(window, cx));

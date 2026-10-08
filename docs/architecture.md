@@ -171,7 +171,7 @@ steward/
 - 根因：应用扫描只在启动时执行一次（`ensure_app_index` 仅由 boot 调用），运行期间没有任何变化检测；SQLite 缓存带 24h TTL，使 24h 内的重启也会继续读旧缓存。
 - 方案（Windows）：复用 `file_index::watch::DirectoryWatcher` 监听开始菜单 per-user / all-users `Programs` 两棵目录树（安装器在这里增删 `.lnk`），任意变化经 1s 尾部防抖后触发后台重扫；另加 30s 兜底全量重扫，覆盖不落在开始菜单树里的 UWP / 商店应用（`shell:AppsFolder`）以及 watcher 打不开根目录的情况。新增 `core-engine::start_menu_roots()`，让扫描与监听共用同一组根目录。
 - 索引生命周期：冷启动仍先读 SQLite 缓存立即建索引，但 boot 时**始终**再跑一次后台对账（移除 24h `SCAN_CACHE_TTL` / `is_cache_fresh` / `last_scan` / `touch_scan`），因此关闭期间（即使不足 24h）的安装/卸载也会被发现。
-- 结果生效：后台扫描回来后用大小写不敏感的 `(path, name)` 集合与当前索引比对；无变化则不重建 `Engine`、不写库；有变化则 `mark_seen` 增量落库（按 path upsert + 删除消失项）并重建索引，且启动器窗口可见时用当前输入立即重跑查询（目录选择器会话中跳过），与文件索引的 `drain_file_index` 行为一致。
+- 结果生效：后台扫描回来后用大小写不敏感的 `(path, name)` 集合与当前索引比对；无变化则不重建 `Engine`、不写库；有变化则 `mark_seen` 增量落库（按 path upsert + 删除消失项）并重建索引，且启动器窗口可见时用当前输入立即重跑查询，与文件索引的 `drain_file_index` 行为一致。
 - 新增模块与接口：app 侧 `app_index`（`AppIndexWatcher` + 纯 `ScanTimer` 防抖/定时状态机，可单测）；`core-engine::start_menu_roots()`；`LauncherState::apply_scan_results` 改为返回“条目是否变化”。
 - 验证：`cargo fmt --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 全绿；`cargo test`（app 单测 75 项、core-engine 132 项、storage 5 项、plugin 各包全绿，`steward-plugin-runtime` 因本机有旧实例占用其可执行文件未重链）。手动验收场景：运行中安装/卸载桌面应用约 1–2s 生效、UWP 应用 ≤30s 生效、关闭 Steward 后安装再启动立即生效（均无需重启）。
 
@@ -811,3 +811,10 @@ steward/
   单测覆盖 `http` 授权的校验、匹配矩阵（大小写、端口、方法、路径前缀）、与 `network` 权限的联动，以及
   旧库迁移（新增 `http` 列）。`cargo clippy --workspace --all-targets -- -D warnings` 与
   `cargo test --workspace` 全绿。
+
+### 2026-10-08（移除自动目录选择器）
+
+- 问题：`file_continuum` 会在任意进程的标准打开/保存对话框下自动挂出一条 Steward 导航条，并在首次挂载时抢键盘焦点。第三方应用（浏览器、VS Code 等）调用系统“打开文件夹/打开文件”时，用户没有主动召唤 Steward，却会在对话框下方看到弹窗并被打断操作；该能力也没有设置开关可以关闭。
+- 决策：整体删除自动目录选择器，不再枚举前台对话框、不注入地址栏、不维护 picker 会话。启动器只在全局热键或托盘被显式召唤时出现，失焦即隐藏。
+- 影响面：删除 `crates/app/src/file_continuum/`、`crates/app/src/directory_status.rs`、`ResultItem::Directory`、`ui-components` 的确认跟踪钩子（`set_confirm_trace`），以及平台层的对话框锚定几何（`platform::show`/`resize` 的 `anchor` 参数、`sync_dialog_bounds`、`window_rect` 与 anchored 分支）；7 个语言的 `file-continuum-*` 文案，以及 `windows` 依赖中仅供 `IShellWindows`/`VARIANT` 使用的 `Win32_System_Ole`、`Win32_System_Variant` feature 一并移除。全盘文件搜索（`file:`/`f:`、`ResultItem::File`）保留。
+- 验证：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全绿；手工验收第三方应用打开文件夹不再出现 Steward 窗口，热键/托盘召唤、Esc/失焦隐藏、全盘文件搜索、设置与插件面板均正常。

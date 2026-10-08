@@ -32,10 +32,7 @@ mod app_index;
 mod autostart;
 mod clipboard_history;
 mod config;
-mod directory_status;
 mod events;
-#[cfg(target_os = "windows")]
-mod file_continuum;
 mod file_index;
 mod file_index_helper;
 mod hotkeys;
@@ -164,18 +161,6 @@ fn main() {
     // Plugin host: resolves the `steward-plugin-runtime` binary (env override
     // `STEWARD_PLUGIN_RUNTIME_BIN` or the sibling of this executable). A
     // missing binary degrades to "no plugins" instead of failing startup.
-    #[cfg(target_os = "windows")]
-    {
-        crate::file_continuum::debug_start();
-        // Route the results list's confirmation decisions into the same trace: a
-        // Ctrl+number that appears to do nothing is otherwise indistinguishable
-        // from a keybinding that never fired.
-        if crate::file_continuum::debug_enabled() {
-            steward_ui_components::set_confirm_trace(Some(std::rc::Rc::new(|message: &str| {
-                crate::file_continuum::debug_log(&format!("confirm {message}"));
-            })));
-        }
-    }
     let plugin_host_config = match HostConfig::from_env() {
         Ok(config) => config,
         Err(error) => {
@@ -197,8 +182,6 @@ fn main() {
     let state = Rc::new(RefCell::new(LauncherState {
         window: None,
         settings_window: None,
-        #[cfg(target_os = "windows")]
-        file_continuum: RefCell::new(crate::file_continuum::FileContinuum::new()),
         focus: None,
         result_count: std::cell::Cell::new(0),
         scrim_alpha: steward_ui_components::palette::SCRIM_ALPHA,

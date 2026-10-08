@@ -24,14 +24,6 @@ settings-about = About
 settings-about-description = Steward — a fast, low-memory launcher and plugin platform
 settings-version = Version
 
-# Automatic directory picker for open/save dialogs
-file-continuum-no-results = No folders found — enter a full path
-file-continuum-navigating = Navigating to folder…
-file-continuum-target-unavailable = The original dialog is unavailable or unsupported. Press Esc and try again.
-file-continuum-release-modifiers = Release Ctrl / Alt / Shift and try again.
-file-continuum-invalid-directory = This folder no longer exists or cannot be accessed.
-file-continuum-cancelled = Cancelled
-file-continuum-passive = Click the search box to type
 # Full-disk file index
 files-indexing = Indexing files…
 files-no-index = The file index is not available. Type file: plus a name once it has been built.

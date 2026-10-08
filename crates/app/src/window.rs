@@ -184,13 +184,6 @@ pub(crate) fn open_launcher_window(
             let on_confirm = move |index: usize, cx: &mut App| -> bool {
                 let item = results_for_cb.borrow().get(index).cloned();
                 match item {
-                    Some(ResultItem::Directory { path, .. }) => {
-                        #[cfg(target_os = "windows")]
-                        crate::file_continuum::confirm_directory(&confirm_state, path, cx);
-                        #[cfg(not(target_os = "windows"))]
-                        let _ = path;
-                        false
-                    }
                     // An application: launch it and bump its usage frequency.
                     Some(ResultItem::App(app)) => {
                         let _ = confirm_storage.borrow().upsert_usage(&app.path);
@@ -362,59 +355,9 @@ pub(crate) fn open_launcher_window(
                 // affected by the launcher's activation.
                 let activation_subscription = cx.observe_window_activation(
                     window,
-                    move |app: &mut StewardApp, window, cx| {
+                    move |_app: &mut StewardApp, window, cx| {
                         if !window.is_window_active() {
-                            #[cfg(target_os = "windows")]
-                            {
-                                let (navigating, attached, dialog_focused) = {
-                                    let state = app.state.borrow();
-                                    let picker = state.file_continuum.borrow();
-                                    (
-                                        picker.navigating,
-                                        picker.target.is_some(),
-                                        picker.target.is_some_and(|target| target.is_foreground()),
-                                    )
-                                };
-                                if !attached {
-                                    // No session: this is the ordinary launcher,
-                                    // so clicking another window dismisses it.
-                                    hide_window(window, cx);
-                                    return;
-                                }
-                                if dialog_focused && !navigating {
-                                    // The dialog took the keyboard back: the bar
-                                    // stays attached but waits for a click
-                                    // before typing again — unless this is the
-                                    // dialog's own activation racing the attach,
-                                    // which the poll reclaims for a moment (see
-                                    // `PASSIVE_RECLAIM_WINDOW`).
-                                    app.state
-                                        .borrow()
-                                        .file_continuum
-                                        .borrow_mut()
-                                        .set_passive(true);
-                                    cx.notify();
-                                } else if !navigating {
-                                    // The dialog is not in front: the session is
-                                    // over as far as this window is concerned. The
-                                    // bar is *not* hidden here — the picker lives
-                                    // for as long as its dialog does, and the poll
-                                    // decides whether to show it again.
-                                    app.cancel_directory_picker(window, cx, false);
-                                }
-                            }
-                            #[cfg(not(target_os = "windows"))]
-                            {
-                                let _ = app;
-                                hide_window(window, cx);
-                            }
-                        } else {
-                            // Clicking the bar hands it the keyboard without an
-                            // extra shortcut.
-                            #[cfg(target_os = "windows")]
-                            if app.promote_passive_picker() {
-                                cx.notify();
-                            }
+                            hide_window(window, cx);
                         }
                     },
                 );
@@ -424,15 +367,6 @@ pub(crate) fn open_launcher_window(
                 let mut app = StewardApp {
                     focus_handle: focus.clone(),
                     input: SearchInput {
-                        query: String::new(),
-                        cursor: 0,
-                        marked: None,
-                        selection: None,
-                    },
-                    // The picker's own box, empty until a dialog attaches.
-                    // It starts apart from `input` so neither mode can seed
-                    // the other's text.
-                    picker_input: SearchInput {
                         query: String::new(),
                         cursor: 0,
                         marked: None,
@@ -452,15 +386,6 @@ pub(crate) fn open_launcher_window(
                     // always renders once (which is also what seeds the hint).
                     rendered: RefCell::new(crate::launcher::RenderSignature::default()),
                     file_search_at: Cell::new(None),
-                    // The picker's status line; starts empty and hidden (no
-                    // picker is attached until a dialog appears).
-                    directory_status_bar: {
-                        let bar = cx.new(|_| {
-                            crate::directory_status::DirectoryStatusBar::new(String::new())
-                        });
-                        bar.update(cx, |bar, cx| bar.set_visible(false, cx));
-                        bar
-                    },
                     results_query: String::new(),
                     state: state.clone(),
                     detachable_list_target: None,
@@ -483,22 +408,11 @@ pub(crate) fn open_launcher_window(
 }
 
 /// Summon or dismiss the launcher bar. Reopens the window if it was closed.
-///
-/// While a directory picker session is alive the hotkey does nothing at all. The
-/// picker is owned by the dialog — it appears with it and goes away with it, or
-/// when a path is committed — so there is nothing here for the hotkey to show or
-/// hide: hiding would only be undone by the next poll tick, and "summon it again"
-/// no longer exists as a concept. The session ends with the dialog.
 pub(crate) fn toggle_launcher(
     state: &Rc<RefCell<LauncherState>>,
     i18n: Rc<Localization>,
     cx: &mut AsyncApp,
 ) {
-    #[cfg(target_os = "windows")]
-    if state.borrow().file_continuum.borrow().target.is_some() {
-        crate::file_continuum::debug_log("hotkey ignored: the picker session is the dialog's");
-        return;
-    }
     let mut state_ref = state.borrow_mut();
     match state_ref.window {
         Some(handle) => {
@@ -508,7 +422,6 @@ pub(crate) fn toggle_launcher(
                 .expect("focus is initialized together with GPUI");
             let height = state_ref.height();
             let width = state_ref.width();
-            let anchor = state_ref.dialog_anchor();
             state_ref.last_applied_height = height;
             // Drop the borrow before `handle.update`: the closure re-enters the
             // shared state through `show_window`, which adapts the scrim.
@@ -519,27 +432,24 @@ pub(crate) fn toggle_launcher(
                 } else {
                     // Re-apply the height so a freshly-created window matches
                     // the current result count (mirrors live sizing on search).
-                    platform::resize(window, width, height, anchor);
+                    platform::resize(window, width, height);
                     focus.focus(window, cx);
-                    show_window(window, cx, state, true);
+                    show_window(window, cx, state);
                 }
             });
         }
         None => {
             drop(state_ref);
-            show_launcher(state, i18n, cx, true);
+            show_launcher(state, i18n, cx);
         }
     }
 }
 
-/// Show the launcher bar, reopening the window first if necessary. `activate`
-/// takes the foreground (hotkey / tray summons); `false` attaches the bar
-/// passively while the dialog it belongs to keeps focus.
+/// Show the launcher bar, reopening the window first if necessary.
 pub(crate) fn show_launcher(
     state: &Rc<RefCell<LauncherState>>,
     i18n: Rc<Localization>,
     cx: &mut AsyncApp,
-    activate: bool,
 ) {
     if state.borrow().window.is_none() {
         let focus = state
@@ -558,82 +468,14 @@ pub(crate) fn show_launcher(
             .expect("focus is initialized together with GPUI");
         let height = state_ref.height();
         let width = state_ref.width();
-        let anchor = state_ref.dialog_anchor();
         state_ref.last_applied_height = height;
-        if crate::file_continuum::debug_enabled() {
-            match anchor {
-                Some(rect) => crate::file_continuum::debug_log(&format!(
-                    "show_launcher anchored: dialog=({},{})-({},{}) bar {}x{}",
-                    rect.left, rect.top, rect.right, rect.bottom, width, height
-                )),
-                None => crate::file_continuum::debug_log(&format!(
-                    "show_launcher centred (no dialog anchor): bar {}x{}",
-                    width, height
-                )),
-            }
-        }
         drop(state_ref);
         let _ = handle.update(cx, |_, window, cx| {
-            platform::resize(window, width, height, anchor);
-            if activate {
-                focus.focus(window, cx);
-            }
-            show_window(window, cx, state, activate);
+            platform::resize(window, width, height);
+            focus.focus(window, cx);
+            show_window(window, cx, state);
         });
-        // Where it actually landed, for the "the bar is in the wrong place"
-        // report: the dialog's live rect next to the bar's own tells us whether
-        // the anchor was missing, stale, or simply not applied. Only traced when
-        // the picker diagnostics are on, and the call is a no-op then.
-        if crate::file_continuum::debug_enabled() {
-            if let Some(handle) = state.borrow().window {
-                let _ = handle.update(cx, |_, window, _| {
-                    crate::file_continuum::debug_placement(window, state);
-                });
-            }
-        }
     }
-}
-
-/// Queue native tracking outside GPUI's window update, just like Window::resize.
-#[cfg(target_os = "windows")]
-pub(crate) fn sync_directory_picker_bounds(state: &Rc<RefCell<LauncherState>>, cx: &mut AsyncApp) {
-    let handle = state.borrow().window;
-    let Some(handle) = handle else {
-        return;
-    };
-    let _ = handle.update(cx, |_, window, cx| {
-        queue_directory_picker_bounds(state, window, cx)
-    });
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn queue_directory_picker_bounds(
-    state: &Rc<RefCell<LauncherState>>,
-    window: &Window,
-    cx: &App,
-) {
-    let Some(hwnd) = platform::hwnd(window) else {
-        return;
-    };
-    let handle = state.borrow().window;
-    let hwnd = hwnd as usize;
-    let state = state.clone();
-    cx.foreground_executor()
-        .spawn(async move {
-            // Read fresh state after queued searches/resizes; a session may have
-            // ended or changed dialogs before this task gets its turn.
-            let (height, anchor) = {
-                let state = state.borrow();
-                if state.window != handle {
-                    return;
-                }
-                (state.height(), state.dialog_anchor())
-            };
-            if let Some(anchor) = anchor {
-                platform::sync_dialog_bounds(hwnd as _, height, anchor);
-            }
-        })
-        .detach();
 }
 
 pub(crate) fn hide_window(window: &mut Window, _cx: &mut App) {
@@ -651,12 +493,7 @@ pub(crate) fn hide_window(window: &mut Window, _cx: &mut App) {
     _cx.hide();
 }
 
-fn show_window(
-    window: &mut Window,
-    _cx: &mut App,
-    state: &Rc<RefCell<LauncherState>>,
-    activate: bool,
-) {
+fn show_window(window: &mut Window, _cx: &mut App, state: &Rc<RefCell<LauncherState>>) {
     #[cfg(not(target_os = "windows"))]
     _cx.activate(true);
     // Adapt the scrim to the backdrop while the window is still hidden (the
@@ -664,11 +501,11 @@ fn show_window(
     // backdrop the bar darkens toward SCRIM_ALPHA_MAX so the white ink keeps
     // its contrast, while over a dark desktop it stays at the frosted-glass
     // SCRIM_ALPHA. The next paint picks up the new value.
-    let (width, height, anchor) = {
+    let (width, height) = {
         let state = state.borrow();
-        (state.width(), state.height(), state.dialog_anchor())
+        (state.width(), state.height())
     };
-    if let Some(brightness) = platform::show(window, width, height, anchor, activate) {
+    if let Some(brightness) = platform::show(window, width, height) {
         state.borrow_mut().scrim_alpha = adaptive_scrim_alpha(brightness);
     }
     // Restart the launcher's entrance animation (fade + slight scale) so each

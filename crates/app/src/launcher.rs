@@ -82,7 +82,7 @@ impl RenderSignature {
     pub(crate) fn capture(app: &StewardApp) -> Self {
         let state = app.state.borrow();
         Self {
-            query: app.active_input().query.clone(),
+            query: app.input.query.clone(),
             file_ready: state.file_index.is_ready(),
             file_building: state.file_index.is_building(),
             file_records: state.file_index.records,
@@ -304,18 +304,6 @@ pub(crate) struct ActiveCalendar {
 pub(crate) struct StewardApp {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) input: SearchInput,
-    /// The directory picker's own query buffer.
-    ///
-    /// The picker and the ordinary launcher are two boxes that must not share
-    /// text or caret state: attaching a dialog over a half-typed launcher query
-    /// must not replace what the user was typing, and committing a folder path
-    /// must not clear the launcher's box. The active one is selected by
-    /// [`StewardApp::active_input`] from the picker session state.
-    ///
-    /// The picker box only ever searches folder paths (see
-    /// `file_continuum::search`), so keeping it apart from `input` also keeps
-    /// launcher route prefixes (`file:`, `app:`) out of a path query.
-    pub(crate) picker_input: SearchInput,
     pub(crate) i18n: Rc<crate::i18n::Localization>,
     /// Shared search index, rebuilt at startup from a scan / cache.
     pub(crate) engine: Rc<RefCell<steward_core_engine::Engine>>,
@@ -355,23 +343,18 @@ pub(crate) struct StewardApp {
     pub(crate) file_search_at: Cell<Option<std::time::Instant>>,
     /// The input the displayed rows were actually produced for.
     ///
-    /// Both the picker and the file index keep the previous rows on screen while
-    /// a new search runs (blanking them flashed the drop-down on every
-    /// keystroke), so "are these rows still the answer to what is in the box"
-    /// has to be tracked explicitly: the producer records it, and `render_merged`
+    /// The file index keeps the previous rows on screen while a new search
+    /// runs (blanking them flashed the drop-down on every keystroke), so "are
+    /// these rows still the answer to what is in the box" has to be tracked
+    /// explicitly: the producer records it, and `render_merged`
     /// re-enables confirmation only when it matches the current input. Without it
     /// a stale row could be launched, and — the bug this replaced — a *fresh* row
     /// could be refused, because the flag was only ever set on the typing path.
     ///
     /// It is deliberately **not** written by `render_merged`: a render happens
-    /// while results are still in flight (the picker's reply lags the keystroke
-    /// that asked for it), so "I just rendered" is not evidence that the rows
-    /// answer what the user has typed.
+    /// while results are still in flight, so "I just rendered" is not evidence
+    /// that the rows answer what the user has typed.
     pub(crate) results_query: String,
-    /// The directory picker's status line, as its own entity so it repaints only
-    /// when its text changes (as a plain child of this view it was rebuilt on
-    /// every keystroke-driven repaint, which made it blink).
-    pub(crate) directory_status_bar: gpui::Entity<crate::directory_status::DirectoryStatusBar>,
     /// Result count is published here so the tray/hotkey path can size the
     /// window when it is summoned.
     pub(crate) state: Rc<RefCell<LauncherState>>,
@@ -407,17 +390,13 @@ type PluginScan = (ScanReport, Vec<PluginMeta>);
 /// time the bar is summoned, and the current result count so the drop-down
 /// height can be computed at show time.
 pub(crate) struct LauncherState {
-    #[cfg(target_os = "windows")]
-    pub(crate) file_continuum: RefCell<crate::file_continuum::FileContinuum>,
     pub(crate) window: Option<gpui::AnyWindowHandle>,
     pub(crate) settings_window: Option<gpui::AnyWindowHandle>,
     /// Created together with GPUI (a `FocusHandle` can only be allocated from
     /// an application context); `None` before the first summon.
     pub(crate) focus: Option<FocusHandle>,
-    /// Number of rows the drop-down last rendered. A `Cell` because the picker
-    /// clears it from the poll task (a `&self` context) when a session attaches,
-    /// so the bar is placed at the right height straight away rather than one
-    /// stale result list too tall.
+    /// Number of rows the drop-down last rendered, so the bar is sized for the
+    /// results on screen when it is summoned.
     pub(crate) result_count: std::cell::Cell<usize>,
     /// Scrim opacity painted over the blurred backdrop, adapted at show time
     /// to the luminance of what sits behind the bar (see
@@ -551,50 +530,13 @@ pub(crate) struct LauncherState {
 }
 
 impl LauncherState {
-    /// The screen rect of the open/save dialog the directory picker is attached
-    /// to, so the launcher bar can sit flush under it. `None` in the normal
-    /// centred mode (and on platforms without the picker).
-    pub(crate) fn dialog_anchor(&self) -> Option<crate::platform::Rect> {
-        #[cfg(target_os = "windows")]
-        {
-            self.file_continuum
-                .borrow()
-                .target
-                .and_then(|target| target.rect())
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            None
-        }
-    }
-
-    /// Width of the launcher bar in logical px. The directory picker matches the
-    /// width of the dialog it is attached to (so the bar lines up with the
-    /// dialog's edges); every other mode uses the design width.
+    /// Width of the launcher bar in logical px.
     pub(crate) fn width(&self) -> f32 {
-        #[cfg(target_os = "windows")]
-        {
-            self.file_continuum
-                .borrow()
-                .target
-                .and_then(|target| target.logical_width())
-                .unwrap_or(LAUNCHER_WIDTH)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            LAUNCHER_WIDTH
-        }
+        LAUNCHER_WIDTH
     }
 
     /// Total launcher window height for the current result count: the input
     /// bar plus the result drop-down.
-    ///
-    /// The picker's status line is deliberately **not** part of this: it belongs
-    /// to the view, not to the shared state, and only the view knows whether the
-    /// line is currently rendering anything. `render_merged` adds it, which is
-    /// also the only place that has to stay correct — counting it here as well
-    /// gave the same box two heights, one line apart, depending on whether the
-    /// result list was empty (which is when the line speaks up).
     pub(crate) fn height(&self) -> f32 {
         let calendar = self.plugin_calendar.borrow();
         if let Some(active) = calendar.as_ref() {
@@ -606,19 +548,6 @@ impl LauncherState {
             return ui_inline_height();
         }
         launcher_height(self.result_count.get())
-    }
-
-    /// Drop the row count and the plugin views the *previous* session left
-    /// behind, so the next show is sized from an empty list instead of the last
-    /// session's. Called as a picker session attaches, right before the bar is
-    /// placed: the count feeds [`Self::height`], and a stale one put the bar a
-    /// whole result list too tall over the dialog it is anchored to.
-    pub(crate) fn clear_picker_results(&self) {
-        self.result_count.set(0);
-        self.plugin_hits.borrow_mut().clear();
-        self.plugin_views.borrow_mut().clear();
-        self.plugin_pending.borrow_mut().clear();
-        *self.plugin_calendar.borrow_mut() = None;
     }
 
     /// Whether a plugin view is currently popped out into its own window.
@@ -1055,7 +984,7 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<usize> {
-        Some(self.active_input().utf16_len())
+        Some(self.input.utf16_len())
     }
 
     fn selected_text_range(
@@ -1066,7 +995,7 @@ impl EntityInputHandler for StewardApp {
     ) -> Option<UTF16Selection> {
         // Report the active selection (the caret is its head); a plain caret
         // is a zero-length selection.
-        let input = self.active_input();
+        let input = &self.input;
         let range = match &input.selection {
             Some(range) => {
                 let start = input.char_to_utf16(range.start);
@@ -1090,7 +1019,7 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<Range<usize>> {
-        let input = self.active_input();
+        let input = &self.input;
         input
             .marked
             .as_ref()
@@ -1104,7 +1033,7 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<String> {
-        let input = self.active_input();
+        let input = &self.input;
         let chars = input.utf16_to_chars(range_utf16.clone())?;
         *adjusted_range = Some(input.char_to_utf16(chars.start)..input.char_to_utf16(chars.end));
         Some(
@@ -1119,7 +1048,7 @@ impl EntityInputHandler for StewardApp {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.active_input_mut().replace_utf16(range, text);
+        self.input.replace_utf16(range, text);
         self.search_unless_composing(window, cx);
     }
 
@@ -1131,19 +1060,17 @@ impl EntityInputHandler for StewardApp {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        self.active_input_mut()
+        self.input
             .replace_and_mark_utf16(range, new_text, new_selected_range);
         self.search_unless_composing(window, cx);
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        self.active_input_mut().marked = None;
+        self.input.marked = None;
         // A composition can end without a commit callback (an IME that cancels,
         // or a platform that only unmarks). If the query moved on since the last
-        // search, catch up now instead of leaving the rows stale. The picker
-        // always catches up: `rendered` tracks the ordinary launcher's file
-        // index, not the picker's folder searches.
-        if self.is_directory_picker() || self.rendered.borrow().query != self.active_input().query {
+        // search, catch up now instead of leaving the rows stale.
+        if self.rendered.borrow().query != self.input.query {
             self.search(window, cx);
             return;
         }
@@ -1159,10 +1086,7 @@ impl EntityInputHandler for StewardApp {
     ) -> Option<Bounds<Pixels>> {
         // Approximate the caret position for the IME candidate window: input
         // padding plus an estimated glyph width per character.
-        let chars = self
-            .active_input()
-            .utf16_to_chars(range_utf16)
-            .unwrap_or(0..0);
+        let chars = self.input.utf16_to_chars(range_utf16).unwrap_or(0..0);
         let x = 12.0 + 9.0 * chars.start as f32;
         Some(Bounds::new(
             point(element_bounds.origin.x + px(x), element_bounds.origin.y),
@@ -1180,7 +1104,7 @@ impl EntityInputHandler for StewardApp {
         // `bounds_for_range` and the mouse-selection handlers.
         let relative = point.x - px(INPUT_TEXT_X);
         let index = (relative / px(GLYPH_WIDTH)).round().max(0.0) as usize;
-        Some(index.min(self.active_input().char_count()))
+        Some(index.min(self.input.char_count()))
     }
 
     fn set_selected_text_range(
@@ -1191,7 +1115,7 @@ impl EntityInputHandler for StewardApp {
     ) {
         // Platforms move the selection on the application's behalf (e.g. a
         // system selection handle); mirror it into the query's own model.
-        let input = self.active_input_mut();
+        let input = &mut self.input;
         if range_utf16.start == range_utf16.end {
             if let Some(index) = input.utf16_to_char_index(range_utf16.start) {
                 input.set_cursor(index);
@@ -1310,11 +1234,7 @@ impl LauncherInputElement {
                 return;
             }
             view.update(cx, |app, cx| {
-                let index = char_index_at_x(
-                    input_bounds,
-                    app.active_input().char_count(),
-                    event.position.x,
-                );
+                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
                 app.begin_mouse_selection(index, cx);
             });
         });
@@ -1329,11 +1249,7 @@ impl LauncherInputElement {
                 if !app.mouse_selecting {
                     return;
                 }
-                let index = char_index_at_x(
-                    input_bounds,
-                    app.active_input().char_count(),
-                    event.position.x,
-                );
+                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
                 app.update_mouse_selection(index, cx);
             });
         });
@@ -1350,7 +1266,6 @@ impl LauncherInputElement {
 
 impl gpui::Render for StewardApp {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        self.sync_directory_status(cx);
         // GPUI's Windows platform disables the IME context from its WM_PAINT
         // path whenever the input handler is momentarily unavailable (taken
         // during the draw). Re-associating every frame keeps composition input
@@ -1424,8 +1339,8 @@ impl gpui::Render for StewardApp {
                                 div()
                                     .flex_1()
                                     .child(
-                                        if self.active_input().query.is_empty()
-                                            && self.active_input().marked.is_none()
+                                        if self.input.query.is_empty()
+                                            && self.input.marked.is_none()
                                         {
                                             div()
                                                 .flex()
@@ -1500,9 +1415,6 @@ impl gpui::Render for StewardApp {
                         )),
                     )
             })
-            .when(self.directory_status_bar.read(cx).is_visible(), |this| {
-                this.child(self.directory_status_bar.clone())
-            })
             .child(drag_strip().h(px(LAUNCHER_MARGIN)))
             // First-party overlay: plugin toasts (absolute, out of flow).
             .child(crate::overlay::render_toasts(cx));
@@ -1531,109 +1443,12 @@ impl gpui::Render for StewardApp {
 }
 
 impl StewardApp {
-    pub(crate) fn is_directory_picker(&self) -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            self.state.borrow().file_continuum.borrow().target.is_some()
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            false
-        }
-    }
-
-    /// The query box the current mode edits: the picker's own buffer while a
-    /// dialog is attached, the ordinary launcher's otherwise. Every reading or
-    /// editing path goes through this so the two boxes stay independent (see
-    /// [`StewardApp::picker_input`]).
-    pub(crate) fn active_input(&self) -> &SearchInput {
-        if self.is_directory_picker() {
-            &self.picker_input
-        } else {
-            &self.input
-        }
-    }
-
-    /// Mutable counterpart of [`StewardApp::active_input`].
-    pub(crate) fn active_input_mut(&mut self) -> &mut SearchInput {
-        if self.is_directory_picker() {
-            &mut self.picker_input
-        } else {
-            &mut self.input
-        }
-    }
-
     /// Placeholder for the query box.
-    ///
-    /// One message for both modes: the picker searches folder **paths and names**
-    /// against the recent-folder history, and the generic "search or type a
-    /// command" wording covers that without a second string that says less. The
-    /// picker-specific placeholder ("type a folder path or search recent
-    /// folders") was dropped for the same reason the picker's own rows now show
-    /// the path: the box already shows a path, so the hint does not need to.
     fn search_placeholder(&self) -> &'static str {
         "search-placeholder"
     }
 
-    /// Whether the picker's status line is currently occupying a row of the
-    /// window. See `LauncherState::height` for why the line is not counted there:
-    /// the answer lives with the view that renders it.
-    pub(crate) fn status_row_height(&self, cx: &App) -> f32 {
-        if self.directory_status_bar.read(cx).occupies_space() {
-            crate::file_continuum::STATUS_HEIGHT
-        } else {
-            0.0
-        }
-    }
-
-    /// Push the picker's current status into its status line.
-    ///
-    /// Called from `render`, and every call is cheap: the entity compares the
-    /// text and only repaints when it actually differs, so a launcher repaint
-    /// driven by the input box cannot make the line flicker.
-    fn sync_directory_status(&self, cx: &mut gpui::Context<Self>) {
-        let (attached, passive, navigating, status) = {
-            #[cfg(target_os = "windows")]
-            {
-                let state = self.state.borrow();
-                let picker = state.file_continuum.borrow();
-                (
-                    picker.target.is_some(),
-                    picker.passive,
-                    picker.navigating,
-                    picker.status.clone(),
-                )
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                (false, false, false, String::new())
-            }
-        };
-        let bar = self.directory_status_bar.clone();
-        let key = crate::directory_status::status_key(attached, passive, navigating, &status);
-        match key {
-            Some(key) => {
-                let text = crate::directory_status::status_text(key, &self.i18n);
-                bar.update(cx, |bar, cx| {
-                    bar.set_text(text, cx);
-                    bar.set_visible(true, cx);
-                });
-            }
-            None => bar.update(cx, |bar, cx| bar.set_visible(false, cx)),
-        }
-    }
-
     fn dismiss_launcher(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        #[cfg(target_os = "windows")]
-        if self.is_directory_picker() {
-            // The picker belongs to the dialog: it appears with it and goes away
-            // with it (or when a path is committed). Esc is inert here on purpose
-            // — closing the box only for the dialog's own foreground to re-attach
-            // it on the next tick is the loop this replaced, and re-summoning it
-            // by hotkey is gone with it.
-            self.picker_ignores_escape();
-            return;
-        }
         hide_window(window, cx);
     }
 
@@ -1690,7 +1505,7 @@ impl StewardApp {
     /// (underlined), the active text selection (washed), the caret and the
     /// trailing text.
     fn render_query_text(&self, primary: Hsla) -> Div {
-        let input = self.active_input();
+        let input = &self.input;
         let query = &input.query;
         let mut children: Vec<AnyElement> = Vec::new();
 
@@ -1774,7 +1589,7 @@ impl StewardApp {
         // keys (including Enter/Escape/arrows used to pick candidates); leave
         // the query alone and let the platform drive the composition through
         // `EntityInputHandler` callbacks.
-        if self.active_input().marked.is_some() {
+        if self.input.marked.is_some() {
             cx.stop_propagation();
             return;
         }
@@ -1784,7 +1599,7 @@ impl StewardApp {
         if !modifiers.control && !modifiers.alt && !modifiers.platform {
             if let Some(ch) = keystroke.key_char.as_deref().and_then(|s| s.chars().next()) {
                 if !ch.is_control() {
-                    self.active_input_mut().insert_char(ch);
+                    self.input.insert_char(ch);
                     self.search(window, cx);
                     cx.stop_propagation();
                     return;
@@ -1795,7 +1610,7 @@ impl StewardApp {
         // Select all (Ctrl+A). The launcher's hand-rolled input owns its
         // selection model, so the standard shortcut has no built-in handler.
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "a" {
-            self.active_input_mut().select_all();
+            self.input.select_all();
             cx.notify();
             cx.stop_propagation();
             return;
@@ -1804,7 +1619,7 @@ impl StewardApp {
         // Copy / cut the selected query (Ctrl+C / Ctrl+X), like the paste
         // handler below: read/write the platform clipboard directly.
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "c" {
-            if let Some(text) = self.active_input().selected_text() {
+            if let Some(text) = self.input.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             cx.stop_propagation();
@@ -1812,9 +1627,9 @@ impl StewardApp {
         }
 
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "x" {
-            if let Some(text) = self.active_input().selected_text() {
+            if let Some(text) = self.input.selected_text() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                self.active_input_mut().delete_selection();
+                self.input.delete_selection();
                 self.search(window, cx);
             }
             cx.stop_propagation();
@@ -1829,7 +1644,7 @@ impl StewardApp {
         if modifiers.control && !modifiers.alt && !modifiers.platform && keystroke.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-                self.active_input_mut().insert_str(&text);
+                self.input.insert_str(&text);
                 self.search(window, cx);
             }
             cx.stop_propagation();
@@ -1882,17 +1697,17 @@ impl StewardApp {
 
         match keystroke.key.as_str() {
             "space" => {
-                self.active_input_mut().insert_char(' ');
+                self.input.insert_char(' ');
                 self.search(window, cx);
                 cx.stop_propagation();
             }
             "backspace" => {
-                self.active_input_mut().backspace();
+                self.input.backspace();
                 self.search(window, cx);
                 cx.stop_propagation();
             }
             "delete" => {
-                self.active_input_mut().delete();
+                self.input.delete();
                 self.search(window, cx);
                 cx.stop_propagation();
             }
@@ -1914,23 +1729,23 @@ impl StewardApp {
                 cx.stop_propagation();
             }
             "left" => {
-                self.active_input_mut().move_cursor(-1);
+                self.input.move_cursor(-1);
                 cx.notify();
                 cx.stop_propagation();
             }
             "right" => {
-                self.active_input_mut().move_cursor(1);
+                self.input.move_cursor(1);
                 cx.notify();
                 cx.stop_propagation();
             }
             "home" => {
-                self.active_input_mut().set_cursor(0);
+                self.input.set_cursor(0);
                 cx.notify();
                 cx.stop_propagation();
             }
             "end" => {
-                let count = self.active_input().char_count();
-                self.active_input_mut().set_cursor(count);
+                let count = self.input.char_count();
+                self.input.set_cursor(count);
                 cx.notify();
                 cx.stop_propagation();
             }
@@ -1959,7 +1774,7 @@ impl StewardApp {
     /// Those kept rows are not actionable in the meantime: confirming one would
     /// launch something the pre-edit text does not name.
     fn search_unless_composing(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        if self.active_input().marked.is_some() {
+        if self.input.marked.is_some() {
             self.results.set_confirmable(false, cx);
             cx.notify();
             return;
@@ -1974,11 +1789,6 @@ impl StewardApp {
     /// complete arithmetic expression additionally gets a calculator row on
     /// top showing the computed value.
     pub(crate) fn search(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        #[cfg(target_os = "windows")]
-        if self.is_directory_picker() {
-            self.search_directory_picker(window, cx);
-            return;
-        }
         // `file:` / `f:` / `app:` route the query, and the routed text is what
         // every downstream stage matches against.
         let (scope, query) = {
@@ -2602,18 +2412,10 @@ impl StewardApp {
         // An IME composition suspends confirmation entirely: the pre-edit text in
         // the box is not what any of these rows answer.
         let file_fresh = file_generation == self.state.borrow().file_hits_generation;
-        let active_query = self.active_input().query.clone();
+        let active_query = self.input.query.clone();
         let query_fresh = self.results_query == active_query;
-        let composing = self.active_input().marked.is_some();
+        let composing = self.input.marked.is_some();
         let fresh = (file_fresh || query_fresh) && !composing;
-        // Which of the three terms decided it, so "the key did nothing" can be
-        // read off the trace instead of guessed at.
-        crate::file_continuum::debug_log(&format!(
-            "confirmable={fresh} (file_generation={file_generation} \
-             hits_generation={} query_match={query_fresh} composing={composing} rows={})",
-            self.state.borrow().file_hits_generation,
-            self.results.visible_count(cx)
-        ));
         self.results.set_confirmable(fresh, cx);
 
         let count = self.results.visible_count(cx);
@@ -2627,29 +2429,8 @@ impl StewardApp {
         } else {
             launcher_height(count)
         };
-        // The picker's status line is part of the window only while it is
-        // rendering something (see `LauncherState::height`), so the view adds it
-        // here — and syncs the line's own text first, since this is also what
-        // decides whether the line is showing at all.
-        let height = height
-            + if self.is_directory_picker() {
-                self.sync_directory_status(cx);
-                self.status_row_height(cx)
-            } else {
-                0.0
-            };
         let mut state = self.state.borrow_mut();
         state.result_count.set(count);
-        #[cfg(target_os = "windows")]
-        if state.file_continuum.borrow().target.is_some() {
-            state.last_applied_height = height;
-            drop(state);
-            // Apply height and the live dialog rectangle in one queued native
-            // resize; GPUI's generic resize can restore an old position/width.
-            crate::window::queue_directory_picker_bounds(&self.state, window, cx);
-            cx.notify();
-            return;
-        }
         // Resize through GPUI's own window API, which runs the native
         // SetWindowPos asynchronously on the foreground executor. A
         // synchronous platform-layer resize while the launcher is visible
@@ -2672,9 +2453,6 @@ impl StewardApp {
     /// the foreground poll task after the view was stored in the shared state;
     /// never re-invokes plugins.
     pub(crate) fn apply_plugin_views(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        if self.is_directory_picker() {
-            return;
-        }
         self.render_merged(current_file_generation(self), window, cx);
     }
 
@@ -2717,7 +2495,7 @@ impl StewardApp {
     /// Reset the launcher to its idle (bar-only) state and hide it. Called
     /// after the delegate's confirm callback has launched the selected app.
     fn after_confirm(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        let input = self.active_input_mut();
+        let input = &mut self.input;
         input.query.clear();
         input.cursor = 0;
         input.marked = None;
@@ -2735,7 +2513,7 @@ impl StewardApp {
     /// Start a mouse-driven selection: place the caret at `index` (collapsing
     /// any prior selection) and anchor the drag there.
     fn begin_mouse_selection(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
-        self.active_input_mut().set_cursor(index);
+        self.input.set_cursor(index);
         self.mouse_selecting = true;
         self.mouse_anchor = index;
         cx.notify();
@@ -2745,7 +2523,7 @@ impl StewardApp {
     /// following the pointer.
     fn update_mouse_selection(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
         let anchor = self.mouse_anchor;
-        self.active_input_mut().select_anchor_to(anchor, index);
+        self.input.select_anchor_to(anchor, index);
         cx.notify();
     }
 

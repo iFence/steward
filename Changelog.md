@@ -16,6 +16,10 @@ Conventions:
 - **Dockable plugin workspace**: every plugin view (list, detail, form, grid, search, calendar and `ui` trees) opens into a workspace window where panels are tabbed, dragged, split and closed; the arrangement is saved and restored on the next launch.
 - **Toasts**: plugin `showToast` messages now appear as transient toasts instead of being written to the log.
 
+### 🐛 Bug Fixes
+
+- **No more file-dialog popups**: Steward no longer attaches a directory picker under other applications' open/save dialogs. Opening a folder from a third-party app keeps that app's dialog in front, and the launcher only appears when you summon it with the hotkey or the tray icon.
+
 ---
 
 ## v0.1.0

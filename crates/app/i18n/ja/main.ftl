@@ -24,14 +24,6 @@ settings-about = について
 settings-about-description = Steward – 高速で省メモリなランチャーとプラグインプラットフォーム
 settings-version = バージョン
 
-# Automatic directory picker for open/save dialogs
-file-continuum-no-results = 見つかりません。完全なパスを入力してください
-file-continuum-navigating = フォルダーに移動中…
-file-continuum-target-unavailable = 元のダイアログを操作できません。Esc を押して再試行してください。
-file-continuum-release-modifiers = Ctrl / Alt / Shift を離して再試行してください。
-file-continuum-invalid-directory = フォルダーが存在しないか、アクセスできません。
-file-continuum-cancelled = キャンセルしました
-file-continuum-passive = 検索欄をクリックして入力
 # Full-disk file index
 files-indexing = ファイルをインデックス中…
 files-no-index = ファイルインデックスを利用できません。作成後に file: と名前を入力してください。
