@@ -38,6 +38,14 @@ pub struct RouteHit {
     /// Query text passed to the command: the full query for `command` /
     /// `regex` / `dynamic`, the text after the prefix for `prefix`.
     pub input: String,
+    /// Whether the query reached this command only as a fuzzy (subsequence)
+    /// match of its name, title or a keyword.
+    ///
+    /// A fuzzy hit is a guess, not a request: typing `c` reaches the UI
+    /// Showcase command through its `showcase` keyword. The row is still
+    /// offered, but the launcher must not let such a view replace the results
+    /// drop-down - a guess that swaps the whole list hides what was asked for.
+    pub fuzzy: bool,
     /// Execution deadline the host must honor for this hit.
     pub deadline_ms: u64,
 }
@@ -56,6 +64,9 @@ struct Route {
     /// with pinyin forms, in UTF-32), reused across queries; only meaningful
     /// for `command` routes.
     haystacks: Vec<Utf32String>,
+    /// The same haystacks as lowercased text, for the cheap prefix test that
+    /// tells a strong match from a fuzzy one.
+    haystack_texts: Vec<String>,
 }
 
 /// Routing tables for all loaded plugins. Pure data: no process or I/O, so it
@@ -79,6 +90,11 @@ impl RouteIndex {
     /// overlap and all matching routes fire.
     pub fn add_plugin(&mut self, plugin_id: &str, commands: &[PluginCommand]) {
         for command in commands {
+            let haystacks = route_haystacks(command);
+            let haystack_texts = haystacks
+                .iter()
+                .map(|haystack| haystack.to_string().to_lowercase())
+                .collect();
             let route = Route {
                 plugin_id: plugin_id.to_string(),
                 command: command.name.clone(),
@@ -86,7 +102,8 @@ impl RouteIndex {
                 detachable: command.detachable,
                 kind: command.trigger.kind,
                 value: command.trigger.value.clone(),
-                haystacks: route_haystacks(command),
+                haystacks,
+                haystack_texts,
             };
             match command.trigger.kind {
                 TriggerType::Command => self.commands.push(route),
@@ -148,6 +165,7 @@ impl RouteIndex {
         let mut command_hits = Vec::new();
         for route in &self.commands {
             if let Some(score) = command_score(route, query, needle, &mut matcher) {
+                let fuzzy = !strong_command_match(route, &needle_text);
                 command_hits.push((
                     score,
                     RouteHit {
@@ -156,6 +174,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         detachable: route.detachable,
                         input: query.to_string(),
+                        fuzzy,
                         deadline_ms: STATIC_DEADLINE_MS,
                     },
                 ));
@@ -183,6 +202,9 @@ impl RouteIndex {
                         title: route.title.clone(),
                         detachable: route.detachable,
                         input: rest.trim().to_string(),
+                        // A manifest prefix route fires on a literal prefix of
+                        // the query: the user named it, so it is never a guess.
+                        fuzzy: false,
                         deadline_ms: STATIC_DEADLINE_MS,
                     });
                 }
@@ -200,6 +222,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         detachable: route.detachable,
                         input: query.to_string(),
+                        fuzzy: false,
                         deadline_ms: STATIC_DEADLINE_MS,
                     });
                 }
@@ -212,6 +235,9 @@ impl RouteIndex {
             title: route.title.clone(),
             detachable: route.detachable,
             input: query.to_string(),
+            // A dynamic command answers every query by contract; it is not a
+            // guess about what the user typed.
+            fuzzy: false,
             deadline_ms: DYNAMIC_DEADLINE_MS,
         }));
         hits
@@ -225,6 +251,7 @@ fn hit_for(route: &Route) -> RouteHit {
         title: route.title.clone(),
         detachable: route.detachable,
         input: String::new(),
+        fuzzy: false,
         deadline_ms: match route.kind {
             TriggerType::Dynamic => DYNAMIC_DEADLINE_MS,
             _ => STATIC_DEADLINE_MS,
@@ -292,6 +319,20 @@ fn matches_command(command: &str, query: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(' '))
 }
 
+/// Whether the query *names* the command rather than merely fuzzy-matching it:
+/// one of its haystacks (the command name, its title or a localized keyword,
+/// pinyin forms included) starts the query, or the query starts the haystack.
+///
+/// The first direction is "the user is typing toward this command" (`ui`,
+/// `show`, `calendar tomorrow`); the second is "the user typed past it"
+/// (`uishowcase`). Anything else - the fuzzy subsequence match that made `c`
+/// reach `showcase` - is a guess.
+fn strong_command_match(route: &Route, needle: &str) -> bool {
+    route.haystack_texts.iter().any(|text| {
+        !text.is_empty() && (text.starts_with(needle) || needle.starts_with(text.as_str()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +349,42 @@ mod tests {
             detachable: false,
             keywords: Vec::new(),
         }
+    }
+
+    fn command_with_keywords(name: &str, keywords: &[&str]) -> PluginCommand {
+        let mut command = command(name, TriggerType::Command, None);
+        command.keywords = keywords
+            .iter()
+            .map(|keyword| (*keyword).to_string())
+            .collect();
+        command
+    }
+
+    /// A query that only reaches a command through its keyword as a
+    /// subsequence is a guess and must be flagged as one: the launcher keeps
+    /// such a view out of the results list's place. Typing toward the command
+    /// (a keyword prefix) is a request.
+    #[test]
+    fn fuzzy_command_hits_are_flagged_and_named_ones_are_not() {
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "com.example.ui-showcase",
+            &[command_with_keywords("uishowcase", &["ui", "showcase"])],
+        );
+
+        let hit = |query: &str| {
+            index
+                .match_query(query)
+                .into_iter()
+                .find(|hit| hit.command == "uishowcase")
+                .unwrap_or_else(|| panic!("{query} should reach the command"))
+        };
+        assert!(hit("c").fuzzy, "`c` only subsequence-matches `showcase`");
+        assert!(!hit("s").fuzzy, "`s` starts the `showcase` keyword");
+        assert!(!hit("ui").fuzzy);
+        assert!(!hit("showcase").fuzzy);
+        assert!(!hit("uishowcase").fuzzy);
+        assert!(!hit("uishowcase now").fuzzy, "command name plus arguments");
     }
 
     #[test]

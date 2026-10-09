@@ -2388,6 +2388,15 @@ impl StewardApp {
                 let Some(view) = view.as_ref() else {
                     continue;
                 };
+                // Only a hit the user actually addressed may take the list's
+                // place: a fuzzy hit (typing `c` reaches the UI Showcase
+                // command through its `showcase` keyword) is a guess, and a
+                // guess that swaps the whole drop-down for a plugin's demo
+                // tree hides the results the query was typed for. The row is
+                // still offered, and confirming it opens the view.
+                if hit.fuzzy {
+                    continue;
+                }
                 if state_ref.plugin_window_open(&hit.plugin_id, &hit.command) {
                     continue;
                 }
