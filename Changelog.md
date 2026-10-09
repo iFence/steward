@@ -21,6 +21,7 @@ Conventions:
 
 - **No more file-dialog popups**: Steward no longer attaches a directory picker under other applications' open/save dialogs. Opening a folder from a third-party app keeps that app's dialog in front, and the launcher only appears when you summon it with the hotkey or the tray icon.
 - **The binary reports its real version**: `steward-app.exe` carried a hard-coded `0.1.0` version resource, so Explorer's Details tab, Task Manager and the installer's file table disagreed with the workspace (0.2.0). The resource is now generated from the package version during the build, so every place that reads a version reports the same one.
+- **A silent installer**: installing or upgrading no longer flashes black console windows. The installer still stops a running Steward before its files are replaced, but it now hands the command to WiX's quiet launcher instead of letting the custom action spawn `taskkill` with a visible console (three times, six on a major upgrade).
 
 ---
 

@@ -189,23 +189,53 @@
              only runs just before InstallFiles, which is too late for that
              removal; taskkill guarantees the executable is not locked, and /T
              also stops the plugin-runtime child. Matching is by image name, so
-             local debug/release builds are closed too. -->
+             local debug/release builds are closed too.
+
+             taskkill is a console program, and an immediate custom action that
+             runs it directly gives it a console window in the user's session —
+             the black box that used to flash (three times, six on a major
+             upgrade) during an install. Making the action `deferred` with
+             `Impersonate='no'` to hide that window is NOT a fix: the deferred
+             script runs in a different phase, so the app is still running when
+             the old product is removed, and on a machine where the index helper
+             runs as a service the install then dies with error 2613 (see the
+             2026-10-09 decision record). Instead the command line is handed to
+             `CAQuietExec` from WixUtilExtension, which starts the process with a
+             hidden window while staying on the immediate, impersonated path
+             that has always worked. `QtExecCmdLine` is the property that helper
+             reads; `WixCA` is already in the package for `util:CloseApplication`
+             and `CAQuietExec` is one of its exports. -->
+        <CustomAction
+            Id='StopRunningStewardSetCommand'
+            Property='QtExecCmdLine'
+            Value='&quot;[SystemFolder]taskkill.exe&quot; /IM steward-app.exe /F /T'
+            Execute='immediate'/>
         <CustomAction
             Id='StopRunningSteward'
-            Directory='SystemFolder'
-            ExeCommand='taskkill.exe /IM steward-app.exe /F /T'
+            BinaryKey='WixCA'
+            DllEntry='CAQuietExec'
             Execute='immediate'
             Return='ignore'/>
+        <CustomAction
+            Id='StopRunningStewardRuntimeSetCommand'
+            Property='QtExecCmdLine'
+            Value='&quot;[SystemFolder]taskkill.exe&quot; /IM steward-plugin-runtime.exe /F /T'
+            Execute='immediate'/>
         <CustomAction
             Id='StopRunningStewardRuntime'
-            Directory='SystemFolder'
-            ExeCommand='taskkill.exe /IM steward-plugin-runtime.exe /F /T'
+            BinaryKey='WixCA'
+            DllEntry='CAQuietExec'
             Execute='immediate'
             Return='ignore'/>
         <CustomAction
+            Id='StopRunningStewardHelperSetCommand'
+            Property='QtExecCmdLine'
+            Value='&quot;[SystemFolder]taskkill.exe&quot; /IM steward-index-helper.exe /F /T'
+            Execute='immediate'/>
+        <CustomAction
             Id='StopRunningStewardHelper'
-            Directory='SystemFolder'
-            ExeCommand='taskkill.exe /IM steward-index-helper.exe /F /T'
+            BinaryKey='WixCA'
+            DllEntry='CAQuietExec'
             Execute='immediate'
             Return='ignore'/>
 
@@ -258,9 +288,12 @@
             Return='ignore'/>
 
         <InstallExecuteSequence>
-            <Custom Action='StopRunningSteward' Before='RemoveExistingProducts'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningStewardRuntime' After='StopRunningSteward'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningStewardHelper' After='StopRunningStewardRuntime'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardSetCommand' Before='StopRunningSteward'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningSteward' Before='StopRunningStewardRuntimeSetCommand'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardRuntimeSetCommand' Before='StopRunningStewardRuntime'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardRuntime' Before='StopRunningStewardHelperSetCommand'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardHelperSetCommand' Before='StopRunningStewardHelper'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningStewardHelper' Before='RemoveExistingProducts'>VersionNT &gt; 400</Custom>
             <Custom Action='SyncAutostart' After='InstallFiles'>NOT REMOVE</Custom>
             <Custom Action='UnregisterAutostart' Before='RemoveFiles'>(REMOVE="ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
         </InstallExecuteSequence>
