@@ -294,12 +294,15 @@ impl PluginWorkspace {
         );
 
         // Panels rebuilt from the layout announce themselves in this log, so a
-        // command the saved layout docked twice can be collapsed below.
-        let restored = {
-            let context = cx.global::<WorkspaceContext>();
-            context.restored.borrow_mut().clear();
-            context.restored.clone()
-        };
+        // command the saved layout docked twice can be collapsed below. The log
+        // lives in the global: it is cleared here and drained after the load.
+        // (Draining it in place rather than through a clone matters - cloning
+        // the `RefCell` would copy its contents into a second cell and leave
+        // the pushes below landing somewhere this function never reads.)
+        cx.global::<WorkspaceContext>()
+            .restored
+            .borrow_mut()
+            .clear();
         let stored = state
             .borrow()
             .storage
@@ -316,13 +319,16 @@ impl PluginWorkspace {
         // hold one tab per visit (two "Calendar" tabs for one calendar). Keep
         // the first panel of each command and drop the rest, then let the
         // persisted layout be rewritten without them.
-        let mut seen = HashSet::new();
-        let duplicates: Vec<Entity<PluginDockPanel>> = restored
-            .borrow_mut()
-            .drain(..)
-            .filter(|(key, _)| !seen.insert(key.clone()))
-            .map(|(_, panel)| panel)
-            .collect();
+        let duplicates: Vec<Entity<PluginDockPanel>> = {
+            let context = cx.global::<WorkspaceContext>();
+            let mut restored = context.restored.borrow_mut();
+            let mut seen = HashSet::new();
+            restored
+                .drain(..)
+                .filter(|(key, _)| !seen.insert(key.clone()))
+                .map(|(_, panel)| panel)
+                .collect()
+        };
         let removed_duplicates = !duplicates.is_empty();
         for panel in duplicates {
             dock_area.update(cx, |area, cx| {
@@ -341,6 +347,7 @@ impl PluginWorkspace {
             _subscription: subscription,
         };
         if removed_duplicates {
+            eprintln!("[steward] workspace: dropped duplicated panel(s) from the saved layout");
             workspace.persist(cx);
         }
         workspace
