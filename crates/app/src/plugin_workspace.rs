@@ -24,7 +24,7 @@ use gpui::{
     TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 use gpui_component::dock::{
-    register_panel, BasePanelView, DockArea, DockEvent, DockPlacement, DockSkin,
+    panel_handle, register_panel, BasePanelView, DockArea, DockEvent, DockPlacement, DockSkin,
     Panel as ComponentPanel, PanelBuildContext, PanelEvent, PanelHandle, PanelInfo, PanelState,
 };
 use gpui_component::Root;
@@ -379,7 +379,6 @@ fn ensure_workspace_window(state: &Rc<RefCell<LauncherState>>, cx: &mut App) -> 
     if let Some(handle) = *state.borrow().workspace_window.borrow() {
         return handle;
     }
-    let i18n = workspace_context(cx).1;
     let bounds = Bounds::centered(None, size(px(960.0), px(600.0)), cx);
     let state_for_window = state.clone();
     let mut workspace = None;
@@ -401,7 +400,9 @@ fn ensure_workspace_window(state: &Rc<RefCell<LauncherState>>, cx: &mut App) -> 
                 ..Default::default()
             },
             |window, cx| {
-                window.set_window_title(&i18n.translate("app-name"));
+                // The product name, not a localized string: the launcher and
+                // the standalone panel windows title themselves the same way.
+                window.set_window_title("Steward");
                 platform::force_dark_titlebar(window);
                 window
                     .observe_window_appearance(|window, _cx| {
@@ -475,7 +476,18 @@ pub(crate) fn open_panel(
             )
         });
         dock.update(cx, |area, cx| {
-            area.add_panel(panel.clone(), DockPlacement::Center, None, window, cx);
+            // Hand base this crate's presentation handle rather than the bare
+            // entity: with a plain `add_panel` the skin cannot recover the
+            // panel's presentation and draws its `panel_name`
+            // ("steward.plugin") where the tab label and title belong.
+            // `panel_handle` keeps the tab name and title the panel reports.
+            area.add_panel_view(
+                panel_handle(panel.clone()),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
         });
         created = Some(panel);
         cx.activate(true);

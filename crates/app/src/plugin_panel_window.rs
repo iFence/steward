@@ -12,8 +12,8 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
-    div, prelude::*, px, rgb, size, svg, AnyElement, AnyWindowHandle, App, Bounds, Context,
-    ElementId, Entity, FocusHandle, KeyDownEvent, TitlebarOptions, Window,
+    div, prelude::*, px, rgb, size, svg, AnyElement, AnyWindowHandle, App, Bounds, Context, Div,
+    ElementId, Entity, FocusHandle, KeyDownEvent, Stateful, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowOptions,
 };
 use steward_ui_components::virtual_tree::{validate_view, Node as UiNode, VirtualTreeView};
@@ -50,6 +50,22 @@ const DETAIL_FORM_PANEL_HEIGHT: f32 = 260.0;
 /// Lucide `x` icon (24x24, stroke 2, `currentColor`), used by the title bar's
 /// close button.
 const CLOSE_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>"#;
+
+/// Lucide `chevron-right` (24x24, stroke 2, `currentColor`): the base glyph for
+/// the calendar's month navigation, and the only one of the four that is not a
+/// transformation of it. The others reuse this artwork (mirrored across the
+/// vertical centre for `chevron-left`, doubled for the `chevrons-*` year
+/// steps), so the four buttons read as one family and the single/double pair is
+/// what tells a month step apart from a year step.
+const CHEVRON_RIGHT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"#;
+/// `chevron-left`: [`CHEVRON_RIGHT_ICON_SVG`] mirrored, i.e. its x coordinates
+/// reflected about 12 (`m9 18` becomes `m15 18`).
+const CHEVRON_LEFT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>"#;
+/// `chevrons-right`: the chevron drawn twice, one full stroke apart, which is
+/// how Lucide marks a whole-unit step.
+const CHEVRONS_RIGHT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>"#;
+/// `chevrons-left`: the mirror of [`CHEVRONS_RIGHT_ICON_SVG`].
+const CHEVRONS_LEFT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg>"#;
 
 /// Height of a list panel window for `count` plugin rows, capped like the
 /// launcher's drop-down (`MAX_RESULT_ROWS`).
@@ -401,16 +417,7 @@ impl PluginPanelWindow {
                             );
                         }
                     });
-                let dock_state = self.state.clone();
-                let dock_plugin = active.plugin_id.clone();
-                let dock_command = self.command.clone();
-                let on_toggle_pin: steward_ui_components::PinToggleCallback =
-                    Rc::new(move |pinned: bool, cx: &mut App| {
-                        if !pinned {
-                            dock_panel_back(&dock_state, &dock_plugin, &dock_command, cx);
-                        }
-                    });
-                let view = CalendarView::new(Some(on_select), Some(on_toggle_pin), window, cx);
+                let view = CalendarView::new(Some(on_select), window, cx);
                 let language = self.i18n.language();
                 view.set_data(
                     active.data.clone(),
@@ -419,8 +426,6 @@ impl PluginPanelWindow {
                     active.data.selected.clone(),
                     cx,
                 );
-                view.set_detachable(true, cx);
-                view.set_pinned(true, cx);
                 self.selection = active.data.selected.clone();
                 self.calendar = Some(view);
             }
@@ -648,7 +653,8 @@ impl PluginPanelWindow {
 
     /// The month/year navigation toolbar shown above a detached calendar
     /// panel. Prev/next month and prev/next year buttons re-feed a new month
-    /// into the shared calendar view; the pin button stays in the card header.
+    /// into the shared calendar view; the card header below it stays a label
+    /// only, so all calendar controls live on this one row.
     fn nav_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id(ElementId::from("panel-nav"))
@@ -660,81 +666,52 @@ impl PluginPanelWindow {
             .px(px(PLUGIN_WIDGET_PADDING))
             .gap(px(4.0))
             .child(
-                div()
-                    .id(ElementId::from("nav-prev-year"))
-                    .h(px(22.0))
-                    .min_w(px(26.0))
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(rgb(0xffffff).opacity(0.08))
-                    .hover(|style| style.bg(rgb(palette::HOVER).opacity(0.05)))
-                    .text_color(rgb(palette::MUTED_FOREGROUND))
-                    .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| this.navigate_year(-1, cx)))
-                    .child("<<"),
+                Self::nav_button("nav-prev-year", CHEVRONS_LEFT_ICON_SVG)
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate_year(-1, cx))),
             )
             .child(
-                div()
-                    .id(ElementId::from("nav-prev-month"))
-                    .h(px(22.0))
-                    .min_w(px(26.0))
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(rgb(0xffffff).opacity(0.08))
-                    .hover(|style| style.bg(rgb(palette::HOVER).opacity(0.05)))
-                    .text_color(rgb(palette::MUTED_FOREGROUND))
-                    .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| this.navigate_month(-1, cx)))
-                    .child("<"),
+                Self::nav_button("nav-prev-month", CHEVRON_LEFT_ICON_SVG)
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate_month(-1, cx))),
             )
             .child(div().flex_1())
             .child(
-                div()
-                    .id(ElementId::from("nav-next-month"))
-                    .h(px(22.0))
-                    .min_w(px(26.0))
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(rgb(0xffffff).opacity(0.08))
-                    .hover(|style| style.bg(rgb(palette::HOVER).opacity(0.05)))
-                    .text_color(rgb(palette::MUTED_FOREGROUND))
-                    .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| this.navigate_month(1, cx)))
-                    .child(">"),
+                Self::nav_button("nav-next-month", CHEVRON_RIGHT_ICON_SVG)
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate_month(1, cx))),
             )
             .child(
-                div()
-                    .id(ElementId::from("nav-next-year"))
-                    .h(px(22.0))
-                    .min_w(px(26.0))
-                    .px_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(rgb(0xffffff).opacity(0.08))
-                    .hover(|style| style.bg(rgb(palette::HOVER).opacity(0.05)))
-                    .text_color(rgb(palette::MUTED_FOREGROUND))
-                    .text_sm()
-                    .on_click(cx.listener(|this, _, _, cx| this.navigate_year(1, cx)))
-                    .child(">>"),
+                Self::nav_button("nav-next-year", CHEVRONS_RIGHT_ICON_SVG)
+                    .on_click(cx.listener(|this, _, _, cx| this.navigate_year(1, cx))),
+            )
+    }
+
+    /// Chrome shared by the calendar's four month-navigation buttons: a 22px
+    /// rounded rectangle with a hairline border that lights up on hover,
+    /// holding one of the embedded Lucide chevrons. The glyph is drawn as an
+    /// alpha mask tinted by the element's text color, exactly like the
+    /// launcher's own icons.
+    ///
+    /// Returns the button with its `on_click` still to be attached, because
+    /// each caller knows which step (and which direction) it fires.
+    fn nav_button(id: &'static str, icon: &'static [u8]) -> Stateful<Div> {
+        div()
+            .id(ElementId::from(id))
+            .h(px(22.0))
+            .min_w(px(26.0))
+            .px_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .cursor_pointer()
+            .border_1()
+            .border_color(rgb(0xffffff).opacity(0.08))
+            .hover(|style| style.bg(rgb(palette::HOVER).opacity(0.05)))
+            .child(
+                svg()
+                    .data(icon)
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .text_color(rgb(palette::MUTED_FOREGROUND)),
             )
     }
 
@@ -954,31 +931,6 @@ impl PluginPanelWindow {
         }
         cx.notify();
     }
-}
-
-/// Pop the currently active panel (e.g. the calendar grid) into its own window.
-/// If the command's view is already open, it is focused instead.
-pub(crate) fn open_plugin_panel_window(
-    state: &Rc<RefCell<LauncherState>>,
-    i18n: Rc<Localization>,
-    cx: &mut App,
-) {
-    let (plugin_id, command, detachable, view) = {
-        let state = state.borrow();
-        let Some(active) = state.plugin_calendar.borrow().clone() else {
-            return;
-        };
-        let Some(view) = state.plugin_view(&active.plugin_id, &active.command) else {
-            return;
-        };
-        (
-            active.plugin_id.clone(),
-            active.command.clone(),
-            active.detachable,
-            view,
-        )
-    };
-    open_plugin_panel(state, i18n, plugin_id, command, view, detachable, cx);
 }
 
 /// Open a plugin command's view in its own window (the generic core; calendar

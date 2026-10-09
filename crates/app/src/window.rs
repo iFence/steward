@@ -9,8 +9,8 @@ use gpui::{
     WindowKind, WindowOptions,
 };
 use steward_ui_components::{
-    init_components, CalendarSelectCallback, CalendarView, PinToggleCallback, ResultItem,
-    ResultList, ResultListDelegate,
+    init_components, CalendarSelectCallback, CalendarView, ResultItem, ResultList,
+    ResultListDelegate,
 };
 
 use crate::config::{
@@ -160,23 +160,6 @@ pub(crate) fn open_launcher_window(
                             active.plugin_id
                         );
                     }
-                }
-            });
-            // Pin/detach the calendar: in the inline grid, the (unpinned)
-            // control flips the shared state to "popped out" and opens the
-            // independent window. A direct callback (same pattern as day
-            // clicks) instead of an action dispatch: `App::dispatch_action`
-            // routes through the platform's active window, which is unreliable
-            // for a PopUp launcher.
-            let pin_state = state.clone();
-            let pin_i18n = i18n.clone();
-            let on_toggle_pin: PinToggleCallback = Rc::new(move |pinned: bool, cx: &mut App| {
-                if pinned {
-                    crate::plugin_panel_window::open_plugin_panel_window(
-                        &pin_state,
-                        pin_i18n.clone(),
-                        cx,
-                    );
                 }
             });
             let confirm_state = state.clone();
@@ -381,17 +364,21 @@ pub(crate) fn open_launcher_window(
                 // activation (e.g. the user clicks another window). Detached
                 // plugin-view windows live in their own windows and are not
                 // affected by the launcher's activation.
+                //
+                // Hiding goes through `hide_and_reset`: the window (and this
+                // view) survives being hidden, so the query has to be cleared
+                // with it or the text from the last visit would still be in
+                // the box on the next summon.
                 let activation_subscription = cx.observe_window_activation(
                     window,
-                    move |_app: &mut StewardApp, window, cx| {
+                    move |app: &mut StewardApp, window, cx| {
                         if !window.is_window_active() {
-                            hide_window(window, cx);
+                            app.hide_and_reset(window, cx);
                         }
                     },
                 );
                 let results = ResultList::new(delegate, window, cx);
-                let calendar =
-                    CalendarView::new(Some(on_calendar_select), Some(on_toggle_pin), window, cx);
+                let calendar = CalendarView::new(Some(on_calendar_select), window, cx);
                 let mut app = StewardApp {
                     focus_handle: focus.clone(),
                     input: SearchInput {
@@ -417,7 +404,7 @@ pub(crate) fn open_launcher_window(
                     file_search_at: Cell::new(None),
                     results_query: String::new(),
                     state: state.clone(),
-                    detachable_list_target: None,
+                    detach_target: None,
                     ui_view: None,
                     ui_target: None,
                     _activation_subscription: activation_subscription,
@@ -455,9 +442,17 @@ pub(crate) fn toggle_launcher(
             // Drop the borrow before `handle.update`: the closure re-enters the
             // shared state through `show_window`, which adapts the scrim.
             drop(state_ref);
-            let _ = handle.update(cx, |_, window, cx| {
+            // The launcher window's root view is always `StewardApp`; a plain
+            // `handle.update` would hand back an `AnyView`, which has no way to
+            // reach the query buffer.
+            let Some(app) = handle.downcast::<StewardApp>() else {
+                return;
+            };
+            let _ = app.update(cx, |app, window, cx| {
                 if platform::is_visible(window) {
-                    hide_window(window, cx);
+                    // Dismissed by the hotkey: hide with the query cleared, so
+                    // the next summon starts from an empty box.
+                    app.hide_and_reset(window, cx);
                 } else {
                     // Re-apply the height so a freshly-created window matches
                     // the current result count (mirrors live sizing on search).

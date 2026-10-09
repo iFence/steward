@@ -409,11 +409,12 @@ pub(crate) struct StewardApp {
     /// Result count is published here so the tray/hotkey path can size the
     /// window when it is summoned.
     pub(crate) state: Rc<RefCell<LauncherState>>,
-    /// The unique detachable `list` plugin view currently displayed, if any
-    /// (`(plugin_id, command)`). Drives the launcher's "pop out" button; only
-    /// set when the active query has exactly one detachable list panel so the
-    /// target is unambiguous.
-    pub(crate) detachable_list_target: Option<(String, String)>,
+    /// The unique detachable plugin view currently displayed in the bar, if
+    /// any (`(plugin_id, command)`). Drives the launcher's generic "pop out"
+    /// button: a list/grid/... panel, or the inline calendar (which has no
+    /// control of its own). Only set when exactly one target is on screen, so
+    /// the button is unambiguous.
+    pub(crate) detach_target: Option<(String, String)>,
     /// Inline Virtual UI Tree for the current query, when the active plugin
     /// view is a `ui` tree and is not popped out into its own window.
     pub(crate) ui_view: Option<gpui::Entity<steward_ui_components::virtual_tree::VirtualTreeView>>,
@@ -1519,7 +1520,7 @@ impl StewardApp {
     }
 
     fn dismiss_launcher(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        hide_window(window, cx);
+        self.hide_and_reset(window, cx);
     }
 
     /// The file-search page's "back" control, rendered at the left of the input
@@ -1571,11 +1572,11 @@ impl StewardApp {
     }
 
     /// The launcher's generic "pop out" control for the currently displayed
-    /// detachable `list` plugin view. Rendered only when [`Self::detachable_list_target`]
-    /// is set (exactly one detachable list panel), so the target is
-    /// unambiguous; clicking opens the view in its own independent window.
+    /// detachable plugin view (a list/grid/... panel or the inline calendar).
+    /// Rendered only when [`Self::detach_target`] is set (exactly one target),
+    /// so it is unambiguous; clicking opens the view in its own window.
     fn detach_control(&self, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        let Some(target) = self.detachable_list_target.clone() else {
+        let Some(target) = self.detach_target.clone() else {
             return div().into_any_element();
         };
         let target_for_cb = target.clone();
@@ -1842,7 +1843,7 @@ impl StewardApp {
                 // Confirm fires the delegate's `on_confirm`, which launches the
                 // selected app and records its usage; then reset and hide.
                 if self.results.confirm_selected(window, cx) {
-                    self.after_confirm(window, cx);
+                    self.hide_and_reset(window, cx);
                 }
                 cx.stop_propagation();
             }
@@ -2347,24 +2348,33 @@ impl StewardApp {
             .state
             .borrow()
             .plugin_rows_and_calendar_rows(&self.i18n.translate("command"));
-        // Resolve the single detachable list panel (if any) for the launcher's
-        // generic "pop out" control. Ambiguous (two or more) detachable list
-        // views suppress the control rather than guessing.
-        self.detachable_list_target = {
+        // Resolve the single detachable view (if any) for the launcher's
+        // generic "pop out" control. The calendar rides that same control now
+        // that its header carries no pin, so a detachable panel and a
+        // detachable calendar are candidates in one list; two or more of them
+        // suppress the control rather than guessing.
+        self.detach_target = {
             let state = self.state.borrow();
             let hits = state.plugin_hits.borrow();
             let views = state.plugin_views.borrow();
-            let mut target = None;
-            for (hit, view) in hits.iter().zip(views.iter()) {
-                if hit.detachable && view.as_ref().is_some_and(is_panel_view) {
-                    if target.is_some() {
-                        target = None;
-                        break;
-                    }
-                    target = Some((hit.plugin_id.clone(), hit.command.clone()));
+            let mut candidates: Vec<(String, String)> = hits
+                .iter()
+                .zip(views.iter())
+                .filter(|(hit, view)| hit.detachable && view.as_ref().is_some_and(is_panel_view))
+                .map(|(hit, _)| (hit.plugin_id.clone(), hit.command.clone()))
+                .collect();
+            // Only a calendar shown *in the bar* is a target: a popped-out one
+            // already lives in its own window (and the bar shows its row).
+            if let Some(active) = active_calendar.as_ref().filter(|_| !detached) {
+                if active.detachable {
+                    candidates.push((active.plugin_id.clone(), active.command.clone()));
                 }
             }
-            target
+            if candidates.len() == 1 {
+                candidates.pop()
+            } else {
+                None
+            }
         };
         // Inline Virtual UI Tree: the first `ui` view among the current hits
         // that is not popped out. It replaces the results list, like the
@@ -2426,10 +2436,6 @@ impl StewardApp {
                 active.data.selected.clone(),
                 cx,
             );
-            // Only a manifest-detachable command shows the detach control, and
-            // inline (not popped out) it always renders in the unpinned state.
-            self.calendar.set_detachable(active.detachable, cx);
-            self.calendar.set_pinned(false, cx);
         }
         let plugin_count = plugin_rows.len() + calendar_rows.len();
         let builtin_count = self.builtin_count;
@@ -2676,11 +2682,16 @@ impl StewardApp {
         self.search(window, cx);
     }
 
-    /// Reset the launcher to its idle (bar-only) state and hide it. Called
-    /// after the delegate's confirm callback has launched the selected app.
-    fn after_confirm(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        // Confirming ends the visit whichever level it was on: the next summon
-        // opens on the root page again.
+    /// Clear the query, return to the root page and re-seed the idle rows.
+    ///
+    /// The launcher window (and this view) survives being hidden - the
+    /// process shell is the tray icon - so a query left in the buffer would
+    /// still be sitting in the box the next time the bar is summoned. Every
+    /// hide path clears it: losing activation (a click elsewhere, or a result
+    /// row the user clicked), Escape, the summon hotkey, and confirming a row.
+    fn reset_query(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // Leaving the launcher ends the visit whichever level it was on: the
+        // next summon opens on the root page again.
         self.page = LauncherPage::Root;
         let input = &mut self.input;
         input.query.clear();
@@ -2693,6 +2704,13 @@ impl StewardApp {
         // applications instead of an empty bar (the recents seed in
         // `open_launcher_window` only runs once, at window creation).
         self.search(window, cx);
+    }
+
+    /// Hide the launcher with the query cleared, so the next summon opens on
+    /// an empty box. Called on blur, on Escape, on the summon hotkey and after
+    /// a row was confirmed.
+    pub(crate) fn hide_and_reset(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.reset_query(window, cx);
         hide_window(window, cx);
         cx.notify();
     }

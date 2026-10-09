@@ -126,9 +126,10 @@ const DESIGN_ICON_SIZE: f32 = 24.0;
 /// container paints them unclipped, spilling below the drop-down).
 pub const VISIBLE_ROWS: usize = 8;
 /// Width of the secondary text column (a file row's folder, an app row's kind
-/// label, a plugin row's subtitle). Fixed, and applied on every row, so the text
-/// starts on one axis and the column's edge lands in one place instead of
-/// drifting with the length of each string.
+/// label, a plugin row's subtitle). Fixed, and applied on every row, so the
+/// column's edge lands in one place instead of drifting with the length of each
+/// string; the text inside it is right-aligned, so short labels end at that
+/// common edge rather than floating in the middle of the column.
 const DETAIL_COLUMN_WIDTH: f32 = 280.0;
 /// Width reserved for the size column. Fixed — and reserved on every row, file
 /// or not — so the trailing columns line up down the whole drop-down.
@@ -454,6 +455,11 @@ fn render_row(
     // has them, which is what keeps the columns on one axis down the drop-down.
     // A row with nothing to put in them drops them entirely instead of
     // reserving two empty columns against its own text.
+    //
+    // Inside their reserved width the trailing columns align their text to the
+    // right, so a short label ("Application" / "Command") sits at the row's
+    // right edge instead of floating in the middle of a 280px column. The
+    // widths are unchanged, so the columns still line up down the list.
     let mut row = row.when_some(icon, |this, icon| {
         this.child(
             img(ImageSource::Image(icon))
@@ -470,6 +476,7 @@ fn render_row(
                 .truncate()
                 .text_color(rgb(crate::palette::MUTED_FOREGROUND))
                 .text_size(px(11.0))
+                .text_right()
                 .child(size),
         );
     }
@@ -481,6 +488,7 @@ fn render_row(
                 .truncate()
                 .text_color(rgb(crate::palette::MUTED_FOREGROUND))
                 .text_size(px(11.0))
+                .text_right()
                 .child(detail),
         );
     }

@@ -10,27 +10,13 @@
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::FluentBuilder as _, px, svg, App, AppContext, Context, ElementId, Entity, Hsla,
+    div, prelude::FluentBuilder as _, px, App, AppContext, Context, ElementId, Entity, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _,
 };
 use gpui_component::ActiveTheme;
 
 use crate::lunar::lunar_info;
-
-/// Callback fired when the pin toggle is clicked: the new pinned state plus
-/// the app context (so the launcher can mirror the state into its hide
-/// / detach logic). The view flips its own `pinned` on the same frame; the
-/// callback lets the host open (pin) or dock (unpin) the view's window. With
-/// the launcher's detach model, "pinned" means "popped into its own window".
-pub type PinToggleCallback = Rc<dyn Fn(bool, &mut App)>;
-
-/// Lucide `pin` icon (24x24, stroke 2, `currentColor`), embedded directly so
-/// the calendar header renders the same pushpin glyph in both states. GPUI's
-/// SVG renderer treats the artwork as an alpha mask and tints it with the
-/// element's text color, which is how the pinned state is told apart
-/// (accent vs. muted).
-const PIN_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>"#;
 
 /// Parsed plugin calendar view: one month grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,13 +195,6 @@ pub struct CalendarViewState {
     weekday_labels: [String; 7],
     selected: String,
     on_select: Option<CalendarSelectCallback>,
-    on_toggle_pin: Option<PinToggleCallback>,
-    /// Whether the launcher is pinned open (blur no longer hides it).
-    pinned: bool,
-    /// Whether the view may be popped into its own window (the command's
-    /// manifest `detachable` flag). Gates the pin/detach affordance so a
-    /// non-detachable calendar does not show a control that does nothing.
-    detachable: bool,
     max_height: f32,
 }
 
@@ -241,8 +220,6 @@ impl Render for CalendarViewState {
         let cells = month_grid(data.year, data.month, data.start_of_week);
         let selected = self.selected.clone();
         let today = data.today.clone();
-        let pinned = self.pinned;
-        let detachable = self.detachable;
         let row_height = self.row_height();
         // Rows grow/shrink with the window, but the type stays at its natural
         // size so a larger widget spreads out instead of rendering giant text.
@@ -267,16 +244,10 @@ impl Render for CalendarViewState {
             .w_full()
             .flex()
             .items_center()
-            .justify_between()
             .px_3()
             .text_color(foreground)
             .text_sm()
-            .child(div().flex_1().child(self.month_label.clone()));
-        let header = if detachable {
-            header.child(pin_button(pinned, cx))
-        } else {
-            header
-        };
+            .child(self.month_label.clone());
 
         let weekday_row = div()
             .id(ElementId::from("cal-weekdays"))
@@ -330,12 +301,25 @@ impl Render for CalendarViewState {
                             .flex_col()
                             .items_center()
                             .justify_center()
-                            .rounded_full()
+                            // A rectangle, not a circle: a full radius on a
+                            // cell a seventh of the widget wide drew the
+                            // selected day as a stretched oval. The small
+                            // radius keeps the highlight a date box while the
+                            // 2px side insets separate neighbouring cells.
+                            .rounded_md()
                             .mx(px(2.0))
                             .text_color(if is_today { accent } else { foreground })
                             .text_size(px(day_font))
                             .cursor_pointer()
-                            .when(is_selected, |this| this.bg(foreground.opacity(0.14)))
+                            // The selection is the one cell that carries a
+                            // border: a theme-accent outline around the box,
+                            // so the chosen day stays readable against the
+                            // muted fill today and the hover wash share.
+                            .when(is_selected, |this| {
+                                this.bg(foreground.opacity(0.14))
+                                    .border_1()
+                                    .border_color(accent)
+                            })
                             .when(!is_selected && is_today, |this| {
                                 this.bg(accent.opacity(0.18))
                             })
@@ -420,53 +404,6 @@ fn week_rail_cell(
     }
 }
 
-/// The pin/unpin toggle in the calendar header. Clicking it flips the view's
-/// own pinned state immediately (so the accent styling updates on the same
-/// frame) and reports the new state to the launcher through
-/// [`PinToggleCallback`]; in the launcher that means "pop out into a window"
-/// (pinned) / "dock back" (unpinned). Pinned and unpinned share the Lucide
-/// pushpin glyph; the accent tint marks the pinned state.
-fn pin_button(pinned: bool, cx: &mut Context<CalendarViewState>) -> impl IntoElement {
-    let (accent, muted_foreground, foreground) = {
-        let theme = cx.theme();
-        (theme.primary, theme.muted_foreground, theme.foreground)
-    };
-    div()
-        .id(ElementId::from("cal-pin-toggle"))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(22.0))
-        .px_2()
-        .rounded_full()
-        .cursor_pointer()
-        .border_1()
-        .border_color(if pinned {
-            accent.opacity(0.55)
-        } else {
-            foreground.opacity(0.08)
-        })
-        .when(pinned, |this| this.bg(accent.opacity(0.16)))
-        .when(!pinned, |this| {
-            this.hover(|style| style.bg(foreground.opacity(0.05)))
-        })
-        .on_click(cx.listener(|this, _, _, cx| {
-            let pinned = !this.pinned;
-            this.pinned = pinned;
-            if let Some(callback) = this.on_toggle_pin.clone() {
-                callback(pinned, cx);
-            }
-            cx.notify();
-        }))
-        .child(
-            svg()
-                .data(PIN_ICON_SVG)
-                .w(px(14.0))
-                .h(px(14.0))
-                .text_color(if pinned { accent } else { muted_foreground }),
-        )
-}
-
 /// The launcher's calendar grid: a small entity wrapper so the app can update
 /// data/selection without owning the state directly.
 #[derive(Clone)]
@@ -477,7 +414,6 @@ pub struct CalendarView {
 impl CalendarView {
     pub fn new<C>(
         on_select: Option<CalendarSelectCallback>,
-        on_toggle_pin: Option<PinToggleCallback>,
         _window: &mut gpui::Window,
         cx: &mut Context<C>,
     ) -> Self {
@@ -493,9 +429,6 @@ impl CalendarView {
             weekday_labels: Default::default(),
             selected: String::new(),
             on_select,
-            on_toggle_pin,
-            pinned: false,
-            detachable: true,
             max_height: calendar_grid_height(month_week_rows(1970, 1, 1)),
         });
         Self { state }
@@ -524,24 +457,6 @@ impl CalendarView {
     pub fn set_selected<C: gpui::AppContext>(&self, selected: &str, cx: &mut C) {
         self.state.update(cx, |this, cx| {
             this.selected = selected.to_string();
-            cx.notify();
-        });
-    }
-
-    /// Reflect the launcher's pinned state (whether the detach control renders
-    /// in its "pinned / popped out" state).
-    pub fn set_pinned<C: gpui::AppContext>(&self, pinned: bool, cx: &mut C) {
-        self.state.update(cx, |this, cx| {
-            this.pinned = pinned;
-            cx.notify();
-        });
-    }
-
-    /// Reflect the command's `detachable` flag (whether the pin/detach control
-    /// is shown at all). Defaults to `true` for backward compatibility.
-    pub fn set_detachable<C: gpui::AppContext>(&self, detachable: bool, cx: &mut C) {
-        self.state.update(cx, |this, cx| {
-            this.detachable = detachable;
             cx.notify();
         });
     }
