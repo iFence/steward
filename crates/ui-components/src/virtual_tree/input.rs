@@ -205,7 +205,13 @@ impl InputStore {
             };
             let has_callback = node.callback(super::spec::EventKind::Change).is_some()
                 || node.callback(super::spec::EventKind::Submit).is_some();
-            if let Some(existing) = self.map.borrow().get(&node.id) {
+            // Read the entry out before deciding: `if let Some(entry) =
+            // self.map.borrow().get(..)` keeps the `Ref` alive for the whole
+            // `if let` - the `else` arm included - so the `borrow_mut` below
+            // would panic with "already borrowed" the first time a tree
+            // declares an input this view has not seen yet.
+            let existing = self.map.borrow().get(&node.id).cloned();
+            if let Some(existing) = existing {
                 existing.state.update(cx, |state, _| {
                     state.placeholder = props.placeholder.clone();
                     state.multiline = props.multiline;
