@@ -15,6 +15,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     rc::Rc,
 };
 
@@ -40,6 +41,9 @@ use crate::plugin_panel_window::{parse_panel_view, PluginPanelWindow};
 const WORKSPACE_LAYOUT_KEY: &str = "plugin_workspace_layout";
 /// `panel_name` under which every plugin panel is registered.
 const PANEL_NAME: &str = "steward.plugin";
+/// A panel rebuilt from the persisted layout, keyed by its `(plugin_id,
+/// command)`: the key is what tells one command's panel apart from another's.
+type RestoredPanel = ((String, String), Entity<PluginDockPanel>);
 /// Dock layout schema version; bump when the persisted shape changes.
 const WORKSPACE_VERSION: usize = 1;
 
@@ -249,6 +253,17 @@ impl gpui_component::dock::BasePanel for PluginDockPanel {
 }
 
 impl ComponentPanel for PluginDockPanel {
+    /// The panel fills its host: no title row of its own.
+    ///
+    /// The tab group draws a title bar above a panel that is alone in its
+    /// group unless the panel declines one, and a plugin view (the calendar
+    /// above all) brings its own header - a second "Calendar" row above it is
+    /// pure noise. The tabs come back on their own as soon as a second panel
+    /// shares the group, which is exactly when switching is needed.
+    fn title_bar(&self, _cx: &App) -> bool {
+        false
+    }
+
     fn tab_name(&self, _cx: &App) -> Option<SharedString> {
         Some(self.title.clone())
     }
@@ -278,6 +293,13 @@ impl PluginWorkspace {
             cx,
         );
 
+        // Panels rebuilt from the layout announce themselves in this log, so a
+        // command the saved layout docked twice can be collapsed below.
+        let restored = {
+            let context = cx.global::<WorkspaceContext>();
+            context.restored.borrow_mut().clear();
+            context.restored.clone()
+        };
         let stored = state
             .borrow()
             .storage
@@ -290,17 +312,38 @@ impl PluginWorkspace {
                 });
             }
         }
+        // A layout written while the restore forgot to register its panels can
+        // hold one tab per visit (two "Calendar" tabs for one calendar). Keep
+        // the first panel of each command and drop the rest, then let the
+        // persisted layout be rewritten without them.
+        let mut seen = HashSet::new();
+        let duplicates: Vec<Entity<PluginDockPanel>> = restored
+            .borrow_mut()
+            .drain(..)
+            .filter(|(key, _)| !seen.insert(key.clone()))
+            .map(|(_, panel)| panel)
+            .collect();
+        let removed_duplicates = !duplicates.is_empty();
+        for panel in duplicates {
+            dock_area.update(cx, |area, cx| {
+                area.remove_panel(panel.clone(), window, cx);
+            });
+        }
 
         let subscription = cx.subscribe(&dock_area, |this, _area, _event: &DockEvent, cx| {
             this.persist(cx);
         });
 
-        Self {
+        let workspace = Self {
             dock_area,
             _skin: skin,
             state,
             _subscription: subscription,
+        };
+        if removed_duplicates {
+            workspace.persist(cx);
         }
+        workspace
     }
 
     fn persist(&self, cx: &mut Context<Self>) {
@@ -346,8 +389,33 @@ fn build_restored_panel(
         .into();
     let view = info.get("view").cloned().unwrap_or(Value::Null);
     let (state, i18n) = workspace_context(cx);
-    let panel =
-        cx.new(|cx| PluginDockPanel::new(plugin_id, command, title, view, i18n, state, window, cx));
+    let panel = cx.new(|cx| {
+        PluginDockPanel::new(
+            plugin_id.clone(),
+            command.clone(),
+            title,
+            view,
+            i18n,
+            state.clone(),
+            window,
+            cx,
+        )
+    });
+    // Register the restored panel exactly like one this process opened:
+    // `open_panel` looks the command up in this map, and a panel it cannot see
+    // is a panel it docks a second copy of - one persisted tab plus one fresh
+    // tab, two "Calendar" tabs in one group.
+    state
+        .borrow_mut()
+        .workspace_panels
+        .borrow_mut()
+        .insert((plugin_id.clone(), command.clone()), panel.clone());
+    // And log it for the workspace builder, which drops the extra copies a
+    // layout written before this bookkeeping existed may still hold.
+    cx.global::<WorkspaceContext>()
+        .restored
+        .borrow_mut()
+        .push(((plugin_id, command), panel.clone()));
     std::sync::Arc::new(PanelHandle::new(panel))
 }
 
@@ -357,6 +425,10 @@ fn build_restored_panel(
 struct WorkspaceContext {
     state: Rc<RefCell<LauncherState>>,
     i18n: Rc<Localization>,
+    /// Panels the current window rebuilds from the persisted layout, in load
+    /// order. Cleared when that window is created and drained right after the
+    /// load, so the workspace can drop a command the layout docked twice.
+    restored: RefCell<Vec<RestoredPanel>>,
 }
 impl gpui::Global for WorkspaceContext {}
 
@@ -370,6 +442,7 @@ pub(crate) fn init(cx: &mut App, state: &Rc<RefCell<LauncherState>>, i18n: Rc<Lo
     cx.set_global(WorkspaceContext {
         state: state.clone(),
         i18n,
+        restored: RefCell::new(Vec::new()),
     });
     register_panel(cx, PANEL_NAME, build_restored_panel);
 }
