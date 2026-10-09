@@ -26,5 +26,10 @@ settings-version = Версия
 
 # Full-disk file index
 files-indexing = Индексация файлов…
-files-no-index = Индекс файлов недоступен. Введите file: и имя после его построения.
+files-no-index = Индекс файлов ещё недоступен.
 files-indexed = Проиндексировано файлов
+
+# File search page
+file-search-title = Поиск файлов
+file-search-placeholder = Поиск файлов...
+files-type-to-search = Введите слово для поиска файлов

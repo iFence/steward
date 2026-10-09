@@ -42,9 +42,27 @@ use crate::window::hide_window;
 /// candidate window), since the launcher hand-renders its query text instead
 /// of using a GPUI text system with metrics.
 const GLYPH_WIDTH: f32 = 9.0;
-/// The query text's left edge, in window coordinates: the launcher's left
-/// drag-strip margin plus the input row's `px_3` padding.
-const INPUT_TEXT_X: f32 = LAUNCHER_MARGIN + 12.0;
+/// Width of the file-search page's "back" chip (chevron plus page title), and
+/// the gap between it and the query text. The query text starts to the right of
+/// it, so every window-x -> character mapping (mouse selection, caret and IME
+/// candidate placement) has to add both while that page is open.
+const BACK_CHIP_WIDTH: f32 = 104.0;
+const BACK_CHIP_GAP: f32 = 8.0;
+
+/// Window-x of the query text's left edge: the launcher's left drag-strip
+/// margin plus the input row's `px_3` padding, plus the file-search page's back
+/// chip while that page is open.
+fn query_text_x(page: LauncherPage) -> f32 {
+    let base = LAUNCHER_MARGIN + 12.0;
+    match page {
+        LauncherPage::Root => base,
+        LauncherPage::FileSearch => base + BACK_CHIP_WIDTH + BACK_CHIP_GAP,
+    }
+}
+
+/// Lucide `chevron-left` icon (24x24, stroke 2, `currentColor`), used by the
+/// file-search page's "back" control.
+const CHEVRON_LEFT_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>"#;
 
 /// Lucide `external-link` icon (24x24, stroke 2, `currentColor`), used by the
 /// generic "pop out a plugin view" control shown on detachable list panels.
@@ -70,6 +88,7 @@ const FILE_SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_mill
 /// is still being built (which is what the empty-list hint depends on).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct RenderSignature {
+    page: LauncherPage,
     query: String,
     file_ready: bool,
     file_building: bool,
@@ -82,6 +101,7 @@ impl RenderSignature {
     pub(crate) fn capture(app: &StewardApp) -> Self {
         let state = app.state.borrow();
         Self {
+            page: app.page,
             query: app.input.query.clone(),
             file_ready: state.file_index.is_ready(),
             file_building: state.file_index.is_building(),
@@ -214,49 +234,76 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// Parse the launcher's routing prefixes out of a raw query.
+/// The launcher's active page: one window, two levels.
 ///
-/// - `file:<query>` (or `f:`) searches only the file index
-/// - `app:<query>` searches only applications and plugins
-/// - anything else searches everything
+/// The root page answers applications, plugin commands and the built-in
+/// commands; the file-search page (which a keyword on the root page drills
+/// into) answers from the file index alone. The query text is shared between
+/// them, so the two levels never mix rows: a file can only appear on the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LauncherPage {
+    #[default]
+    Root,
+    /// The second-level file search.
+    FileSearch,
+}
+
+/// Keywords that offer the built-in "File Search" command.
 ///
-/// Returns the scope plus the query with the prefix removed.
-fn route_query(query: &str) -> (QueryScope, &str) {
+/// `fs` is the short form; the full names are accepted in English and Chinese
+/// whatever the UI language is, because a keyword is something a user memorizes
+/// once (the command row itself is localized like every other row).
+const FILE_SEARCH_KEYWORDS: [&str; 3] = ["fs", "file search", "文件搜索"];
+
+/// Parse the file-search keyword out of a root-page query.
+///
+/// Returns the file query the page should open with: the text after the
+/// keyword, so `fs report` drills in already searching `report`, and a bare
+/// `fs` opens the page with an empty box. The keyword has to be a whole token
+/// (`fsx` and `files` are names, not the command) and only a leading one
+/// counts.
+fn parse_file_search_command(query: &str) -> Option<&str> {
     let trimmed = query.trim_start();
-    for (prefix, scope) in [
-        ("file:", QueryScope::Files),
-        ("f:", QueryScope::Files),
-        ("app:", QueryScope::Apps),
-    ] {
-        if let Some(rest) = trimmed
-            .strip_prefix(prefix)
-            .or_else(|| trimmed.strip_prefix(&prefix.to_uppercase()))
-        {
-            // `file:` with nothing after it still routes: the user is about to
-            // type a file query, so showing app rows in the meantime is noise.
-            return (scope, rest.trim_start());
+    for keyword in FILE_SEARCH_KEYWORDS {
+        let Some(head) = trimmed.get(..keyword.len()) else {
+            continue;
+        };
+        if !head.eq_ignore_ascii_case(keyword) {
+            continue;
+        }
+        let rest = &trimmed[keyword.len()..];
+        if rest.is_empty() {
+            return Some("");
+        }
+        if rest.starts_with(char::is_whitespace) {
+            return Some(rest.trim_start());
         }
     }
-    (QueryScope::All, query)
+    None
 }
 
-/// What a query should be matched against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QueryScope {
-    /// Applications, plugins and files.
-    All,
-    /// Only the file index.
-    Files,
-    /// Only applications and plugins.
-    Apps,
-}
-
-/// Whether a routed query is a search at all.
+/// Which row the highlight lands on after a keystroke changed the row list.
 ///
-/// The launcher's home page is an empty query (the most-used applications). The
-/// file index answers `""` with its first records in path order, so an empty
-/// query must never reach the index or produce file rows — otherwise files take
-/// the home page over. Any non-whitespace term is a real search.
+/// The file-search page opens on its first row. The root page opens on the
+/// "File Search" command only when the query just produced it — that is the row
+/// the user asked for — while the home page pins the same command on top for
+/// discoverability but still opens on the most-used application, so "summon +
+/// Enter" keeps launching it.
+fn default_selection(page: LauncherPage, query: &str, offers_file_search: bool) -> usize {
+    match page {
+        LauncherPage::FileSearch => 0,
+        LauncherPage::Root if offers_file_search && !query.trim().is_empty() => 0,
+        LauncherPage::Root if offers_file_search => 1,
+        LauncherPage::Root => 0,
+    }
+}
+
+/// Whether a file-page query is a search at all.
+///
+/// An empty (or whitespace-only) query never reaches the index: it answers `""`
+/// with its first records in path order, which is a directory listing rather
+/// than a search. The page shows a hint instead. Any non-whitespace term is a
+/// real search.
 fn is_file_search(query: &str) -> bool {
     !query.trim().is_empty()
 }
@@ -304,6 +351,10 @@ pub(crate) struct ActiveCalendar {
 pub(crate) struct StewardApp {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) input: SearchInput,
+    /// Which level of the launcher is showing. The root page never lists files
+    /// and the file-search page never lists applications or plugins, so the two
+    /// can share one query buffer without mixing rows.
+    pub(crate) page: LauncherPage,
     pub(crate) i18n: Rc<crate::i18n::Localization>,
     /// Shared search index, rebuilt at startup from a scan / cache.
     pub(crate) engine: Rc<RefCell<steward_core_engine::Engine>>,
@@ -1084,10 +1135,12 @@ impl EntityInputHandler for StewardApp {
         _window: &mut Window,
         _cx: &mut gpui::Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        // Approximate the caret position for the IME candidate window: input
-        // padding plus an estimated glyph width per character.
+        // Approximate the caret position for the IME candidate window: the
+        // query text's left edge (which moves right on the file-search page,
+        // where the back chip sits before the text) plus an estimated glyph
+        // width per character.
         let chars = self.input.utf16_to_chars(range_utf16).unwrap_or(0..0);
-        let x = 12.0 + 9.0 * chars.start as f32;
+        let x = query_text_x(self.page) + GLYPH_WIDTH * chars.start as f32;
         Some(Bounds::new(
             point(element_bounds.origin.x + px(x), element_bounds.origin.y),
             size(px(2.0), element_bounds.size.height),
@@ -1102,7 +1155,7 @@ impl EntityInputHandler for StewardApp {
     ) -> Option<usize> {
         // Window-coordinate x, using the same glyph-width estimate as
         // `bounds_for_range` and the mouse-selection handlers.
-        let relative = point.x - px(INPUT_TEXT_X);
+        let relative = point.x - px(query_text_x(self.page));
         let index = (relative / px(GLYPH_WIDTH)).round().max(0.0) as usize;
         Some(index.min(self.input.char_count()))
     }
@@ -1209,8 +1262,11 @@ impl IntoElement for LauncherInputElement {
 
 /// Map a window x coordinate to a character index in the query, using the
 /// same glyph-width estimate as the IME caret placement and mouse selection.
-fn char_index_at_x(bounds: Bounds<Pixels>, query_len: usize, x: Pixels) -> usize {
-    let relative = x - bounds.origin.x - px(INPUT_TEXT_X);
+/// `text_x` is the query text's left edge inside the window (see
+/// [`query_text_x`]) — the launcher hand-renders its text, so there are no
+/// metrics to ask for.
+fn char_index_at_x(bounds: Bounds<Pixels>, query_len: usize, text_x: f32, x: Pixels) -> usize {
+    let relative = x - bounds.origin.x - px(text_x);
     let index = (relative / px(GLYPH_WIDTH)).round().max(0.0) as usize;
     index.min(query_len)
 }
@@ -1234,7 +1290,12 @@ impl LauncherInputElement {
                 return;
             }
             view.update(cx, |app, cx| {
-                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
+                let index = char_index_at_x(
+                    input_bounds,
+                    app.input.char_count(),
+                    query_text_x(app.page),
+                    event.position.x,
+                );
                 app.begin_mouse_selection(index, cx);
             });
         });
@@ -1249,7 +1310,12 @@ impl LauncherInputElement {
                 if !app.mouse_selecting {
                     return;
                 }
-                let index = char_index_at_x(input_bounds, app.input.char_count(), event.position.x);
+                let index = char_index_at_x(
+                    input_bounds,
+                    app.input.char_count(),
+                    query_text_x(app.page),
+                    event.position.x,
+                );
                 app.update_mouse_selection(index, cx);
             });
         });
@@ -1335,6 +1401,7 @@ impl gpui::Render for StewardApp {
                             .items_center()
                             .px_3()
                             .cursor_text()
+                            .child(self.back_control(cx))
                             .child(
                                 div()
                                     .flex_1()
@@ -1443,13 +1510,64 @@ impl gpui::Render for StewardApp {
 }
 
 impl StewardApp {
-    /// Placeholder for the query box.
+    /// Placeholder for the query box: the page decides what the box searches.
     fn search_placeholder(&self) -> &'static str {
-        "search-placeholder"
+        match self.page {
+            LauncherPage::Root => "search-placeholder",
+            LauncherPage::FileSearch => "file-search-placeholder",
+        }
     }
 
     fn dismiss_launcher(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
         hide_window(window, cx);
+    }
+
+    /// The file-search page's "back" control, rendered at the left of the input
+    /// bar: a chevron plus the page title. Clicking it leaves the page, exactly
+    /// like Escape. Only that page renders it, and its width is fixed (the
+    /// label truncates instead of stretching) because the query text's x offset
+    /// — and with it the caret, the mouse mapping and the IME candidate window —
+    /// is computed from [`BACK_CHIP_WIDTH`], not measured.
+    fn back_control(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
+        if self.page != LauncherPage::FileSearch {
+            return div().into_any_element();
+        }
+        div()
+            .id(ElementId::from("file-search-back"))
+            .flex()
+            .flex_shrink_0()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .gap_1()
+            .w(px(BACK_CHIP_WIDTH))
+            .mr(px(BACK_CHIP_GAP))
+            .h(px(22.0))
+            .overflow_hidden()
+            .rounded_full()
+            .cursor_pointer()
+            .bg(rgb(0xffffff).opacity(0.06))
+            .hover(|style| style.bg(rgb(steward_ui_components::palette::HOVER).opacity(0.08)))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.leave_file_search(window, cx);
+            }))
+            .child(
+                svg()
+                    .data(CHEVRON_LEFT_ICON_SVG)
+                    .flex_shrink_0()
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND))
+                    .child(self.i18n.translate("file-search-title").to_owned()),
+            )
+            .into_any_element()
     }
 
     /// The launcher's generic "pop out" control for the currently displayed
@@ -1749,11 +1867,18 @@ impl StewardApp {
                 cx.notify();
                 cx.stop_propagation();
             }
-            // Hide directly at the key level (the keybinding is a fallback):
-            // this is more robust than relying on action dispatch when the
-            // window just went through a drag or was re-activated.
+            // Escape leaves the file-search page first (back to the home page,
+            // box cleared), exactly like clicking the page's back control.
+            // On the root page it hides the launcher directly at the key level
+            // (the keybinding is a fallback): this is more robust than relying
+            // on action dispatch when the window just went through a drag or
+            // was re-activated.
             "escape" => {
-                self.dismiss_launcher(window, cx);
+                if self.page == LauncherPage::FileSearch {
+                    self.leave_file_search(window, cx);
+                } else {
+                    self.dismiss_launcher(window, cx);
+                }
                 cx.stop_propagation();
             }
             _ => {}
@@ -1788,131 +1913,46 @@ impl StewardApp {
     /// resize the window to fit the new drop-down height. A query that is a
     /// complete arithmetic expression additionally gets a calculator row on
     /// top showing the computed value.
+    ///
+    /// The page decides what the query is matched against: the root page knows
+    /// applications, plugins and the built-in commands, the file-search page
+    /// only the file index. The two levels never mix rows, which is the whole
+    /// point of the second level.
     pub(crate) fn search(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        // `file:` / `f:` / `app:` route the query, and the routed text is what
-        // every downstream stage matches against.
-        let (scope, query) = {
-            let (scope, rest) = route_query(&self.input.query);
-            (scope, rest.to_owned())
-        };
+        if self.page == LauncherPage::FileSearch {
+            self.search_files(window, cx);
+            return;
+        }
+        let query = self.input.query.clone();
+
+        // The built-in "File Search" command: the home page always offers it
+        // (that is how the second level is discovered), and a query that spells
+        // its keyword puts it on top. The file index is not consulted on this
+        // page at all — files belong to the page below — so an application list
+        // can never be diluted by file hits.
+        let offers_file_search =
+            parse_file_search_command(&query).is_some() || !is_file_search(&query);
+        // Whatever hits are in hand belong to the file-search page: drop them
+        // and mark them superseded, so a late reply cannot repaint the root page
+        // with rows nothing here asked for.
+        self.clear_file_hits();
+        self.file_search_at.set(None);
 
         let mut items: Vec<ResultItem> = Vec::new();
-        if scope != QueryScope::Files {
-            if let Some(value) = steward_core_engine::calc::try_evaluate(&query) {
-                items.push(ResultItem::Action {
-                    title: steward_core_engine::calc::format_value(value),
-                    subtitle: query.trim().to_owned(),
-                });
-            }
-            // A URL query (scheme URL, bare domain, IPv4[:port], localhost) is a
-            // command: offer an "open in browser" row above any app matches.
-            if let Some(url) = steward_core_engine::try_openable(&query) {
-                items.push(ResultItem::Link {
-                    url,
-                    label: self.i18n.translate("open-in-browser"),
-                    command_label: self.i18n.translate("command"),
-                });
-            }
+        if let Some(value) = steward_core_engine::calc::try_evaluate(&query) {
+            items.push(ResultItem::Action {
+                title: steward_core_engine::calc::format_value(value),
+                subtitle: query.trim().to_owned(),
+            });
         }
-
-        // File matches come from the index worker: request them for the current
-        // query and render whatever arrived last, then re-render when the reply
-        // lands (`drain_file_index`). The index is built in the background on
-        // first run, so an empty result here is expected until it is ready.
-        //
-        // A burst of keystrokes would otherwise queue one search per character,
-        // each answered with a full re-rank; only the first and then at most one
-        // per `FILE_SEARCH_DEBOUNCE` are dispatched.
-        if scope != QueryScope::Apps {
-            if !is_file_search(&query) {
-                // An empty query is the launcher's home page (top applications),
-                // not a search: the index answers "" with its first records, and
-                // showing those would let the file index take the home page over.
-                // Drop the hits in hand so rows from the previous query go away
-                // with the text, and don't dispatch — files and folders appear
-                // only once a term has been typed.
-                self.clear_file_hits();
-                // Nothing is in flight for the emptied box, so the next real
-                // query must not wait out the debounce of the search the text
-                // just replaced.
-                self.file_search_at.set(None);
-            } else {
-                let now = std::time::Instant::now();
-                let due = self
-                    .file_search_at
-                    .get()
-                    .is_none_or(|last| now.duration_since(last) >= FILE_SEARCH_DEBOUNCE);
-                if due {
-                    self.file_search_at.set(Some(now));
-                    {
-                        let mut state = self.state.borrow_mut();
-                        // The generation `search` is about to give this request. The
-                        // reply carries it back, which is how the rows it produces
-                        // are recognised as answering *this* query and no later one.
-                        let generation = state.file_index.generation + 1;
-                        state.file_search_generation = generation;
-                    }
-                    self.state.borrow_mut().file_index.search(
-                        query.trim(),
-                        steward_core_engine::file_index::KindFilter::Any,
-                    );
-                }
-            }
-        } else {
-            // An app-only query shows no file rows, so whatever hits are in hand
-            // are not part of these rows: empty them and remember that this is a
-            // fresh (empty) set, so the rows stay confirmable.
-            self.clear_file_hits();
-        }
-        // The generation whose hits are about to be rendered. Every write to the
-        // hit list records it, so this is the only thing that can prove the file
-        // rows on screen were dispatched for the query in the box — `search` is
-        // debounced, and a reply in hand may belong to a query the user has
-        // already typed past.
-        let file_generation = self.state.borrow().file_hits_generation;
-        // With no file half in play (an app-only scope) the rows are complete as
-        // they stand. In file-only scope the base rows are exactly those hits, so
-        // they are fresh under the same condition as reproduced below.
-        if scope == QueryScope::Apps || scope == QueryScope::Files {
-            self.results_query = self.input.query.clone();
-        }
-        if scope == QueryScope::Files {
-            // File-only scope: no app rows, and a hint while the index is still
-            // being built so an empty list is explained rather than looking like
-            // "the search does not work".
-            let hint = self.index_hint();
-            if let Some(hint) = hint {
-                items.push(ResultItem::Action {
-                    title: hint,
-                    subtitle: String::new(),
-                });
-            }
-            let builtin_rows = items
-                .into_iter()
-                .map(|item| RankedRow {
-                    item,
-                    icon: None,
-                    // Commands the user typed as a keyword always lead, so they
-                    // occupy the best tier.
-                    rank: RowRank::new(&query, "", i64::MAX, std::path::Path::new("")),
-                })
-                .collect::<Vec<_>>();
-            let builtin_count = builtin_rows.len();
-            let mut rows = builtin_rows;
-            rows.extend(self.file_rows(&query));
-            self.base_rows = rows;
-            self.builtin_count = builtin_count;
-            self.ranked_query = query.clone();
-            // Plugin routing is skipped in file-only scope; the router state is
-            // reset so stale plugin rows cannot linger.
-            {
-                let state = self.state.borrow();
-                *state.plugin_hits.borrow_mut() = Vec::new();
-                *state.plugin_views.borrow_mut() = Vec::new();
-                state.plugin_pending.borrow_mut().clear();
-            }
-            self.render_merged(file_generation, window, cx);
-            return;
+        // A URL query (scheme URL, bare domain, IPv4[:port], localhost) is a
+        // command: offer an "open in browser" row above any app matches.
+        if let Some(url) = steward_core_engine::try_openable(&query) {
+            items.push(ResultItem::Link {
+                url,
+                label: self.i18n.translate("open-in-browser"),
+                command_label: self.i18n.translate("command"),
+            });
         }
 
         let apps = self
@@ -1992,44 +2032,42 @@ impl StewardApp {
             }
         }
 
-        // Build the base rows: the builtin commands (calculator/link) first, then
-        // applications and files ranked against each other by how well they
-        // match. The builtins sit in the best tier because a typed command is
-        // never ambiguous with a name match.
-        let mut rows = items
-            .into_iter()
-            .map(|item| RankedRow {
+        // Build the base rows: the built-in commands first, then applications.
+        // Nothing here searches files, so the two kinds cannot be mixed.
+        let mut rows: Vec<RankedRow> = Vec::new();
+        if offers_file_search {
+            rows.push(RankedRow {
+                item: ResultItem::FileSearchCommand {
+                    title: self.i18n.translate("file-search-title").to_owned(),
+                    subtitle: self.i18n.translate("command").to_owned(),
+                },
+                icon: None,
+                // A command the user spelled out leads every fuzzy name match —
+                // even an application whose name *is* the query — so Enter does
+                // what the keyword asked for.
+                rank: RowRank {
+                    tier: MatchTier::ExactName,
+                    relevance: i64::MAX,
+                    name_len: 0,
+                    path: Vec::new(),
+                },
+            });
+        }
+        for item in items {
+            rows.push(RankedRow {
                 item,
                 icon: None,
+                // The other built-ins sit in the best tier too: a typed command
+                // is never ambiguous with a name match.
                 rank: RowRank::new(&query, "", i64::MAX, std::path::Path::new("")),
-            })
-            .collect::<Vec<_>>();
+            });
+        }
         let builtin_count = rows.len();
         rows.extend(apps.into_iter().zip(icons).map(|(hit, icon)| RankedRow {
             rank: RowRank::new(&query, &hit.app.name, i64::from(hit.score), &hit.app.path),
             item: ResultItem::App(hit.app),
             icon,
         }));
-        rows.extend(self.file_rows(&query));
-        // The hint goes last so it can never outrank a real match, and only when
-        // there is nothing else to show.
-        if rows.len() == builtin_count {
-            if let Some(hint) = self.index_hint() {
-                rows.push(RankedRow {
-                    item: ResultItem::Action {
-                        title: hint,
-                        subtitle: String::new(),
-                    },
-                    icon: None,
-                    rank: RowRank {
-                        tier: MatchTier::Weak,
-                        relevance: i64::MIN,
-                        name_len: usize::MAX,
-                        path: Vec::new(),
-                    },
-                });
-            }
-        }
         self.base_rows = rows;
         self.builtin_count = builtin_count;
         self.ranked_query = query.clone();
@@ -2068,7 +2106,101 @@ impl StewardApp {
             }
         }
 
-        self.render_merged(current_file_generation(self), window, cx);
+        self.render_merged(
+            current_file_generation(self),
+            window,
+            cx,
+            Some(default_selection(
+                LauncherPage::Root,
+                &query,
+                offers_file_search,
+            )),
+        );
+    }
+
+    /// Answer the file-search page: the query goes to the file index alone.
+    ///
+    /// Applications, plugins, the calculator and the link detector are all
+    /// skipped, so a file row can never be mixed with a command row. An empty
+    /// box is not a search — the index answers `""` with its first records in
+    /// path order — so the page explains itself with a hint instead.
+    fn search_files(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        let query = self.input.query.clone();
+        let mut items: Vec<ResultItem> = Vec::new();
+        if !is_file_search(&query) {
+            // Drop the hits in hand so rows from the previous query go away with
+            // the text, and don't dispatch. Nothing is in flight for the emptied
+            // box, so the next real query must not wait out the debounce of the
+            // search the text just replaced.
+            self.clear_file_hits();
+            self.file_search_at.set(None);
+            items.push(ResultItem::Hint {
+                title: self.i18n.translate("files-type-to-search").to_owned(),
+            });
+        } else {
+            // A burst of keystrokes would otherwise queue one search per
+            // character, each answered with a full re-rank; only the first and
+            // then at most one per `FILE_SEARCH_DEBOUNCE` are dispatched.
+            let now = std::time::Instant::now();
+            let due = self
+                .file_search_at
+                .get()
+                .is_none_or(|last| now.duration_since(last) >= FILE_SEARCH_DEBOUNCE);
+            if due {
+                self.file_search_at.set(Some(now));
+                {
+                    let mut state = self.state.borrow_mut();
+                    // The generation this request is about to be given. The
+                    // reply carries it back, which is how the rows it produces
+                    // are recognised as answering *this* query and no later one.
+                    let generation = state.file_index.generation + 1;
+                    state.file_search_generation = generation;
+                }
+                self.state.borrow_mut().file_index.search(
+                    query.trim(),
+                    steward_core_engine::file_index::KindFilter::Any,
+                );
+            }
+            // A hint while the index is still being built, so an empty list is
+            // explained rather than looking like "the search does not work".
+            if let Some(hint) = self.index_hint() {
+                items.push(ResultItem::Hint { title: hint });
+            }
+        }
+        // The generation whose hits are about to be rendered. Every write to the
+        // hit list records it, so this is the only thing that can prove the file
+        // rows on screen were dispatched for the query in the box — `search` is
+        // debounced, and a reply in hand may belong to a query the user has
+        // already typed past.
+        let file_generation = self.state.borrow().file_hits_generation;
+        let builtin_rows = items
+            .into_iter()
+            .map(|item| RankedRow {
+                item,
+                icon: None,
+                // A hint is not a match: it must never outrank a file row.
+                rank: RowRank::new(&query, "", i64::MIN, std::path::Path::new("")),
+            })
+            .collect::<Vec<_>>();
+        let builtin_count = builtin_rows.len();
+        let mut rows = builtin_rows;
+        rows.extend(self.file_rows(&query));
+        self.base_rows = rows;
+        self.builtin_count = builtin_count;
+        self.ranked_query = query.clone();
+        // The page's rows are complete as they stand (there is no plugin half),
+        // and the producer records it so they stay confirmable while a debounced
+        // reply is still in flight.
+        self.results_query = self.input.query.clone();
+        // Plugin routing is skipped on the page; the router state is reset so
+        // stale plugin rows cannot linger.
+        {
+            let state = self.state.borrow();
+            *state.plugin_hits.borrow_mut() = Vec::new();
+            *state.plugin_views.borrow_mut() = Vec::new();
+            state.plugin_pending.borrow_mut().clear();
+        }
+        self.render_merged(file_generation, window, cx, Some(0));
     }
 
     /// Drop the file-index hits in hand and mark the resulting empty set as
@@ -2100,10 +2232,10 @@ impl StewardApp {
 
     /// The current file hits as ranked rows, each with its shell icon.
     ///
-    /// An empty needle yields no rows whatever the hit list says: the home page
-    /// is apps and commands, and files/folders appear only once something has
-    /// been typed. This is the second half of the guarantee `search` makes when
-    /// it clears the hits — a late reply cannot leak rows into the home page.
+    /// An empty needle yields no rows whatever the hit list says: the page opens
+    /// on a hint, files/folders appear only once something has been typed. This
+    /// is the second half of the guarantee `search_files` makes when it clears
+    /// the hits — a late reply cannot leak rows into an empty page.
     fn file_rows(&self, needle: &str) -> Vec<RankedRow> {
         if !is_file_search(needle) {
             return Vec::new();
@@ -2156,11 +2288,17 @@ impl StewardApp {
     /// rendered; it decides whether the file rows answer the query in the box
     /// (see the confirmation gate at the end). Callers that are not rendering a
     /// search pass the current generation, which is a no-op there.
+    ///
+    /// `default_selection` is the row the highlight moves to when this render
+    /// changed the row list (see `ResultList::set_results_with_default`); a
+    /// render that only splices in plugin views passes `None`, so a view landing
+    /// under the user's arrow keys never yanks the highlight back to the top.
     pub(crate) fn render_merged(
         &mut self,
         file_generation: u64,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
+        default_selection: Option<usize>,
     ) {
         // The displayed calendar survives only while the current query still
         // yields its view: a new search resets `plugin_views` to `None`, so
@@ -2397,7 +2535,8 @@ impl StewardApp {
         }
 
         *self.last_results.borrow_mut() = items.clone();
-        self.results.set_results(items, icons, cx);
+        self.results
+            .set_results_with_default(items, icons, default_selection, cx);
 
         // These rows are actionable only when they answer what is in the box.
         //
@@ -2453,7 +2592,7 @@ impl StewardApp {
     /// the foreground poll task after the view was stored in the shared state;
     /// never re-invokes plugins.
     pub(crate) fn apply_plugin_views(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
-        self.render_merged(current_file_generation(self), window, cx);
+        self.render_merged(current_file_generation(self), window, cx, None);
     }
 
     /// Move the calendar selection by `delta` days (clamped to the displayed
@@ -2492,9 +2631,57 @@ impl StewardApp {
         }
     }
 
+    /// Drill into the file-search page.
+    ///
+    /// The text after the keyword travels with the drill-down (`fs report` opens
+    /// the page already searching `report`), so the keyword is a real entry
+    /// point and not just a switch. Called from the confirm handler, i.e. after
+    /// Enter or a click on the command row.
+    pub(crate) fn enter_file_search(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // The switch is deferred past the key event (see the confirm handler),
+        // so the box may have moved on in the meantime: enter only when the row
+        // still describes what is typed. The home page's fixed entry row is the
+        // empty-box case.
+        let remainder = if self.input.query.trim().is_empty() {
+            String::new()
+        } else if let Some(remainder) = parse_file_search_command(&self.input.query) {
+            remainder.to_owned()
+        } else {
+            return;
+        };
+        self.show_page(LauncherPage::FileSearch, &remainder, window, cx);
+    }
+
+    /// Leave the file-search page: back to the root level with the box cleared,
+    /// which is the launcher's home page (the most-used applications).
+    fn leave_file_search(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        self.show_page(LauncherPage::Root, "", window, cx);
+    }
+
+    /// Switch level, replacing the query with `query` and re-running the search.
+    fn show_page(
+        &mut self,
+        page: LauncherPage,
+        query: &str,
+        window: &mut Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        self.page = page;
+        self.input.query = query.to_owned();
+        self.input.set_cursor(self.input.char_count());
+        self.input.marked = None;
+        self.input.selection = None;
+        self.mouse_selecting = false;
+        self.mouse_anchor = 0;
+        self.search(window, cx);
+    }
+
     /// Reset the launcher to its idle (bar-only) state and hide it. Called
     /// after the delegate's confirm callback has launched the selected app.
     fn after_confirm(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) {
+        // Confirming ends the visit whichever level it was on: the next summon
+        // opens on the root page again.
+        self.page = LauncherPage::Root;
         let input = &mut self.input;
         input.query.clear();
         input.cursor = 0;
@@ -2657,20 +2844,55 @@ mod tests {
     }
 
     #[test]
-    fn queries_route_to_the_right_scope() {
-        // A prefix selects one source; anything else searches everything.
-        assert_eq!(route_query("file:report"), (QueryScope::Files, "report"));
-        assert_eq!(route_query("f:report"), (QueryScope::Files, "report"));
-        assert_eq!(route_query("app:calc"), (QueryScope::Apps, "calc"));
-        assert_eq!(route_query("FILE:report"), (QueryScope::Files, "report"));
-        // A bare `file:` still routes: the user is about to type a file query.
-        assert_eq!(route_query("file:"), (QueryScope::Files, ""));
-        assert_eq!(route_query("report"), (QueryScope::All, "report"));
-        // Leading space is not a prefix.
-        assert_eq!(route_query(" report"), (QueryScope::All, " report"));
-        // A word that merely starts with the same letters is not a prefix.
-        assert_eq!(route_query("files"), (QueryScope::All, "files"));
-        assert_eq!(route_query("apply"), (QueryScope::All, "apply"));
+    fn the_file_search_keyword_hands_the_rest_of_the_query_to_the_page() {
+        // The keyword is the page's entry point: everything after it becomes
+        // the file query, so `fs report` drills in already searching.
+        assert_eq!(parse_file_search_command("fs"), Some(""));
+        assert_eq!(parse_file_search_command("fs report"), Some("report"));
+        assert_eq!(
+            parse_file_search_command("fs  annual report"),
+            Some("annual report")
+        );
+        // Case and leading whitespace do not matter.
+        assert_eq!(parse_file_search_command("FS report"), Some("report"));
+        assert_eq!(parse_file_search_command("  fs report"), Some("report"));
+        // The full names are keywords too, in both scripts.
+        assert_eq!(parse_file_search_command("file search x"), Some("x"));
+        assert_eq!(parse_file_search_command("文件搜索 报告"), Some("报告"));
+        // A keyword has to be a whole token, and only a leading one counts.
+        assert_eq!(parse_file_search_command("fsx"), None);
+        assert_eq!(parse_file_search_command("files"), None);
+        assert_eq!(parse_file_search_command("report fs"), None);
+        assert_eq!(parse_file_search_command("report"), None);
+        // An empty query is the home page, not a command.
+        assert_eq!(parse_file_search_command(""), None);
+        assert_eq!(parse_file_search_command("   "), None);
+    }
+
+    #[test]
+    fn the_highlight_lands_on_the_row_the_query_produced() {
+        // A keyword hands the highlight to the command row, so Enter enters the
+        // page without a Down press.
+        assert_eq!(
+            default_selection(LauncherPage::Root, "fs", true),
+            0,
+            "a spelled-out command is the row the user asked for"
+        );
+        // The home page offers the same command on top for discoverability but
+        // still opens on the most-used application: summon + Enter keeps
+        // launching it.
+        assert_eq!(default_selection(LauncherPage::Root, "", true), 1);
+        assert_eq!(
+            default_selection(LauncherPage::Root, "chrome", false),
+            0,
+            "without the command row the top match is the first row"
+        );
+        // The page itself always opens on its first row (hint or first hit).
+        assert_eq!(default_selection(LauncherPage::FileSearch, "", false), 0);
+        assert_eq!(
+            default_selection(LauncherPage::FileSearch, "report", false),
+            0
+        );
     }
 
     #[test]

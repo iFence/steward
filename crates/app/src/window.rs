@@ -219,6 +219,34 @@ pub(crate) fn open_launcher_window(
                     // A transient "command running" placeholder: nothing to
                     // confirm, and the launcher must stay open.
                     Some(ResultItem::Loading { .. }) => false,
+                    // A hint (the file-search page's empty-box text): a label,
+                    // not a row to act on. Confirming does nothing and the
+                    // launcher stays open.
+                    Some(ResultItem::Hint { .. }) => false,
+                    // The built-in "File Search" command: drill into the
+                    // launcher's own second level (the file index alone) and
+                    // keep the bar open. The switch runs after this key event
+                    // is delivered: while a key is being handled the window is
+                    // taken out of the app's registry, so updating it
+                    // synchronously fails with "window not found" (the same
+                    // reason the calendar row defers).
+                    Some(ResultItem::FileSearchCommand { .. }) => {
+                        let open_state = confirm_state.clone();
+                        cx.defer(move |cx| {
+                            // Copy the handle out so the borrow on the shared
+                            // state ends before `app.update` re-enters it (a
+                            // `RefCell` double borrow would panic).
+                            let handle = open_state.borrow().window;
+                            if let Some(handle) = handle {
+                                if let Some(app) = handle.downcast::<StewardApp>() {
+                                    let _ = app.update(cx, |app, window, cx| {
+                                        app.enter_file_search(window, cx)
+                                    });
+                                }
+                            }
+                        });
+                        false
+                    }
                     // A plugin command entry row: open the plugin's view in its
                     // own independent application window, then hide the launcher
                     // (each plugin behaves like a launched app).
@@ -372,6 +400,7 @@ pub(crate) fn open_launcher_window(
                         marked: None,
                         selection: None,
                     },
+                    page: crate::launcher::LauncherPage::Root,
                     i18n,
                     engine,
                     storage: storage.clone(),

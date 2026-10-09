@@ -15,6 +15,7 @@ Conventions:
 - **UI Showcase plugin**: an official example plugin (`uishowcase`) demonstrating layout containers, styled text, a click handler and a host-owned input, with the view poppable into its own window.
 - **Dockable plugin workspace**: every plugin view (list, detail, form, grid, search, calendar and `ui` trees) opens into a workspace window where panels are tabbed, dragged, split and closed; the arrangement is saved and restored on the next launch.
 - **Toasts**: plugin `showToast` messages now appear as transient toasts instead of being written to the log.
+- **File search on its own page**: the launcher now has two levels. The main list is applications and commands only, and typing `fs` (or the command's full name, `file search` / `文件搜索`) offers a built-in **File Search** command that opens a second level searching the full-disk index. On that page the box searches files only, `fs report` drills in already searching `report`, and Esc (or the back control) returns to the main list. The old `file:` / `f:` / `app:` prefixes are gone — they are plain query text now.
 
 ### 🐛 Bug Fixes
 

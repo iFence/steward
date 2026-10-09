@@ -26,5 +26,10 @@ settings-version = 版本
 
 # Full-disk file index
 files-indexing = 正在建立文件索引…
-files-no-index = 文件索引不可用；索引建立后输入 file: 加名称即可搜索。
+files-no-index = 文件索引尚未就绪。
 files-indexed = 已索引文件
+
+# File search page
+file-search-title = 文件搜索
+file-search-placeholder = 搜索文件...
+files-type-to-search = 输入关键词开始搜索文件

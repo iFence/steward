@@ -26,5 +26,10 @@ settings-version = 버전
 
 # Full-disk file index
 files-indexing = 파일 인덱스 생성 중…
-files-no-index = 파일 인덱스를 사용할 수 없습니다. 인덱스가 만들어지면 file: 뒤에 이름을 입력하세요.
+files-no-index = 파일 인덱스를 아직 사용할 수 없습니다.
 files-indexed = 인덱싱된 파일
+
+# File search page
+file-search-title = 파일 검색
+file-search-placeholder = 파일 검색...
+files-type-to-search = 키워드를 입력해 파일을 검색하세요

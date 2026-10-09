@@ -94,6 +94,20 @@ pub enum ResultItem {
         title: String,
         subtitle: String,
     },
+    /// The launcher's built-in "File Search" command: confirming it does not
+    /// launch anything, it drills into the launcher's own file-search page
+    /// (the second level, where the query is answered by the file index alone).
+    FileSearchCommand {
+        title: String,
+        subtitle: String,
+    },
+    /// A non-actionable line of text, e.g. the hint shown on the file-search
+    /// page while its box is empty. Confirming it does nothing at all: unlike
+    /// [`ResultItem::Action`] it must not copy its own text to the clipboard,
+    /// and unlike [`ResultItem::Loading`] it is not waiting for anything.
+    Hint {
+        title: String,
+    },
     /// A transient placeholder shown while a plugin command is still running
     /// (lazy-loading a cold plugin, or draining an async `command()`'s
     /// micro-tasks). Not confirmable: it only signals that a row is coming.
@@ -183,6 +197,28 @@ fn icons_equal(left: &[Option<Arc<Image>>], right: &[Option<Arc<Image>>]) -> boo
         })
 }
 
+/// Which row to highlight after the row list changed.
+///
+/// `default_selection` is the row the producer wants the highlight on: the
+/// launcher passes the command row a keystroke just produced, or the first
+/// application on its home page. Without a default the old index is kept while
+/// it still points at a row (and a shorter list falls back to the first row),
+/// so re-pushing an identical list or filling icons in never moves the
+/// highlight the user is arrowing through.
+fn next_selection(
+    previous: Option<usize>,
+    len: usize,
+    default_selection: Option<usize>,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    match default_selection {
+        Some(index) => Some(index.min(len - 1)),
+        None => previous.filter(|&index| index < len).or(Some(0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +259,30 @@ mod tests {
             )))]
         ));
         assert!(!icons_equal(&[Some(shared)], &[None]));
+    }
+
+    #[test]
+    fn a_keystroke_hands_the_highlight_to_the_row_it_produced() {
+        // The launcher's "fs" flow: the home page has the file-search command
+        // pinned on top but opens on the first application, and typing the
+        // keyword moves the highlight onto that command row.
+        assert_eq!(next_selection(None, 3, Some(1)), Some(1));
+        assert_eq!(next_selection(Some(1), 3, Some(0)), Some(0));
+        // A default past the end of a shorter list clamps to the last row.
+        assert_eq!(next_selection(Some(0), 2, Some(7)), Some(1));
+        // An empty list has nothing to select, whatever the producer asks for.
+        assert_eq!(next_selection(Some(2), 0, Some(0)), None);
+        assert_eq!(next_selection(None, 0, None), None);
+    }
+
+    #[test]
+    fn without_a_default_the_old_row_is_kept_while_it_exists() {
+        // Re-pushing identical rows or filling the icon cache must not move the
+        // highlight the user is arrowing through.
+        assert_eq!(next_selection(Some(2), 5, None), Some(2));
+        // A row that no longer exists falls back to the top match.
+        assert_eq!(next_selection(Some(4), 3, None), Some(0));
+        assert_eq!(next_selection(None, 3, None), Some(0));
     }
 }
 
@@ -266,6 +326,10 @@ fn render_row(
         ResultItem::Calendar { .. } => ElementId::from(format!("result-calendar-{index}")),
         ResultItem::File { path, .. } => ElementId::from(path.to_string_lossy().into_owned()),
         ResultItem::Command { .. } => ElementId::from(format!("result-command-{index}")),
+        ResultItem::FileSearchCommand { .. } => {
+            ElementId::from(format!("result-file-search-{index}"))
+        }
+        ResultItem::Hint { .. } => ElementId::from(format!("result-hint-{index}")),
         ResultItem::Loading { .. } => ElementId::from(format!("result-loading-{index}")),
     };
     let row = div()
@@ -341,6 +405,14 @@ fn render_row(
         | ResultItem::Command {
             title, subtitle, ..
         } => (row, title.to_owned(), None, Some(subtitle.to_owned()), icon),
+        // The built-in file-search command mirrors the link row: the command
+        // name on the left, its type tag on the right, no icon.
+        ResultItem::FileSearchCommand { title, subtitle } => {
+            (row, title.to_owned(), None, Some(subtitle.to_owned()), None)
+        }
+        // A hint is a label, not a row to act on: a plain title with no
+        // trailing column and no icon (confirming it is a no-op).
+        ResultItem::Hint { title } => (row, title.to_owned(), None, None, None),
         // A file row carries three columns: the name, the size and the
         // containing folder. Each is its own cell, so a long path can only
         // shorten itself — it can never push the size into the middle of the
@@ -494,6 +566,25 @@ impl ResultList {
         icons: Vec<Option<Arc<Image>>>,
         cx: &mut Context<C>,
     ) {
+        self.set_results_with_default(items, icons, None, cx);
+    }
+
+    /// Replace the displayed rows like [`Self::set_results`], but hand the
+    /// highlight to `default_selection` whenever the row list changed.
+    ///
+    /// The launcher uses this to land the highlight on the row a keystroke just
+    /// produced: the built-in "File Search" command when its keyword was typed,
+    /// or the first application on the home page, whose command row is pinned on
+    /// top for discoverability but must not steal "summon + Enter". `None` keeps
+    /// the plain rule: the old index stays while it still points at a row, and a
+    /// shorter list falls back to the first row.
+    pub fn set_results_with_default<C>(
+        &self,
+        items: Vec<ResultItem>,
+        icons: Vec<Option<Arc<Image>>>,
+        default_selection: Option<usize>,
+        cx: &mut Context<C>,
+    ) {
         self.state.update(cx, |this, cx| {
             let rows_changed = this.items != items;
             let icons_changed = !icons_equal(&this.icons, &icons);
@@ -503,15 +594,7 @@ impl ResultList {
             this.items = items;
             this.icons = icons;
             if rows_changed {
-                // Default-select the first row so Enter (or the highlight) works
-                // immediately after typing, without a manual Down press. Keep the
-                // old selection when it still points at a row.
-                if this
-                    .selected
-                    .is_none_or(|selected| selected >= this.items.len())
-                {
-                    this.selected = (!this.items.is_empty()).then_some(0);
-                }
+                this.selected = next_selection(this.selected, this.items.len(), default_selection);
             }
             cx.notify();
         });

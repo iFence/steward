@@ -26,5 +26,10 @@ settings-version = Version
 
 # Full-disk file index
 files-indexing = Dateien werden indiziert…
-files-no-index = Der Dateiindex ist nicht verfügbar. Geben Sie file: plus Namen ein, sobald er erstellt wurde.
+files-no-index = Der Dateiindex ist noch nicht verfügbar.
 files-indexed = Indizierte Dateien
+
+# File search page
+file-search-title = Dateisuche
+file-search-placeholder = Dateien suchen...
+files-type-to-search = Stichwort eingeben, um Dateien zu suchen
