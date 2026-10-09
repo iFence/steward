@@ -1,4 +1,4 @@
-// Win32 version resource for the shipped executable.
+// Win32 version resource template for the shipped executable.
 //
 // This is what Explorer's Details tab, Task Manager and the installer read, so
 // the fields are worth filling in rather than leaving blank: a blank
@@ -6,6 +6,13 @@
 // "Apps & features" entry takes its name from ProductName here rather than from
 // `wix/main.wxs`. Every field therefore tracks the shipped binary name
 // (`steward-app.exe`, see `Cargo.toml`).
+//
+// `build.rs` fills in `@VERSION@` (e.g. `0.2.0`) and `@VERSION_COMMA@` (e.g.
+// `0,2,0,0`) from the package version in `Cargo.toml` and compiles the result
+// from `OUT_DIR`, so this file is not compilable as-is and the workspace
+// version stays the single source of truth. Never hard-code a version here: the
+// binary would then report one the workspace no longer has (which is exactly
+// how a shipped 0.2.0 build kept claiming 0.1.0).
 //
 // `040904B0` is the standard `0409` (US English) / `04B0` (Unicode) translation,
 // and every string therefore has to be `L"..."`: a non-wide string inside a
@@ -18,8 +25,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     0,1,0,0
-PRODUCTVERSION  0,1,0,0
+FILEVERSION     @VERSION_COMMA@
+PRODUCTVERSION  @VERSION_COMMA@
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -32,12 +39,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      L"Steward contributors"
             VALUE "FileDescription",  L"Steward (launcher and plugin platform)"
-            VALUE "FileVersion",      L"0.1.0"
+            VALUE "FileVersion",      L"@VERSION@"
             VALUE "InternalName",     L"steward-app"
             VALUE "LegalCopyright",   L"MIT License"
             VALUE "OriginalFilename", L"steward-app.exe"
             VALUE "ProductName",      L"Steward"
-            VALUE "ProductVersion",   L"0.1.0"
+            VALUE "ProductVersion",   L"@VERSION@"
         END
     END
     BLOCK "VarFileInfo"
