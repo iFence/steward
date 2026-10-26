@@ -21,12 +21,12 @@ license = "MIT"
 [workspace.dependencies]
 # GPUI ships as weekly `gpui-pre-*` snapshots on crates.io (published from the
 # Zed repo), and gpui-component pins the exact snapshot it was built against.
-# Bump the three lines together; mixing snapshots produces two incompatible
-# `gpui` crates.
-gpui = { package = "gpui-pre", version = "=0.3.7" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
-gpui-component = { version = "=0.7.0" }
-gpui-base = "=0.7.0"
+# Bump all GPUI-related lines together; mixing snapshots produces two
+# incompatible `gpui` crates.
+gpui = { package = "gpui-pre", version = "=0.3.10" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10", features = ["font-kit"] }
+gpui-component = { version = "=0.8.1" }
+gpui-base = "=0.8.1"
 global-hotkey = "0.8"
 tray-icon = "0.24"
 nucleo = "0.5"
