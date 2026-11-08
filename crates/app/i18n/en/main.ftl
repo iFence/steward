@@ -23,13 +23,3 @@ settings-theme-amber = Amber
 settings-about = About
 settings-about-description = Steward — a fast, low-memory launcher and plugin platform
 settings-version = Version
-
-# Full-disk file index
-files-indexing = Indexing files…
-files-no-index = The file index is not available yet.
-files-indexed = Files indexed
-
-# File search page
-file-search-title = File Search
-file-search-placeholder = Search files...
-files-type-to-search = Type a keyword to search files

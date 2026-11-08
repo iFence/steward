@@ -1,4 +1,16 @@
-# Clipboard History（占位）
+# Clipboard History
 
-官方示例插件 2，M3 里程碑实现：读取剪贴板历史并支持搜索/复制，
-用于验证插件 API 是否覆盖真实场景。
+Official NSH TSX plugin for browsing Steward's clipboard history. It reads the
+host-owned snapshot through `@steward/extension-api`, copies an entry back to
+the clipboard, and persists pinned entry IDs in NSH plugin storage.
+
+Development:
+
+```powershell
+nsh check App.tsx
+nsh test .
+nsh build App.tsx --release -o dist
+```
+
+The host grants only `steward.clipboard.history` and clipboard access. Plugins
+never open Steward's SQLite database directly.

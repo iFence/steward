@@ -57,6 +57,9 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Install pinned NSH CLI
+        run: cargo install --locked --git https://github.com/longbridge/nsh --rev 5359c07ff7b5728e67957c24322373309c90666b nsh-cli
+
       - name: install
         run: pnpm install --frozen-lockfile
 
@@ -65,6 +68,9 @@ jobs:
 
       - name: Package plugin zips
         shell: pwsh
+        env:
+          STEWARD_NSH_RELEASE_KEY: ${{ secrets.STEWARD_NSH_RELEASE_KEY }}
+          STEWARD_NSH_RELEASE_CERT: ${{ secrets.STEWARD_NSH_RELEASE_CERT }}
         run: ./scripts/package-plugins.ps1
 
       - name: Upload plugin artifacts

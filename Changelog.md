@@ -7,6 +7,49 @@ Conventions:
 - The content below the heading is what appears in the GitHub Release body and the in-app update dialog
 - End each version section with `---` or by starting the next version heading
 
+## v0.3.0
+
+### New Plugin Platform
+
+- **NSH Native UI**: Steward's launcher and settings now run as NSH Rust
+  surfaces on GPUI Fast. The shell starts no JavaScript VM.
+- **Settings**: language, accent, autostart, and summon-hotkey changes are
+  persisted.
+- **Launcher readability**: the query field now uses high-contrast text and
+  placeholder colors, result rows share the launcher surface with a violet
+  selection fill, and the application list refreshes automatically when the
+  initial background scan finishes.
+- **Launcher keyboard navigation**: Up and Down move the result selection,
+  including while the query field is focused, and the list follows the
+  selection when it scrolls beyond the visible rows.
+- **Stable result icons**: application icons follow their own rows as the
+  virtualized list reuses cells, preventing one app from briefly showing
+  another app's icon.
+- **Launcher visuals**: the panel is edge-to-edge and translucent again,
+  application rows show their shell icons, and type labels are aligned on the
+  right.
+- **Full plugin applications**: plugin commands open a signed TSX application
+  in a complete NSH window instead of returning JSON views to the launcher.
+- **Signed packages**: Release installs require verified `.nshpkg` files with
+  Ed25519 signatures, certificate validation, revocation, and rollback
+  protection.
+- **Capability sandbox**: plugins receive a 64 MiB VM, time/node quotas, and
+  least-privilege access. Network, process, webview, and image-picker access
+  are denied by default.
+- **Official plugins rewritten**: Calendar, Clipboard History, and UI Showcase
+  are NSH TSX applications.
+
+### Breaking Changes
+
+- Old `plugin-runtime`, JSON-RPC IPC, JSON View/Virtual UI Tree plugins,
+  dynamic triggers, detached panels, and the dock workspace are removed.
+- Existing plugins must be rewritten as NSH applications and repackaged.
+- Plugin storage and window layout are not migrated.
+- Full-disk file indexing, file search, and the privileged index helper are
+  removed.
+
+---
+
 ## v0.2.0
 
 ### ✨ New Features

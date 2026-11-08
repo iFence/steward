@@ -1,4 +1,4 @@
 {
-  "extends": "../../../tsconfig.base.json",
-  "include": ["src"]
+  "extends": "./.nsh/tsconfig.json",
+  "include": ["App.tsx", "App.test.tsx"]
 }

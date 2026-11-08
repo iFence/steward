@@ -23,13 +23,3 @@ settings-theme-amber = 앰버
 settings-about = 정보
 settings-about-description = Steward – 빠르고 메모리 사용량이 낮은 런처 및 플러그인 플랫폼
 settings-version = 버전
-
-# Full-disk file index
-files-indexing = 파일 인덱스 생성 중…
-files-no-index = 파일 인덱스를 아직 사용할 수 없습니다.
-files-indexed = 인덱싱된 파일
-
-# File search page
-file-search-title = 파일 검색
-file-search-placeholder = 파일 검색...
-files-type-to-search = 키워드를 입력해 파일을 검색하세요

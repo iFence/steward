@@ -19,8 +19,15 @@ use std::{
 };
 
 use crossbeam_channel::Sender;
-use steward_ipc_protocol::ClipboardEntry;
 use steward_storage::Storage;
+
+/// Clipboard snapshot handed to NSH plugin windows.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ClipboardEntry {
+    pub id: String,
+    pub text: String,
+    pub copied_at: i64,
+}
 
 /// How often the clipboard is polled.
 const POLL_INTERVAL: Duration = Duration::from_millis(300);

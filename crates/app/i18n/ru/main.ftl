@@ -23,13 +23,3 @@ settings-theme-amber = Янтарь
 settings-about = О программе
 settings-about-description = Steward — быстрый, экономный по памяти лаунчер и платформа плагинов
 settings-version = Версия
-
-# Full-disk file index
-files-indexing = Индексация файлов…
-files-no-index = Индекс файлов ещё недоступен.
-files-indexed = Проиндексировано файлов
-
-# File search page
-file-search-title = Поиск файлов
-file-search-placeholder = Поиск файлов...
-files-type-to-search = Введите слово для поиска файлов

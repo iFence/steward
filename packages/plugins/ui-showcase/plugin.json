@@ -1,16 +1,15 @@
 {
+  "schemaVersion": 2,
   "id": "com.example.ui-showcase",
   "name": "UI Showcase",
   "version": "1.0.0",
+  "package": "plugin.nshpkg",
   "commands": [
     {
       "name": "uishowcase",
       "title": "UI Showcase",
       "keywords": ["ui", "showcase"],
-      "detachable": true,
       "trigger": { "type": "command" }
     }
-  ],
-  "permissions": [],
-  "isolation": "shared-pool"
+  ]
 }

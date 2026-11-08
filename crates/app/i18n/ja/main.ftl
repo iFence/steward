@@ -23,13 +23,3 @@ settings-theme-amber = 琥珀
 settings-about = について
 settings-about-description = Steward – 高速で省メモリなランチャーとプラグインプラットフォーム
 settings-version = バージョン
-
-# Full-disk file index
-files-indexing = ファイルをインデックス中…
-files-no-index = ファイルインデックスはまだ利用できません。
-files-indexed = インデックス済みファイル
-
-# File search page
-file-search-title = ファイル検索
-file-search-placeholder = ファイルを検索...
-files-type-to-search = キーワードを入力してファイルを検索

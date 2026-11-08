@@ -2,16 +2,16 @@
 name = "steward-plugin-host"
 version.workspace = true
 edition.workspace = true
+autotests = false
 
 [dependencies]
-steward-ipc-protocol = { path = "../ipc-protocol" }
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-core-engine = { path = "../core-engine" }
+nsh-core.workspace = true
+nsh-engine.workspace = true
+nsh-package.workspace = true
+thiserror.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 regex.workspace = true
-crossbeam-channel.workspace = true
 nucleo.workspace = true
-ureq.workspace = true
-url.workspace = true
-cap-std.workspace = true

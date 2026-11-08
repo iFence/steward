@@ -1,160 +1,67 @@
-# 性能基准
+# Steward Benchmarks
 
-> 三个核心指标：冷启动时间、常驻内存（RSS）、呼出延迟。
-> 每个里程碑跑一次 `scripts/bench.sh`，把结果回填到下表。
+## v0.3.0 NSH Functional Evidence
 
-## 指标
+Environment: Windows development machine, debug build. Recorded 2026-10-27.
 
-| 指标 | 说明 | 单位 |
-|---|---|---|
-| 冷启动 | 进程启动到窗口可交互（M0 近似：进程存活） | ms |
-| 常驻内存 RSS | 进程常驻内存 | MB |
-| 呼出延迟 | 热键按下到窗口显示 | ms |
-
-## M0 基线
-
-环境：Windows（开发机）、debug 构建、2026-08-19；计时为 PowerShell 启动进程到 `MainWindowHandle` 非空。
-
-| 指标 | 数值 | 备注 |
-|---|---|---|
-| 冷启动 | ≈ 1756 ms | debug 构建；release + macOS 目标验收 50ms |
-| RSS | ≈ 152 MB | debug 构建（含 wgpu/GPU 初始化），release 预计大幅下降 |
-| 呼出延迟 | 待手动记录 | 热键已注册成功；前台任务 10ms 轮询桥接 |
-
-> 验收标准（50ms 冷启动）按 macOS release 构建定义；Windows 开发机上先积累数据。
-
-## M1 基线（应用启动器 MVP）
-
-环境：Windows（开发机）、release 构建、2026-08-23；由 `scripts/bench-resident.ps1` 测量（PostMessage 注入 `WM_HOTKEY` + FindWindow 轮询可见性，按 PID 校验窗口归属）。冷启动为启动 → 托盘窗口就绪；应用扫描/建索引用删库冷启动测得（后台线程，不阻塞启动）。
-
-| 指标 | 数值 | 备注 |
-|---|---|---|
-| 冷启动 | ≈ 307 ms（release） | 启动 → 托盘就绪；含一次性 GPUI/DirectX/DirectWrite 初始化，启动静默 |
-| 应用扫描 + 建索引 | ≈ 1.1 s（首扫，后台） | 删除 `steward.db` 后冷启动实测；遍历开始菜单 `.lnk` + ShellLink COM 解析 + `shell:AppsFolder` UWP 枚举。冷启动先读 `mark_seen` 缓存立即建索引、不阻塞，boot 始终再跑一次后台对账；运行期开始菜单变化经 1s 防抖重扫，另有 30s 兜底重扫覆盖 UWP（`SCAN_CACHE_TTL` 24h 已移除） |
-| RSS | 65.2 MB 工作集 / 79.9 MB 私有 | release 常驻；相比 M0 debug 152 MB 明显下降 |
-| 呼出延迟 | 8–29 ms（首呼）/ 26–28 ms（二呼） | 窗口启动时已隐藏创建，呼出即 ShowWindow；nucleo 匹配在按键回调内同步完成 |
-| 首次查询响应 | ≈ 87 µs | `cargo test -p steward-core-engine bench_query_latency --release` 临时测得：200 条目索引、空查询 + 模糊查询混合，500 次平均 |
-
-> 说明：M1 新增的扫描/索引/查询链路均为同步、无额外进程，逻辑耗时相对 GPU 初始化可忽略；uTools/Raycast 对比待 release 数据在更多机器积累后补齐（目标数据放 `docs/benchmarks.md` 同表）。
-
-## M2 基线（启动即加载 GPUI，呼出瞬时）
-
-环境：Windows 开发机、release 构建、2026-08-20；由 `scripts/bench-resident.ps1` 测量（PostMessage 注入 `WM_HOTKEY` + FindWindow 轮询可见性）。
-
-> 曾实现"常驻态去 GPUI 惰性加载"（托盘-only 私有内存 2.9 MB），实测首呼需 0.5–4.5 s（一次性 DirectX/DirectWrite/着色器初始化），作为启动器不可接受，已回退为启动即加载 GPUI + 隐藏建窗。回退后首呼恢复瞬时，缓存优先/增量扫描与 release 构建优化保留。
-
-| 指标 | 数值 | 备注 |
-|---|---|---|
-| 启动 → 托盘就绪 | ≈1.4 s（release） | 含一次性 GPUI/DirectX/DirectWrite 初始化，启动静默；旧 debug 基线 ≈1.8 s |
-| 常驻 RSS | 94–105 MB 工作集 / 140–147 MB 私有 | 与旧版相当；平台级 DirectX 设备与字体常驻 |
-| 首次呼出 → 可见 | 14 ms | 窗口启动时已隐藏创建，呼出即 ShowWindow |
-| 二次呼出 → 可见 | 21 ms | 窗口保持隐藏（`CLOSE_ON_HIDE=false`），不做重建 |
-| release 二进制体积 | 17.8 MB | 旧 26.7 MB；`lto="thin"` + `codegen-units=1` + `panic="abort"` + `strip` |
-
-## M2 规模化基准（插件系统 v1，待积累）
-
-目标：冷启动与搜索延迟不随安装量线性劣化，只随"实际激活数"变化。
-
-方法（`scripts/gen-test-plugins.sh <count> <dir>`）：
-
-1. 批量生成 N 个测试插件（N=100/500/1000，command / prefix / dynamic 三类
-   触发条件轮转），把插件根目录经 `STEWARD_PLUGINS_DIR` 指向被测目录。
-2. 冷启动：清空 `%APPDATA%\Steward\plugins.db` 后首启（重建缓存，后台扫描），
-   再测带缓存冷启——应只读 SQLite，不做全量文件 I/O。
-3. 搜索延迟：分别查询只命中 1 个插件的命令、命中 10 个插件的批量前缀、
-   dynamic 参与查询（100ms 熔断）三种场景，对比 100/500/1000 安装量。
-
-判定标准：
-
-| 场景 | 预期 |
+| Check | Result |
 |---|---|
-| 带缓存冷启动 | 不随 N 变化（读缓存建索引，扫描放后台） |
-| 单插件命令查询 | 不随 N 变化（路由过滤后只唤醒匹配插件） |
-| dynamic 全量参与 | 稳定 ≤ ~100ms + 往返，且超时插件被熔断跳过 |
+| Silent startup | Process alive; tray and global-hotkey windows created |
+| Launcher surface | NSH Rust root rendered in a GPUI Fast window |
+| Settings surface | NSH Rust settings root opened without a process crash |
+| Calendar | Signed NSH package opened a full plugin window |
+| Clipboard History | Signed NSH package opened a full plugin window |
+| UI Showcase | Signed NSH package opened a full plugin window |
+| Headless plugin tests | 3 plugins, 3 tests passed |
+| Package verification | All three `.nshpkg` files verified with the development root |
+| Package layout | Each zip contained only `plugin.json` and `plugin.nshpkg` |
+| Release smoke | Optimized release opened the development-signed Calendar window |
+| MSI build | v0.3.0 MSI linked and decompiled; no plugin runtime file present |
 
-> 说明：M2 落地后尚未在本机跑批；数据随 `bench-resident.ps1` 的 release
-> 基线在更多机器积累后回填（与 M1 相同的记录方式）。
->
-> 插件系统侧的规模化验收由自动化回归测试先行保障（`plugin-host/tests/scaling.rs`）：
-> 在超过共享池容量的安装量下，任意索引的插件都能经懒加载正确出视图，且
-> `set_plugins` / 单次冷查询耗时不随安装量线性增长。真实 release 整机数据仍待补齐。
+These are functional smoke results, not release performance acceptance.
 
-## M3 基线（插件 API / Node polyfill / UI 打磨，待积累）
+## Release Gates
 
-环境：Windows 开发机、release 构建（沿用 `scripts/bench-resident.ps1` 测量方式）。
+The NSH release cannot be marked complete until the following are measured on a
+release build:
 
-| 指标 | 数值 | 备注 |
-|---|---|---|
-| 冷启动 | 待回填 | M3 在 M2 基线上叠加插件 API / Node polyfill / 声明式视图；冷启动仍走「缓存优先 + 静态/动态路由」 |
-| 常驻 RSS | 待回填 | 插件宿主进程（`plugin-runtime`）独立于主进程，主进程 RSS 参照 M2 基线 |
-| 呼出延迟 | 待回填 | 命令在途时结果区顶部显示 loading 行；动态插件受 100ms 熔断 |
+| Metric | Gate |
+|---|---:|
+| Cached cold start | Previous release + 500 ms or less |
+| Summon p95 | 50 ms or less |
+| Idle RSS increase | 32 MiB or less |
+| Official plugin first frame p95 | 500 ms or less |
+| Existing plugin focus p95 | 50 ms or less |
+| Hidden plugin VMs | zero |
 
-> M3 尚无整机基准数据：真实数值随 `scripts/bench.sh` 与 `bench-resident.ps1` 在 release
-> 机器积累后回填，本表当前仅作占位。
+Also record:
 
-## 插件 fs 跨进程 async（M3 二轮后）
+- executable and MSI size;
+- idle RSS with zero, one, and three open plugin windows;
+- route-search latency at 100, 500, and 1000 synthetic installed plugins.
 
-插件的 `fs.readFile` / `fs.writeFile` 走**宿主往返**（`host.fs.read` / `host.fs.write`）：
-命令 `await` 后 runtime 暂停 isolate（`Pending`），宿主做文件 I/O 后回写响应，runtime
-再恢复 Promise。该路径受命令 `deadline_ms`（默认静态 500ms）与 4 MiB 上限双重约束，晚到的
-host 回复若 isolate 已被 kill/驱逐则被丢弃。
+## Method
 
-> 说明：该异步链路的正确性已由 `plugin-runtime` 的 park/resume、并行 `Promise.all`、
-> kill/驱逐一致性、parked 超时等单元用例保障；`net.request` 已随 `ureq` 落地
-> （宿主强制 http/https + 超时 + 回应体上限）。整机延迟/内存影响仍待
-> `scripts/bench.sh` 在 release 机器上回填。
+Use `scripts/bench.sh` and `scripts/bench-resident.ps1` where applicable. For
+NSH plugin measurements:
 
-## 文件索引（M1 全盘搜索）增量热路径
+1. Start a release build with an empty plugin root.
+2. Record process start, tray readiness, and first launcher summon.
+3. Install signed packages and record first-frame time for each plugin.
+4. Invoke the same plugin command again and record focus-plus-command latency.
+5. Close all plugin windows and verify no hidden plugin VM remains.
 
-环境：Windows 开发机、release 构建、8 逻辑核、合成索引
-（`crates/core-engine/tests/file_index_bench.rs`，`STEWARD_BENCH_RECORDS` 默认 300k）。命令：
+Store raw output and machine details alongside any future table updates.
 
-```text
-cargo test -p steward-core-engine --release --test file_index_bench -- --ignored --nocapture
-STEWARD_BENCH_RECORDS=3000000 cargo test -p steward-core-engine --release \
-    --test file_index_bench -- --ignored --nocapture
-```
+## Synthetic Plugin Scaling
 
-| 指标 | 改造后（300k 记录，单层目录树） | 改造前 | 备注 |
-|---|---|---|---|
-| 全量构建（`finalize`） | ≈ 35 ms | ≈ 29 ms | 计数排序 + 父链 memo 深度；不再按完整路径字符串排序 |
-| 记录 arena | ≈ 19.3 MB | ≈ 19.3 MB | 仅记录 arena，不含并行数组 |
-| 宽匹配查询 p50（`re` / `rep` / `report`） | ≈ 100–116 ms | ≈ 311–346 ms | 每 worker 只留 top-`limit` 候选，最后才物化名字/路径 |
-| 近似无命中查询 p50（`a`） | ≈ 78 ms | ≈ 75 ms | 纯扫描下限：`name_index`/`offsets`/arena 的随机访问 |
-| 单批增量 +1000 −500 + 一次 `finish_incremental` | ≈ 42 ms | ≈ 62 ms | 批内尾扫先比父索引，避免每次插入做名字解码 |
+`scripts/gen-test-plugins.sh <count> <dir>` generates route-only plugin
+fixtures. It is intended for cold-start metadata scans and route-query latency
+at 100, 500, and 1000 installed plugins. Synthetic fixtures are unsigned and
+must not be opened; package verification is a separate acceptance path.
 
-> 说明：线性扫描在 300k 已到约 100 ms 量级，按记录数线性外推到 3M 会接近秒级；
-> `docs/architecture.md` 2026-10-03 决策里 Stage 3（`fst` + `roaring` 3-gram 倒排、
-> mmap 快照、可选提权 helper）仍是 3M+ 目标的必要条件，本表是触发它的实测证据。
-> 真实全盘数字要在管理员权限下用 `$MFT` 建索引后补齐（helper 尚未落地）。
+## Historical Baselines
 
-### 文件索引 3-gram 加速（Stage 3）
-
-同一 300k 合成索引、release 构建、8 逻辑核，`--ignored --nocapture` harness：
-
-| 指标 | 线性扫描 | 3-gram 加速 |
-|---|---|---|
-| 选择性 needle `report-00012` p50 | 8.9 ms | **77 µs**（≈115×） |
-| 宽 needle `rep` / `report` p50 | ~21 ms | ~21 ms（候选 > 32_768 时回退扫描） |
-| 加速器体积 | — | 4.1 MB（≈13.6 B/条；3M 约 41 MB） |
-| 加速器构建 | — | 222 ms（3M 约 2.2 s，一次性、index worker 线程） |
-
-> 说明：加速器在每个索引构建后于 worker 线程构建一次，USN/文件系统增量只会追加到 overflow，
-> 因此新文件仍可被搜到；下一次完整重建（helper 每次启动都会重建）后回收 overflow。
-
-### 文件索引常驻内存（1M 条，2026-10-03 内存修复后）
-
-release 构建、1,000,000 条合成记录（单层目录树）、`--ignored --nocapture` harness：
-
-| 结构 | 占用 | 备注 |
-|---|---|---|
-| arena（记录字节） | 64.1 MB | ≈64 B/条：24 B 头 + UTF-8 名字 + 20 B 元数据，4 B 对齐 |
-| 并行数组 | 27.7 MB | `offsets`/`lengths`/`parent`/`ids`/`name_index`/`removed`/`depths`，≈27 B/条 |
-| 3-gram 加速器 | 13.5 MB | ≈13.6 B/条，构建 871 ms（worker 线程） |
-| `id → record` 映射 | 0（常驻） | 只在 USN 批次内按需构建，批次结束即释放（全量 id 时约 19 B/条） |
-| **常驻合计** | **105.3 MB** | 加速器已构建；处理变更批次时临时再加约 20 MB |
-
-> 修复前每个 2 s 的 catch-up tick 都会 `FileDb::duplicate()` 整份深拷贝（约 92 MB + 批内 id
-> 映射），即使 journal 没有新记录也分配后立刻丢弃；现在 catch-up 原地更新，快照经 `zeroblob` +
-> 增量 BLOB 流式写入，都不再产生整份副本。验收目标：1M 条索引时应用常驻私有内存 ≤ 200 MB
-> （含 GPUI 基线），且空闲 60 s 内 RSS 无周期性锯齿。
+Pre-NSH M0-M3 measurements and file-index experiments are preserved in
+[benchmarks-history.md](benchmarks-history.md). Those baselines describe the
+retired runtime and must not be treated as current plugin performance data.

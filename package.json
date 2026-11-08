@@ -1,17 +1,16 @@
 {
   "name": "steward",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Steward monorepo — Rust + GPUI native host with a TypeScript plugin system.",
+  "description": "Steward monorepo: GPUI Fast host with NSH Rust and TSX applications.",
   "scripts": {
-    "build": "pnpm --filter @steward/extension-api build && pnpm --filter @steward/plugin-calendar build && pnpm --filter @steward/plugin-clipboard-history build && pnpm --filter @steward/plugin-ui-showcase build",
-    "typecheck": "pnpm --filter @steward/extension-api typecheck && pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck && pnpm --filter @steward/plugin-ui-showcase typecheck",
-    "lint": "eslint \"packages/**/*.{ts,js}\"",
-    "format:check": "prettier --check \"packages/**/*.{ts,js,json,md}\""
+    "build": "pnpm --filter @steward/plugin-calendar build && pnpm --filter @steward/plugin-clipboard-history build && pnpm --filter @steward/plugin-ui-showcase build",
+    "typecheck": "pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck && pnpm --filter @steward/plugin-ui-showcase typecheck",
+    "lint": "eslint \"packages/**/*.{ts,tsx,js}\"",
+    "format:check": "prettier --check \"packages/**/*.{ts,tsx,js,json,md}\""
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
-    "esbuild": "^0.25.0",
     "eslint": "^9.0.0",
     "prettier": "^3.0.0",
     "typescript": "^5.0.0",

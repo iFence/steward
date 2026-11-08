@@ -1,38 +1,6 @@
-//! Business-level UI components for the launcher.
+//! Steward's NSH Rust launcher components.
 
-use gpui::App;
-
-pub mod action_bar;
-pub mod calendar;
-pub mod detail;
-pub mod form;
-pub mod grid;
-pub mod lunar;
 pub mod palette;
-pub mod results_list;
-pub mod search_bar;
-pub mod virtual_tree;
+pub mod result_list;
 
-pub use action_bar::*;
-pub use calendar::*;
-pub use detail::*;
-pub use form::*;
-pub use grid::*;
-pub use lunar::*;
-pub use palette::*;
-pub use results_list::*;
-pub use search_bar::*;
-
-/// Initialize the gpui-component stack.
-///
-/// Runs the full component initialization (theme, global state, root, popover,
-/// menu, list, ...) so every gpui-component surface — including the settings
-/// window's `Settings` widget — works. The default theme is light, which does
-/// not match the launcher's dark bar; switch to the dark theme so any
-/// gpui-component surface (scrollbars, settings window, future plugin panels,
-/// ...) picks up dark colors. Must run once, with the application context,
-/// before any window opens.
-pub fn init_components(cx: &mut App) {
-    gpui_component::init(cx);
-    gpui_component::theme::Theme::change(gpui_component::theme::ThemeMode::Dark, None, cx);
-}
+pub use result_list::*;

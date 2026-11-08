@@ -20,8 +20,11 @@ path = "src/main.rs"
 [dependencies]
 gpui.workspace = true
 gpui_platform.workspace = true
-gpui-component.workspace = true
-gpui-base.workspace = true
+nsh-core.workspace = true
+nsh-base.workspace = true
+nsh-engine.workspace = true
+nsh-package.workspace = true
+nsh-platform-gpui.workspace = true
 global-hotkey.workspace = true
 anyhow.workspace = true
 raw-window-handle = "0.6"
@@ -35,10 +38,11 @@ steward-storage = { path = "../storage" }
 steward-ui-components = { path = "../ui-components" }
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-plugin-host = { path = "../plugin-host" }
-steward-ipc-protocol = { path = "../ipc-protocol" }
-steward-index-helper = { path = "../index-helper" }
 serde_json.workspace = true
+serde.workspace = true
+tokio.workspace = true
 arboard.workspace = true
+base64.workspace = true
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon.workspace = true

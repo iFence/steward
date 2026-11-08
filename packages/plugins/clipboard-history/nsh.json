@@ -1,0 +1,10 @@
+{
+  "name": "Clipboard History",
+  "id": "com.example.clipboard-history",
+  "version": "0.1.1",
+  "build": 1,
+  "capabilities": {
+    "clipboard": true,
+    "host": ["steward.clipboard.history"]
+  }
+}

@@ -1,87 +1,112 @@
 # AGENTS.md
 
-Guidelines for contributing to **Steward** — a launcher / plugin platform skeleton: an English-language developer guide (repo docs/README are Chinese; code and commit messages are English).
+Guidelines for contributing to Steward, a Windows-first launcher and plugin
+platform. Repository docs may be bilingual; code and commit messages are
+English.
 
 ## Architecture
 
-Steward is a monorepo combining a **Rust workspace** (native host) and a **pnpm TypeScript workspace** (plugin SDK + official plugins).
+Steward is a monorepo combining a Rust workspace with a pnpm TypeScript
+workspace for official NSH plugin applications.
 
-```
-┌───────────────────────────────────────────────────────────┐
-│  Native main process (Rust)        │  Plugin system       │
-│  app (GPUI window/tray/hotkey)     │  plugin-runtime      │
-│  ├─ gpui (crates.io gpui-pre)      │  (embedded QuickJS)  │
-│  ├─ core-engine (search)           │   ↑ bundled TS→JS    │
-│  └─ plugin-host / registry /       │   (esbuild)         │
-│     storage (SQLite)               │                      │
-│        └── JSON-RPC over UDS /     │                      │
-│            Windows named pipe      │                      │
-└───────────────────────────────────────────────────────────┘
+```text
+Steward app process
+  |
+  +-- GPUI Fast window
+        |
+        +-- NSH Rust launcher/settings root (no JavaScript VM)
+        |
+        +-- NSH plugin window (one QuickJS VM per open plugin)
+              |
+              +-- signed plugin.nshpkg
 ```
 
-- **Native main process**: `steward-app` binary — GPUI window, tray, global hotkey, lifecycle. Currently at **M0** (silent tray startup + centered borderless launcher bar).
-- **Plugin system** (M2, placeholder): a separate `plugin-runtime` process embeds **QuickJS**; TS plugins are bundled to single-file JS via **esbuild**, then loaded in QuickJS. IPC is JSON-RPC over Unix socket / Windows named pipe, protocol defined in `ipc-protocol`.
-- **Ground truth**: `docs/architecture.md` is the canonical architecture doc and includes a **decision-record** section — append new decisions there rather than inline.
+- `steward-app` owns the tray, global hotkey, windows, search services, and
+  plugin-window lifecycle.
+- The launcher and settings are NSH Rust surfaces. They do not start QuickJS.
+- Official plugins are TSX applications built and signed by the pinned NSH
+  CLI. `plugin.json` is route metadata and points at `plugin.nshpkg`.
+- Route discovery reads metadata only and never starts a plugin VM.
+- `docs/nsh-migration.md` is the canonical migration plan and status record.
+- `docs/architecture.md` is the architecture reference and decision log.
 
 ## Module breakdown
 
-- **Workspace root** `Cargo.toml` (resolver 2, edition 2021, v0.1.0): shared `[workspace.package]` + `[workspace.dependencies]` as the "standard library" of external deps — declare versions **once**, not per-crate.
-- Rust crates (under `crates/`, all new code must live here):
+- Workspace root `Cargo.toml` (resolver 2, edition 2021, version 0.3.0)
+  declares shared versions in `[workspace.dependencies]`.
+- Rust crates live under `crates/`:
 
   | crate | role |
   |---|---|
-  | `app` | binary entry: GPUI window / tray / hotkey / lifecycle (only fully wired crate today) |
-  | `core-engine` | search, indexing, fuzzy match, ranking — **no UI deps**, unit-testable |
-  | `plugin-host` | plugin lifecycle, routing, permissions, IPC gateway |
-  | `plugin-registry` | plugin metadata cache (SQLite) |
-  | `storage` | SQLite wrapper, config read/write |
-  | `ui-components` | business UI components on gpui-component |
-  | `ipc-protocol` | shared message protocol between main & plugin runtime |
-  | `plugin-runtime` | standalone plugin host process (embedded QuickJS) |
+  | `app` | GPUI Fast entry, NSH shell, tray, hotkeys, and plugin windows |
+  | `core-engine` | application search, fuzzy matching, and ranking |
+  | `plugin-host` | signed-package verification, catalog, and route-only launch |
+  | `plugin-registry` | plugin routing metadata cache (SQLite) |
+  | `storage` | SQLite wrapper and settings |
+  | `ui-components` | NSH Rust launcher components |
 
-  > Most crates are scaffolding placeholders (empty deps); their planned deps live in `[workspace.dependencies]` until wired in for M1/M2.
+- TypeScript packages use the `@steward/*` scope. `@steward/extension-api`
+  contains typed Steward host calls; official plugins live under
+  `packages/plugins/`.
+- Rust crates use the `steward-*` package prefix.
 
-- **TS side**: pnpm workspace, npm scope `@steward/*` — `@steward/extension-api`, `@steward/plugins/*`, bundled with **esbuild**.
-- **Naming**: Rust crates prefixed `steward-*`; npm packages scoped `@steward/*`.
+## Performance and isolation
 
-## Performance
+- Track cold start, RSS, summon latency, and plugin first-frame latency in
+  `docs/benchmarks.md`.
+- Prefer synchronous operations when they are fast enough. Do not add an async
+  ORM around SQLite.
+- Cold start and route search may scale with installed plugin metadata, but
+  must not start with the number of installed VMs. Hidden plugin VMs must be
+  zero.
+- Each open plugin gets the limits in `docs/nsh-migration.md`: 64 MiB heap,
+  1 MiB stack, 2 s load budget, 250 ms call budget, and 20,000 UI nodes.
+- Plugin capabilities are deny-by-default. Release capability policy is
+  defined in `crates/plugin-host/src/lib.rs`.
 
-Performance (low memory + fast response) is the product's core positioning.
+## Dependency policy
 
-- **Track metrics** in `docs/benchmarks.md`: cold start (ms), RSS (MB), summon latency (ms), measured via `scripts/bench.sh` per milestone.
-- **Prefer sync where fast enough** — e.g. SQLite via `rusqlite` (bundled); avoid async ORMs.
-- **Scaling (M2, mandatory)**: metadata cache (cold start reads cache, not full file I/O), trigger routing with a **100 ms timeout circuit-break**, graded isolation (shared-pool with heap limit + exec timeout vs. dedicated subprocess for privileged/heavy plugins), least-privilege permissions.
-- **Watch linear degradation**: cold start and search latency must not grow linearly with plugin count, only with active plugin count (see `scripts/gen-test-plugins.sh`).
+- Prefer established dependencies already listed in
+  `[workspace.dependencies]`.
+- Use `nucleo` for fuzzy matching, `rusqlite` for SQLite, `serde` for JSON,
+  and NSH crates for UI/runtime behavior.
+- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.9`.
+- Pin NSH to the reviewed git revision until a published release includes
+  `HostChannel` and `EngineContext`. Update `docs/nsh-migration.md` before
+  moving the revision.
+- Keep the runtime footprint small. Do not add a second matcher, database
+  abstraction, JSON implementation, or JavaScript runtime.
 
-## Don't reinvent the wheel (dependency policy)
+## Plugin packaging and signing
 
-Prefer battle-tested dependencies over hand-rolled code:
-
-- **Use the workspace library**: `nucleo` (fuzzy match), `rusqlite` (SQLite), `rquickjs` (QuickJS), `serde`/`serde_json` (JSON), `tokio`, `tracing`, `anyhow`, `gpui`/`gpui-component`, `global-hotkey`, `tray-icon`.
-- **Never duplicate an existing dependency's job** — no second fuzzy matcher, no second DB/ORM, no handwritten JSON when `serde` exists.
-- **Before adding a dependency**: check `[workspace.dependencies]` (root `Cargo.toml`), `Cargo.lock`, and `node_modules` first.
-- **Prefer crates.io published versions**; use git deps only when necessary (gpui comes from Zed's published `gpui-pre` snapshots — `rust-toolchain.toml` is pinned to **1.97.1** accordingly).
-- **Keep the footprint small** — fewer/lighter deps directly serve the low-memory, fast-build goals.
+- A distributable plugin zip contains `<plugin-id>/plugin.json` and
+  `<plugin-id>/plugin.nshpkg` only.
+- Release builds load verified packages only. Production trust roots live in
+  `assets/nsh/trust-roots.json`; that file intentionally ships empty until the
+  production key ceremony is complete, so release verification fails closed.
+- Never commit private keys or certificate secrets. CI reads
+  `STEWARD_NSH_RELEASE_KEY` and `STEWARD_NSH_RELEASE_CERT`.
+- The manifest ID/version and package ID/version must match.
 
 ## Release notes
 
-- `Changelog.md` (English) and `Changelog-zh-CN.md` (中文) hold the user-facing notes; each released version gets a `## vX.Y.Z` section, and the release workflow publishes the English section as the GitHub Release body.
-- Add the entry to both files in the same commit as the user-facing change; internal refactors that users cannot observe do not need one.
-- `scripts/extract-release-notes.sh <tag> [changelog]` prints that section and exits non-zero when it is missing — that is what the release workflow runs, so a tag without notes fails the release.
+- `Changelog.md` and `Changelog-zh-CN.md` contain user-facing notes. Each
+  released version uses a `## vX.Y.Z` heading.
+- Add user-facing changes to both files in the same commit.
+- `scripts/extract-release-notes.sh <tag> [changelog]` extracts the English
+  release body and fails when the section is absent.
 
-## Git — Angular-style (Conventional Commits)
+## Git and validation
 
-Commit messages follow **Conventional Commits** (established by repo history; best practice even though no tool enforces it).
-
-- Format: `type(<optional scope>): subject`
-- **Scope is optional**; a crate/package name can be used when helpful (e.g. `feat(core-engine): ...`).
-- Recommended types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `style`, `build`, `ci`, `revert`.
-- **Message in English**.
-- Group logically — one coherent unit per commit; avoid amorphous "wip" commits; reference issue/PR numbers when relevant.
-
-## Conventions
-
-- **Rust**: `rustfmt` + `clippy -- -D warnings` and `cargo test --workspace` — enforced in CI.
-- **TypeScript**: eslint + prettier — `semi: true`, `singleQuote: false` (**double quotes**), `printWidth: 100`, `trailingComma: all`; run `pnpm lint`, `pnpm typecheck`, `pnpm build`.
-- **Language**: code and commit messages in English; comments/docs may be bilingual.
-- **Docs**: architecture/spec/benchmark docs live in `docs/`.
+- Use Conventional Commits in English, for example
+  `feat(plugin-host): verify NSH packages before launch`.
+- Keep commits coherent and avoid work-in-progress commits.
+- Rust checks: `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace`.
+- TypeScript checks: `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and
+  `pnpm build`.
+- Plugin checks: run `nsh test` for each official plugin and verify every
+  generated `.nshpkg` before packaging.
+- TypeScript style: double quotes, semicolons, 100-column lines, and trailing
+  commas.

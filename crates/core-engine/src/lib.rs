@@ -1,4 +1,4 @@
-//! Search, indexing, fuzzy matching and ranking.
+//! Application search, fuzzy matching and ranking.
 //!
 //! No UI dependencies: everything here is unit-testable in isolation.
 //!
@@ -18,13 +18,9 @@ pub use nucleo;
 mod scanner;
 
 pub mod calc;
-pub mod file_index;
 pub mod link;
 
 pub use calc::{format_value, try_evaluate};
-pub use file_index::{
-    match_tier, EntryInfo, FileDb, FileDbBuilder, FileHit, Filter, MatchTier, SearchOptions,
-};
 pub use link::try_openable;
 pub use scanner::{platform_scanner, start_menu_roots, AppScanner};
 

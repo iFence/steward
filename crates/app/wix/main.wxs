@@ -6,10 +6,8 @@
 
       cargo wix -p steward-app
 
-  The installer installs steward-app.exe and the sibling
-  steward-plugin-runtime.exe to Program Files (the runtime is required for
-  plugins), registers the product icon in Add/Remove Programs, and adds a
-  Start Menu shortcut.
+  The installer installs steward-app.exe, registers the product icon in
+  Add/Remove Programs, and adds a Start Menu shortcut.
 -->
 
 <?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
@@ -69,6 +67,20 @@
                             KeyPath='yes'/>
                     </Component>
 
+                    <Component Id='ThirdPartyNotices' Guid='*'>
+                        <File Id='ThirdPartyNoticesFile'
+                            DiskId='1'
+                            Source='../../THIRD_PARTY_NOTICES.md'
+                            KeyPath='yes'/>
+                    </Component>
+
+                    <Component Id='ApacheLicense' Guid='*'>
+                        <File Id='ApacheLicenseFile'
+                            DiskId='1'
+                            Source='../../assets/licenses/Apache-2.0.txt'
+                            KeyPath='yes'/>
+                    </Component>
+
                     <Component Id='binary0' Guid='*'>
                         <File
                             Id='exe0'
@@ -78,49 +90,6 @@
                             KeyPath='yes'/>
                     </Component>
 
-                    <!-- Plugin host runtime: resolved as a sibling of the app
-                         executable by `HostConfig::from_env`. -->
-                    <Component Id='runtime0' Guid='*'>
-                        <File
-                            Id='runtime0exe'
-                            Name='steward-plugin-runtime.exe'
-                            DiskId='1'
-                            Source='$(var.CargoTargetBinDir)\steward-plugin-runtime.exe'
-                            KeyPath='yes'/>
-                    </Component>
-
-                    <!-- Optional privileged enumerator: the app connects to it
-                         over a named pipe when it is running, and falls back to
-                         its own directory walk otherwise. -->
-                    <Component Id='helper0' Guid='*'>
-                        <File
-                            Id='helper0exe'
-                            Name='steward-index-helper.exe'
-                            DiskId='1'
-                            Source='$(var.CargoTargetBinDir)\steward-index-helper.exe'
-                            KeyPath='yes'/>
-                        <!-- Auto-start LocalSystem service: reads $MFT and
-                             streams records to the app over a named pipe.
-                             `Vital='no'` keeps a service failure from aborting
-                             the whole install; the app then uses its own walk. -->
-                        <ServiceInstall
-                            Id='StewardIndexHelperInstall'
-                            Name='StewardIndexHelper'
-                            DisplayName='Steward Index Helper'
-                            Description='Reads the NTFS $MFT so Steward file search starts fast.'
-                            Type='ownProcess'
-                            Start='auto'
-                            ErrorControl='normal'
-                            Arguments='--service'
-                            Vital='no'/>
-                        <ServiceControl
-                            Id='StewardIndexHelperControl'
-                            Name='StewardIndexHelper'
-                            Start='install'
-                            Stop='both'
-                            Remove='uninstall'
-                            Wait='yes'/>
-                    </Component>
                 </Directory>
             </Directory>
 
@@ -152,9 +121,8 @@
             Display='expand'
             Absent='disallow'>
             <ComponentRef Id='License'/>
+            <ComponentRef Id='ThirdPartyNotices'/>
             <ComponentRef Id='binary0'/>
-            <ComponentRef Id='runtime0'/>
-            <ComponentRef Id='helper0'/>
             <ComponentRef Id='ApplicationShortcut'/>
         </Feature>
 
@@ -187,9 +155,10 @@
              (scheduled by MajorUpgrade at afterInstallInitialize) removes the
              previous product's files. `util:CloseApplication` is graceful but
              only runs just before InstallFiles, which is too late for that
-             removal; taskkill guarantees the executable is not locked, and /T
-             also stops the plugin-runtime child. Matching is by image name, so
-             local debug/release builds are closed too.
+             removal; taskkill guarantees the executable is not locked. Plugins
+             run as in-process NSH AppViews, so there is no runtime child.
+             Matching is by image name, so local debug/release builds are
+             closed too.
 
              taskkill is a console program, and an immediate custom action that
              runs it directly gives it a console window in the user's session —
@@ -197,9 +166,8 @@
              upgrade) during an install. Making the action `deferred` with
              `Impersonate='no'` to hide that window is NOT a fix: the deferred
              script runs in a different phase, so the app is still running when
-             the old product is removed, and on a machine where the index helper
-             runs as a service the install then dies with error 2613 (see the
-             2026-10-09 decision record). Instead the command line is handed to
+             the old product is removed, and the install then dies with error
+             2613. Instead the command line is handed to
              `CAQuietExec` from WixUtilExtension, which starts the process with a
              hidden window while staying on the immediate, impersonated path
              that has always worked. `QtExecCmdLine` is the property that helper
@@ -216,29 +184,6 @@
             DllEntry='CAQuietExec'
             Execute='immediate'
             Return='ignore'/>
-        <CustomAction
-            Id='StopRunningStewardRuntimeSetCommand'
-            Property='QtExecCmdLine'
-            Value='&quot;[SystemFolder]taskkill.exe&quot; /IM steward-plugin-runtime.exe /F /T'
-            Execute='immediate'/>
-        <CustomAction
-            Id='StopRunningStewardRuntime'
-            BinaryKey='WixCA'
-            DllEntry='CAQuietExec'
-            Execute='immediate'
-            Return='ignore'/>
-        <CustomAction
-            Id='StopRunningStewardHelperSetCommand'
-            Property='QtExecCmdLine'
-            Value='&quot;[SystemFolder]taskkill.exe&quot; /IM steward-index-helper.exe /F /T'
-            Execute='immediate'/>
-        <CustomAction
-            Id='StopRunningStewardHelper'
-            BinaryKey='WixCA'
-            DllEntry='CAQuietExec'
-            Execute='immediate'
-            Return='ignore'/>
-
         <!-- Graceful fallback: a normal close and an end-session message are
              tried first; TerminateProcess is the fallback after the timeout. -->
         <util:CloseApplication
@@ -250,25 +195,6 @@
             RebootPrompt='no'
             TerminateProcess='1'
             Timeout='5'/>
-        <util:CloseApplication
-            Id='CloseStewardRuntime'
-            Target='steward-plugin-runtime.exe'
-            Description='The Steward plugin runtime is running and will be closed to install the update.'
-            CloseMessage='yes'
-            EndSessionMessage='yes'
-            RebootPrompt='no'
-            TerminateProcess='1'
-            Timeout='5'/>
-        <util:CloseApplication
-            Id='CloseStewardHelper'
-            Target='steward-index-helper.exe'
-            Description='The Steward index helper is running and will be closed to install the update.'
-            CloseMessage='yes'
-            EndSessionMessage='yes'
-            RebootPrompt='no'
-            TerminateProcess='1'
-            Timeout='5'/>
-
         <!-- Keep the per-user autostart entry in sync with what is installed:
              rewrite it to the freshly installed executable (only when the user
              had autostart on), and remove it on a real uninstall. During a
@@ -289,11 +215,7 @@
 
         <InstallExecuteSequence>
             <Custom Action='StopRunningStewardSetCommand' Before='StopRunningSteward'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningSteward' Before='StopRunningStewardRuntimeSetCommand'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningStewardRuntimeSetCommand' Before='StopRunningStewardRuntime'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningStewardRuntime' Before='StopRunningStewardHelperSetCommand'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningStewardHelperSetCommand' Before='StopRunningStewardHelper'>VersionNT &gt; 400</Custom>
-            <Custom Action='StopRunningStewardHelper' Before='RemoveExistingProducts'>VersionNT &gt; 400</Custom>
+            <Custom Action='StopRunningSteward' Before='RemoveExistingProducts'>VersionNT &gt; 400</Custom>
             <Custom Action='SyncAutostart' After='InstallFiles'>NOT REMOVE</Custom>
             <Custom Action='UnregisterAutostart' Before='RemoveFiles'>(REMOVE="ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
         </InstallExecuteSequence>

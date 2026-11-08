@@ -5,22 +5,14 @@ edition.workspace = true
 
 [dependencies]
 nucleo.workspace = true
-roaring.workspace = true
 pinyin.workspace = true
 serde.workspace = true
-regex.workspace = true
-crossbeam-channel.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
-    "Win32_Security",
     "Win32_Storage_FileSystem",
-    # MFT/USN enumeration is DeviceIoControl against a raw volume handle.
-    "Win32_System_IO",
-    "Win32_System_Ioctl",
     "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
     "Win32_UI_Shell",
 ] }
 widestring = "1"

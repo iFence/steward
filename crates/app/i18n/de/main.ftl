@@ -23,13 +23,3 @@ settings-theme-amber = Bernstein
 settings-about = Über
 settings-about-description = Steward – ein schneller, speicherschonender Launcher und eine Plugin-Plattform
 settings-version = Version
-
-# Full-disk file index
-files-indexing = Dateien werden indiziert…
-files-no-index = Der Dateiindex ist noch nicht verfügbar.
-files-indexed = Indizierte Dateien
-
-# File search page
-file-search-title = Dateisuche
-file-search-placeholder = Dateien suchen...
-files-type-to-search = Stichwort eingeben, um Dateien zu suchen

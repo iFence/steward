@@ -13,33 +13,26 @@ mkdir -p "$root"
 for ((i = 0; i < count; i++)); do
   id="com.bench.plugin$(printf '%04d' "$i")"
   dir="$root/$id"
-  mkdir -p "$dir/dist"
+  mkdir -p "$dir"
   # 三类触发条件按 i 轮转，覆盖 command / prefix / dynamic 路由。
   case $((i % 3)) in
     0) trigger='{ "type": "command" }' ;;
     1) trigger='{ "type": "prefix", "value": "p'$i' " }' ;;
-    2) trigger='{ "type": "dynamic" }' ;;
+    2) trigger='{ "type": "regex", "value": "^bench'$i'\\b" }' ;;
   esac
   cat > "$dir/plugin.json" <<EOF
 {
+  "schemaVersion": 2,
   "id": "$id",
   "name": "Bench $i",
   "version": "1.0.0",
+  "package": "plugin.nshpkg",
   "commands": [
     { "name": "cmd$i", "title": "Bench $i", "trigger": $trigger }
-  ],
-  "permissions": [],
-  "isolation": "shared-pool"
+  ]
 }
 EOF
-  cat > "$dir/dist/index.js" <<'EOF'
-var __stewardPlugin = (() => {
-    function command(name, input) {
-        return { type: "list", items: [{ id: "one", title: name, subtitle: input }] };
-    }
-    return { command: command };
-})();
-EOF
+  printf 'benchmark placeholder; never loaded during routing\n' > "$dir/plugin.nshpkg"
 done
 
 echo "generated $count test plugins under $root"

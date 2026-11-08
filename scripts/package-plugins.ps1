@@ -2,9 +2,8 @@
 # Build distributable plugin packages: one zip per plugin under
 # `packages/plugins`, written to `target/plugins`.
 #
-# Each zip contains a single top-level folder named after the plugin, so
-# extracting it into the app's plugin root (`%APPDATA%\Steward\plugins`)
-# creates `<root>\<plugin>\plugin.json` directly.
+# Each zip contains a single top-level folder named after the plugin with
+# `plugin.json` and a signed `plugin.nshpkg`.
 #
 # Usage:
 #   .\scripts\package-plugins.ps1            # package every plugin
@@ -40,8 +39,24 @@ foreach ($name in $names) {
     # page, which mangles the non-ASCII keywords a manifest may carry (`日历`).
     $meta = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifest | ConvertFrom-Json
     $version = $meta.version
+    if ($meta.schemaVersion -ne 2 -or $meta.package -ne "plugin.nshpkg") {
+        throw "plugin.json in $dir is not NSH schema v2"
+    }
     if (-not $version) {
         throw "plugin.json in $dir has no version"
+    }
+
+    $package = Join-Path $dir "dist\plugin.nshpkg"
+    if (-not (Test-Path -LiteralPath $package)) {
+        $key = $env:STEWARD_NSH_RELEASE_KEY
+        $cert = $env:STEWARD_NSH_RELEASE_CERT
+        if (-not $key -or -not $cert -or -not (Get-Command nsh -ErrorAction SilentlyContinue)) {
+            throw "missing signed package for ${name}: set STEWARD_NSH_RELEASE_KEY/STEWARD_NSH_RELEASE_CERT and install nsh"
+        }
+        & nsh publish (Join-Path $dir "App.tsx") --key $key --cert $cert -o $package
+        if ($LASTEXITCODE -ne 0) {
+            throw "nsh publish failed for $name"
+        }
     }
 
     $stage = Join-Path $env:TEMP "steward-pkg-$name"
@@ -50,9 +65,7 @@ foreach ($name in $names) {
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $stage $name) | Out-Null
     Copy-Item -LiteralPath $manifest -Destination (Join-Path $stage $name)
-    if (Test-Path (Join-Path $dir "dist")) {
-        Copy-Item -LiteralPath (Join-Path $dir "dist") -Destination (Join-Path $stage $name) -Recurse
-    }
+    Copy-Item -LiteralPath $package -Destination (Join-Path $stage $name)
 
     $zip = Join-Path $OutDir "steward-plugin-$name-$version.zip"
     if (Test-Path $zip) {

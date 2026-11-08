@@ -23,13 +23,3 @@ settings-theme-amber = 琥珀
 settings-about = 关于
 settings-about-description = Steward —— 快速、低内存占用的启动器与插件平台
 settings-version = 版本
-
-# Full-disk file index
-files-indexing = 正在建立文件索引…
-files-no-index = 文件索引尚未就绪。
-files-indexed = 已索引文件
-
-# File search page
-file-search-title = 文件搜索
-file-search-placeholder = 搜索文件...
-files-type-to-search = 输入关键词开始搜索文件

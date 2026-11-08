@@ -4,6 +4,7 @@ target/
 # Node / pnpm
 node_modules/
 dist/
+.nsh/
 
 # Database files (index caches, plugin metadata, etc.)
 *.db

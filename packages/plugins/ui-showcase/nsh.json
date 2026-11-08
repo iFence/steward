@@ -1,0 +1,9 @@
+{
+  "name": "UI Showcase",
+  "id": "com.example.ui-showcase",
+  "version": "1.0.0",
+  "build": 1,
+  "capabilities": {
+    "host": ["steward.*"]
+  }
+}

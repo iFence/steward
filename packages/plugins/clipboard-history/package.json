@@ -1,14 +1,15 @@
 {
   "name": "@steward/plugin-clipboard-history",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Official example plugin: Clipboard History.",
-  "main": "src/index.ts",
+  "main": "App.tsx",
   "dependencies": {
     "@steward/extension-api": "workspace:*"
   },
   "scripts": {
-    "build": "node ../../../scripts/build-plugin.mjs src/index.ts dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "build": "nsh build App.tsx --release -o dist",
+    "typecheck": "nsh check App.tsx",
+    "test": "nsh test ."
   }
 }

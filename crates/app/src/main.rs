@@ -1,96 +1,42 @@
-//! Steward desktop entry point.
-//!
-//! Startup is silent: the app registers a system tray icon (Windows/macOS)
-//! and one global hotkey — summon (`Ctrl+Alt+Space`), changeable in Settings —
-//! but opens no window. The launcher bar — a wide, short, borderless popup
-//! centered on the primary display — is summoned on demand via the hotkey or
-//! the tray icon, and hidden again with `Esc` (or the hotkey), or
-//! automatically when another application takes activation (clicking away).
-//! The settings hotkey (`Ctrl+,`) is launcher-scoped: it is not a global
-//! binding, so it only opens the settings window while the launcher is visible.
-//!
-//! GPUI does not provide a system-level hotkey API, so registration is
-//! delegated to the `global-hotkey` crate and events are bridged into the
-//! GPUI main loop through channels polled by a foreground task. Tray and
-//! tray-menu events ride the same loop.
-//!
-//! Window visibility on Windows is driven through the native HWND
-//! (`ShowWindow(SW_HIDE/SW_SHOW)`), because `App::hide` is a no-op on the
-//! Windows backend of the pinned GPUI revision. Other platforms fall back to
-//! `App::hide` / `App::activate` (see docs/architecture.md, M4 will polish
-//! non-Windows behavior).
-//!
-//! This file is deliberately thin: every concern that used to live here was
-//! split into focused modules (`config`, `theme`, `launcher`, `window`,
-//! `settings`, `hotkeys`, `tray`, `events`, `platform`, ...), leaving only the
-//! boot sequence, the module wiring, and the two leaf modules (`i18n`,
-//! `app_icons`) that are too small to move.
+//! Steward desktop entry point with an NSH Rust launcher shell.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#![allow(dead_code)]
 
-mod app_index;
+mod app_icons;
 mod autostart;
 mod clipboard_history;
 mod config;
 mod events;
-mod file_index;
-mod file_index_helper;
 mod hotkeys;
 mod i18n;
 mod launch;
-mod launcher;
-mod overlay;
+mod nsh_surface;
 mod platform;
-mod plugin_panel_window;
-mod plugin_workspace;
-mod search_input;
+mod plugin_window;
+mod services;
 mod settings;
+mod shell;
+mod state;
 mod theme;
+mod tray;
 mod window;
 
-#[cfg(target_os = "windows")]
-mod app_icons;
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-#[cfg(not(target_os = "windows"))]
-mod app_icons {
-    /// Icon extraction is Windows-only for M1; other platforms render rows
-    /// without icons until a scanner provides them.
-    pub fn app_icon_image(_path: &std::path::Path) -> Option<std::sync::Arc<gpui::Image>> {
-        None
-    }
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-mod tray;
-
-use std::{
-    cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    rc::Rc,
-};
-
-use global_hotkey::hotkey::HotKey;
 use gpui::App;
 use gpui_platform::application;
-use steward_core_engine::Engine;
-use steward_plugin_host::{HostConfig, PluginHost};
-use steward_plugin_registry::Registry;
+use steward_storage::Storage;
 
-use crate::config::{LANGUAGE_SETTING, SUMMON_HOTKEY_SETTING};
-use crate::events::spawn_event_poll_task;
-use crate::hotkeys::{setup_global_hotkey, HotkeyField};
-use crate::launcher::LauncherState;
-use crate::window::{init_ui_common, open_launcher_window};
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-use crate::tray::setup_tray;
+use crate::config::{DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
+use crate::i18n::Localization;
+use crate::services::{AppServices, SearchState};
+use crate::state::AppState;
 
 fn main() {
-    // Installer/uninstaller hooks: manage the per-user autostart entry before
-    // touching storage or GPUI. `--sync-autostart` runs after `InstallFiles`
-    // (rewrite an existing entry to this build); `--unregister-autostart` runs
-    // before `RemoveFiles` on a real uninstall.
     if std::env::args().any(|arg| arg == "--sync-autostart") {
         autostart::sync_autostart_path();
         return;
@@ -100,171 +46,180 @@ fn main() {
         return;
     }
 
-    // Headless query for the effective summon hotkey, used by
-    // `scripts/bench-resident.ps1` to inject a matching synthetic WM_HOTKEY
-    // (the id is derived from the modifier/key combo, so a mismatched binding
-    // is silently ignored by the app). Prints the persisted value, or the
-    // built-in default when nothing is stored, then exits before GPUI starts.
-    if std::env::args().any(|arg| arg == "--print-summon-hotkey") {
-        let storage =
-            steward_storage::Storage::open().expect("failed to open the Steward storage database");
-        let hotkey = storage
-            .get_setting(SUMMON_HOTKEY_SETTING)
-            .and_then(|value| value.parse::<HotKey>().ok())
-            .unwrap_or_else(|| HotkeyField::Summon.default_hotkey());
-        println!("{hotkey}");
-        return;
-    }
-
-    // Opt into per-monitor DPI awareness before any window exists so GPUI and
-    // the launcher size calculations see the real display scale (e.g. 2.0 at
-    // 200%) instead of the 96-DPI virtualization the OS applies otherwise.
     #[cfg(target_os = "windows")]
     platform::set_dpi_awareness();
-    // Opt into dark mode before any window or menu exists, so native surfaces
-    // (tray context menu, settings title bar) match the app's dark theme.
     #[cfg(target_os = "windows")]
     platform::enable_dark_mode();
-    // A moved or deleted build can leave the `Run` entry pointing at a path
-    // that no longer exists; repoint it at this executable so the next logon
-    // starts a working Steward. Entries that still resolve are left untouched.
     autostart::repair_autostart_path();
 
+    let data_dir = std::env::var_os("STEWARD_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::data_dir()
+                .expect("no OS data directory available")
+                .join("Steward")
+        });
     let storage = Rc::new(RefCell::new(
-        steward_storage::Storage::open().expect("failed to open the Steward storage database"),
+        Storage::open().expect("failed to open the Steward storage database"),
     ));
+    if std::env::args().any(|arg| arg == "--print-summon-hotkey") {
+        println!("{}", hotkeys::persisted_summon_hotkey(&storage.borrow()));
+        return;
+    }
     let language = storage.borrow().get_setting(LANGUAGE_SETTING);
     let i18n = Rc::new(
-        i18n::Localization::new_with_language(language.as_deref())
+        Localization::new_with_language(language.as_deref())
             .expect("failed to initialize localization"),
     );
-    // Plugin metadata cache. `STEWARD_PLUGINS_DIR` overrides the plugin root
-    // (e.g. pointing at a repo's `packages/plugins` during development); the
-    // SQLite cache itself always lives in the app data directory.
-    let data_dir = dirs::data_dir()
-        .expect("no OS data directory available")
-        .join("Steward");
-    // Host-side clipboard history: a background thread polls the system
-    // clipboard and pushes newest entries; the foreground poll task forwards
-    // them to the plugin host. The watcher runs for the app's lifetime.
+    let accent = storage
+        .borrow()
+        .get_setting(THEME_COLOR_SETTING)
+        .unwrap_or_else(|| format!("#{DEFAULT_ACCENT:06x}"));
+    let autostart = autostart::autostart_enabled();
+    let summon_hotkey = hotkeys::persisted_summon_hotkey(&storage.borrow()).to_string();
+
+    let search = Rc::new(RefCell::new(
+        SearchState::new(data_dir.clone(), storage.clone())
+            .expect("failed to initialize launcher search"),
+    ));
+    load_trust_roots(&search);
+    search.borrow_mut().start();
+    let search_revision = search.borrow().revision_handle();
+
+    let (request_tx, request_rx) = crossbeam_channel::unbounded();
+    let (command_tx, command_rx) = crossbeam_channel::unbounded();
+    let services = Arc::new(AppServices::new(
+        request_tx,
+        command_tx,
+        language.clone().unwrap_or_else(|| "en".into()),
+        accent,
+        autostart,
+        summon_hotkey,
+        search_revision,
+    ));
     let (clipboard_tx, clipboard_rx) = crossbeam_channel::unbounded();
     let clipboard_watcher =
-        crate::clipboard_history::ClipboardWatcher::spawn(data_dir.clone(), clipboard_tx);
-    let registry = Rc::new(RefCell::new(
-        if let Some(root) = std::env::var("STEWARD_PLUGINS_DIR").ok().map(PathBuf::from) {
-            Registry::open_with_root(&data_dir, &root)
-        } else {
-            Registry::open_at(&data_dir)
-        }
-        .expect("failed to open the plugin registry database"),
-    ));
-    // Plugin host: resolves the `steward-plugin-runtime` binary (env override
-    // `STEWARD_PLUGIN_RUNTIME_BIN` or the sibling of this executable). A
-    // missing binary degrades to "no plugins" instead of failing startup.
-    let plugin_host_config = match HostConfig::from_env() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("plugin runtime binary not found: {error:#}; plugins disabled");
-            HostConfig::default()
-        }
-    };
-    let plugin_host = Rc::new(RefCell::new(PluginHost::new(plugin_host_config)));
-    // Full-disk file index: the persisted snapshot comes up synchronously (one
-    // SQLite read plus a decode) so a cold start can already search files; the
-    // build itself runs on the index worker when the snapshot is missing.
-    let file_index = crate::file_index::FileIndex::start(
-        crate::file_index::load_snapshot(&storage.borrow()),
-        &[],
-    );
-    // The tray's status line is created together with the tray icon (in the boot
-    // closure) and then updated from the poll task, so the field starts empty.
-    let tray_status: Rc<RefCell<Option<crate::tray::TrayStatusItem>>> = Rc::new(RefCell::new(None));
-    let state = Rc::new(RefCell::new(LauncherState {
+        clipboard_history::ClipboardWatcher::spawn(data_dir.clone(), clipboard_tx);
+    let clipboard_entries = Arc::new(Mutex::new(Vec::new()));
+
+    let state = Rc::new(RefCell::new(AppState {
+        data_dir: data_dir.clone(),
+        services: services.clone(),
         window: None,
+        launcher_height: config::LAUNCHER_HEIGHT,
         settings_window: None,
-        focus: None,
-        result_count: std::cell::Cell::new(0),
-        scrim_alpha: steward_ui_components::palette::SCRIM_ALPHA,
-        last_applied_height: 0.0,
         storage,
-        engine: Rc::new(RefCell::new(Engine::new())),
-        icon_cache: RefCell::new(HashMap::new()),
-        plugin_icons: RefCell::new(HashMap::new()),
-        icon_gen: Cell::new(0),
-        icon_rx: RefCell::new(None),
-        scan_rx: RefCell::new(None),
-        app_watch: RefCell::new(None),
-        plugin_host,
-        plugin_registry: registry,
-        plugin_scan_rx: RefCell::new(None),
-        plugin_gen: Cell::new(0),
-        plugin_hits: RefCell::new(Vec::new()),
-        plugin_views: RefCell::new(Vec::new()),
-        plugin_pending: RefCell::new(HashSet::new()),
-        search_gen: Cell::new(0),
-        plugin_search_results: RefCell::new(HashMap::new()),
-        show_epoch: Cell::new(0),
-        plugin_calendar: RefCell::new(None),
-        plugin_ui_inline: Cell::new(false),
-        panel_view_windows: RefCell::new(HashMap::new()),
-        workspace_panels: RefCell::new(HashMap::new()),
-        workspace_window: RefCell::new(None),
-        workspace_dock: RefCell::new(None),
+        i18n: i18n.clone(),
+        search,
+        requests: request_rx,
+        commands: command_rx,
+        clipboard_entries,
+        clipboard_rx: RefCell::new(Some(clipboard_rx)),
+        tray: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
-        settings_hotkey: None,
-        tray_status: tray_status.clone(),
-        clipboard_rx: RefCell::new(Some(clipboard_rx)),
-        file_index,
-        file_hits: Vec::new(),
-        file_search_ms: 0,
-        file_hits_generation: 0,
-        file_search_generation: 0,
-        _clipboard_watcher: Some(clipboard_watcher),
+        plugin_windows: Default::default(),
+        _clipboard_watcher: clipboard_watcher,
     }));
 
-    // GPUI starts at boot and the launcher window is created hidden, so every
-    // summon is instant. A lazy-loading variant was measured and reverted: it
-    // deferred GPUI/DirectX/DirectWrite initialization to the first summon,
-    // making that summon 0.5-4.5 s — unacceptable for a launcher (decision
-    // record in docs/architecture.md).
-    application().run(move |cx: &mut App| {
-        let focus = init_ui_common(cx, &state);
-        // Register the dockable plugin panel type and share the app state the
-        // registry builder needs to rebuild panels from a persisted layout.
-        crate::plugin_workspace::init(cx, &state, i18n.clone());
-        // First-party overlay: plugin toasts.
-        crate::overlay::init(cx);
+    application().run({
+        let state = state.clone();
+        let i18n = i18n.clone();
+        let services = services.clone();
+        move |cx: &mut App| {
+            window::init_common(cx);
+            nsh_platform_gpui::set_ui_sets(vec![nsh_base::registry()]);
+            let handle =
+                window::open_launcher_window(cx, state.clone(), services.clone(), data_dir.clone());
+            state.borrow_mut().window = Some(handle);
+            if std::env::var_os("STEWARD_SHOW_SETTINGS").is_some() {
+                window::open_settings_window(cx, state.clone(), services.clone(), data_dir.clone());
+            }
+            if std::env::var_os("STEWARD_SHOW_ON_START").is_some() {
+                let _ = handle.update(cx, |_, window, cx| {
+                    platform::show(window, config::LAUNCHER_WIDTH, config::LAUNCHER_HEIGHT);
+                    cx.activate(true);
+                });
+            }
 
-        // Watch the Start Menu (and reconcile on a timer) *before* the first
-        // scan, so a shortcut written while that scan runs is not missed.
-        state.borrow().start_app_watch();
-        // Seed the index from the cache and start the background reconcile
-        // before the window opens.
-        state.borrow().ensure_app_index();
-        // Seed the plugin host from the metadata cache (cold path: SQLite
-        // only); a background scan reconciles new/changed plugins.
-        state.borrow().ensure_plugin_index();
-        // Full-disk file index. A loaded snapshot is already searchable; the
-        // worker then either replays each volume's USN journal (a `$MFT` build)
-        // or rebuilds in the background (a directory-walk build has no journal).
-        // From then on the built-in directory watcher applies creates, deletes
-        // and renames as they happen, so the index tracks the disk without a
-        // restart. The launcher stays responsive throughout.
-        state.borrow_mut().start_file_index();
-        let window = open_launcher_window(cx, &focus, i18n.clone(), &state);
-        state.borrow_mut().window = Some(window);
+            match tray::setup_tray(&i18n) {
+                Ok(tray) => *state.borrow().tray.borrow_mut() = Some(tray),
+                Err(error) => eprintln!("failed to create tray icon: {error:#}"),
+            }
+            if let Err(error) = hotkeys::setup(&state) {
+                eprintln!("failed to setup summon hotkey: {error:#}");
+            }
+            if let Err(error) = events::spawn(state.clone(), cx) {
+                eprintln!("failed to start event loop: {error:#}");
+            }
+            if let Ok(plugin_id) = std::env::var("STEWARD_SMOKE_PLUGIN") {
+                let smoke_state = state.clone();
+                let command =
+                    std::env::var("STEWARD_SMOKE_COMMAND").unwrap_or_else(|_| plugin_id.clone());
+                let title =
+                    std::env::var("STEWARD_SMOKE_TITLE").unwrap_or_else(|_| command.clone());
+                cx.spawn(async move |cx| {
+                    for _ in 0..50 {
+                        let id = plugin_id.clone();
+                        let cmd = command.clone();
+                        let result = cx.update(|cx| {
+                            crate::plugin_window::open_or_focus(
+                                cx,
+                                smoke_state.clone(),
+                                id.clone(),
+                                cmd.clone(),
+                                title.clone(),
+                                cmd.clone(),
+                            )
+                        });
+                        if result.is_ok() {
+                            return;
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(100))
+                            .await;
+                    }
+                    eprintln!("smoke plugin did not become available");
+                })
+                .detach();
+            }
 
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
-        match setup_tray(&i18n) {
-            Ok(handle) => *tray_status.borrow_mut() = Some(handle),
-            Err(error) => eprintln!("failed to create tray icon: {error:#}"),
-        }
-        if let Err(error) = setup_global_hotkey(&state) {
-            eprintln!("failed to register global hotkey: {error:#}");
-        }
-        if let Err(error) = spawn_event_poll_task(state.clone(), i18n.clone(), cx) {
-            eprintln!("failed to start event polling task: {error:#}");
+            let closed_state = state.clone();
+            cx.on_window_closed(move |_, window_id| {
+                if closed_state
+                    .borrow()
+                    .window
+                    .is_some_and(|handle| handle.window_id() == window_id)
+                {
+                    closed_state.borrow_mut().window = None;
+                }
+                if closed_state
+                    .borrow()
+                    .settings_window
+                    .is_some_and(|handle| handle.window_id() == window_id)
+                {
+                    closed_state.borrow_mut().settings_window = None;
+                }
+                closed_state
+                    .borrow_mut()
+                    .plugin_windows
+                    .retain(|_, window| window.handle.window_id() != window_id);
+            })
+            .detach();
         }
     });
+}
+
+fn load_trust_roots(search: &Rc<RefCell<SearchState>>) {
+    let mut roots =
+        serde_json::from_str::<Vec<String>>(include_str!("../../../assets/nsh/trust-roots.json"))
+            .expect("assets/nsh/trust-roots.json must be a JSON string array");
+    if let Ok(root) = std::env::var("STEWARD_NSH_TRUST_ROOT") {
+        roots.push(root);
+    }
+    for root in roots {
+        if let Err(error) = search.borrow_mut().add_trust_root(root.trim()) {
+            eprintln!("ignoring invalid NSH trust root: {error:#}");
+        }
+    }
 }

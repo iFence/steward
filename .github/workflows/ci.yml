@@ -48,13 +48,15 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Install pinned NSH CLI
+        run: cargo install --locked --git https://github.com/longbridge/nsh --rev 5359c07ff7b5728e67957c24322373309c90666b nsh-cli
       - name: install
         run: pnpm install --frozen-lockfile
-      - name: check generated styles
-        run: pnpm --filter @steward/extension-api check:styles
       - name: lint
         run: pnpm lint
       - name: typecheck
         run: pnpm typecheck
       - name: build
         run: pnpm build
+      - name: plugin tests
+        run: pnpm --filter @steward/plugin-calendar test && pnpm --filter @steward/plugin-clipboard-history test && pnpm --filter @steward/plugin-ui-showcase test

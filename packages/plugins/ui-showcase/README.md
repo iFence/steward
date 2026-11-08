@@ -1,10 +1,13 @@
 # UI Showcase
 
-Official example plugin for the Virtual UI Tree (`{ "type": "ui" }`) view. It
-builds a small interactive tree with the `@steward/extension-api` element
-builder: layout containers, styled text, a button whose `click` handler redraws
-the view, and a host-owned input whose `change` handler updates a label.
+Official NSH TSX plugin demonstrating native components, signals, input,
+buttons, and the NSH `Switch` control. It is a full plugin window, not a
+serialized UI tree rendered by the launcher.
 
-Try it: build the plugin, install it under `<data dir>/Steward/plugins`, then
-run `uishowcase` in the launcher. Because the command declares `detachable`,
-the tree can also be popped out into its own window.
+Development:
+
+```bash
+nsh check App.tsx
+nsh test .
+nsh build App.tsx --release -o dist
+```

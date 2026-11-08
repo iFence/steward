@@ -7,32 +7,30 @@ members = [
     "crates/plugin-registry",
     "crates/storage",
     "crates/ui-components",
-    "crates/ipc-protocol",
-    "crates/index-helper",
-    "plugin-runtime",
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Steward contributors"]
 license = "MIT"
 
 [workspace.dependencies]
-# GPUI ships as weekly `gpui-pre-*` snapshots on crates.io (published from the
-# Zed repo), and gpui-component pins the exact snapshot it was built against.
-# Bump all GPUI-related lines together; mixing snapshots produces two
-# incompatible `gpui` crates.
-gpui = { package = "gpui-pre", version = "=0.3.10" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.10", features = ["font-kit"] }
-gpui-component = { version = "=0.8.1" }
-gpui-base = "=0.8.1"
+# NSH migration stack. Keep these exact until the migration evidence in
+# docs/nsh-migration.md is updated. GPUI Fast and NSH are compiled together and
+# must be upgraded as one reviewed change.
+gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.9", default-features = false, features = ["font-kit", "wayland", "x11"] }
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false }
+nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
+nsh-package = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
+nsh-platform-gpui = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false, features = ["js"] }
+thiserror = "2"
 global-hotkey = "0.8"
 tray-icon = "0.24"
 nucleo = "0.5"
-roaring = "0.10"
-rusqlite = { version = "0.40", features = ["bundled", "blob"] }
-rquickjs = "0.12"
+rusqlite = { version = "0.40", features = ["bundled"] }
 regex = "1"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
@@ -47,7 +45,6 @@ crossbeam-channel = "0.5"
 tyme4rs = "1.5"
 ureq = "2.9"
 url = "2"
-cap-std = "4"
 
 # i18n (Fluent — Zed's localization stack)
 i18n-embed = { version = "0.16", features = ["desktop-requester", "fluent-system"] }
