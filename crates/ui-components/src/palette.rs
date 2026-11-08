@@ -55,6 +55,11 @@ pub const FOREGROUND: u32 = 0xffffff;
 /// Secondary / placeholder text and trailing kind labels. Tinycast's
 /// `textTertiary` (white 0.40) blended onto [`BACKGROUND`].
 pub const MUTED_FOREGROUND: u32 = 0x79797c;
+/// Opacity for input placeholders over the adaptive launcher surface. The
+/// placeholder uses the primary foreground at this opacity so it remains
+/// readable even when the scrim is at [`SCRIM_ALPHA_MAX`], while staying
+/// visually subordinate to typed text.
+pub const PLACEHOLDER_OPACITY: f32 = 0.72;
 /// Selection wash, applied at white 0.10. Tinycast's `selection`.
 pub const SELECTION: u32 = 0xffffff;
 /// Mouse-hover wash, applied at white 0.05 — always fainter than

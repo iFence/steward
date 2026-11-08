@@ -14,6 +14,9 @@ const HEADER_HEIGHT: f32 = 60.0;
 const MAX_VISIBLE_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 42.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(40);
+/// Keep reasserting the field across the activation/IME hand-off instead of
+/// relying on one focus command landing on the right frame.
+const FOCUS_RETRIES: u8 = 5;
 
 #[component]
 pub fn StewardLauncher() -> impl IntoElement {
@@ -75,6 +78,9 @@ pub fn StewardLauncher() -> impl IntoElement {
     let observed_revision = signal(app.search_revision());
     let observed_locale = signal(app.locale_revision());
     let observed_launcher_reset = signal(app.launcher_reset_revision());
+    let observed_launcher_focus = signal(app.launcher_focus_revision());
+    let focus_retries = signal(0_u8);
+    let scrim_alpha = signal(app.launcher_scrim_alpha());
     set_interval(Duration::from_millis(250), {
         let app = app.clone();
         let filter = filter.clone();
@@ -98,10 +104,26 @@ pub fn StewardLauncher() -> impl IntoElement {
         let app = app.clone();
         let filter = filter.clone();
         move || {
-            let revision = app.launcher_reset_revision();
-            if revision != observed_launcher_reset.get_untracked() {
-                observed_launcher_reset.set(revision);
+            let reset_revision = app.launcher_reset_revision();
+            let focus_revision = app.launcher_focus_revision();
+            let launcher_scrim_alpha = app.launcher_scrim_alpha();
+            let reset_changed = reset_revision != observed_launcher_reset.get_untracked();
+            let focus_changed = focus_revision != observed_launcher_focus.get_untracked();
+            if reset_changed {
+                observed_launcher_reset.set(reset_revision);
                 filter("");
+            }
+            if focus_changed {
+                observed_launcher_focus.set(focus_revision);
+            }
+            if launcher_scrim_alpha != scrim_alpha.get_untracked() {
+                scrim_alpha.set(launcher_scrim_alpha);
+            }
+            if reset_changed || focus_changed {
+                input_ref.focus();
+                focus_retries.set(FOCUS_RETRIES);
+            } else if focus_retries.get_untracked() > 0 {
+                focus_retries.update(|remaining| *remaining -= 1);
                 input_ref.focus();
             }
         }
@@ -179,13 +201,14 @@ pub fn StewardLauncher() -> impl IntoElement {
     view()
         .size_full()
         .p(px(4.0))
-        .bg(rgb(steward_ui_components::palette::BACKGROUND)
-            .opacity(steward_ui_components::palette::SCRIM_ALPHA))
+        .window_drag(true)
+        .bg(rgb(steward_ui_components::palette::BACKGROUND).opacity(scrim_alpha.get()))
         .child(
             view()
                 .size_full()
                 .flex_col()
                 .overflow_hidden()
+                .window_drag(false)
                 .child(
                     view()
                         .h(px(HEADER_HEIGHT))
@@ -212,9 +235,11 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 })
                                 .text_size(px(16.0))
                                 .text_color(rgb(steward_ui_components::palette::FOREGROUND))
-                                .placeholder_color(rgb(
-                                    steward_ui_components::palette::MUTED_FOREGROUND,
-                                ))
+                                .placeholder_color(
+                                    rgb(steward_ui_components::palette::FOREGROUND).opacity(
+                                        steward_ui_components::palette::PLACEHOLDER_OPACITY,
+                                    ),
+                                )
                                 .selection_color(rgb(steward_ui_components::palette::ACCENT)),
                         ),
                 )
@@ -282,6 +307,7 @@ fn add_input_focus(input: &nsh_core::ui::ElementRef) {
 #[cfg(test)]
 mod tests {
     use std::sync::{atomic::AtomicU64, Arc};
+    use std::time::Duration;
 
     use nsh_core::ui::{EngineContext, Root};
     use nsh_engine::EngineConfig;
@@ -367,5 +393,14 @@ mod tests {
         services.request_launcher_reset();
 
         app.wait_for(&format!("text:{placeholder}")).unwrap();
+        app.type_text(&format!("text:{placeholder}"), "2+2")
+            .unwrap();
+        app.wait_for("text:2+2").unwrap();
+
+        services.request_launcher_focus();
+        app.wait(Duration::from_millis(120)).unwrap();
+        app.type_text("text:2+2", "3+3").unwrap();
+
+        app.wait_for("text:2+23+3").unwrap();
     }
 }

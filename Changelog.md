@@ -16,6 +16,15 @@ Conventions:
   failures now appear as dismissible launcher notices.
 - **Support logs**: Steward writes daily rolling logs under its data directory
   and retains seven days for troubleshooting.
+- **Launcher input focus**: summoning the launcher now reasserts the search
+  input focus through window activation and short startup retries, so typing
+  no longer occasionally lands nowhere while the caret is visible.
+- **Launcher contrast and dismissal**: the translucent surface now darkens
+  automatically over bright backdrops so query and placeholder text stay
+  readable, and the launcher closes as soon as another application receives
+  focus.
+- **Launcher dragging**: the padded edge of the launcher is now a window drag
+  handle, so the panel can be moved without affecting search or result clicks.
 
 ### New Plugin Platform
 
@@ -49,6 +58,9 @@ Conventions:
   are denied by default.
 - **Official plugins rewritten**: Calendar, Clipboard History, and UI Showcase
   are NSH TSX applications.
+- **Calendar lunar view**: the official calendar now shows lunar dates and
+  festivals alongside Gregorian dates, including leap months, zodiac years,
+  month navigation, and a selected-date detail card.
 
 ### Breaking Changes
 

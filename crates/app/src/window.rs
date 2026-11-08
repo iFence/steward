@@ -19,6 +19,7 @@ use crate::services::AppServices;
 use crate::settings::StewardSettings;
 use crate::shell::StewardLauncher;
 use crate::state::AppState;
+use crate::theme;
 
 // NSH paints an opaque theme background under its view tree by default,
 // which would cover GPUI's Acrylic window background. The launcher paints
@@ -54,12 +55,17 @@ pub(crate) fn open_launcher_window(
         },
         move |window, cx| {
             window.set_window_title("Steward");
+            let activation_services = services.clone();
             cx.new(|cx| {
                 let was_active = std::rc::Rc::new(Cell::new(false));
                 let activation_state = was_active.clone();
                 cx.observe_window_activation(window, move |_, window, cx| {
                     if window.is_window_active() {
                         activation_state.set(true);
+                        // The pre-show focus request can land before Windows
+                        // finishes activating the window. Reassert it once the
+                        // host reports that keyboard input is actually active.
+                        activation_services.request_launcher_focus();
                     } else if activation_state.get() && platform::is_visible(window) {
                         activation_state.set(false);
                         hide_window(window, cx);
@@ -130,6 +136,11 @@ pub(crate) fn open_settings_window(
 
 pub(crate) fn hide_window(window: &mut Window, _cx: &mut App) {
     platform::hide(window);
+}
+
+pub(crate) fn show_launcher(window: &Window, height: f32, services: &AppServices) {
+    let backdrop = platform::show(window, LAUNCHER_WIDTH, height);
+    services.set_launcher_scrim_alpha(theme::adaptive_scrim_alpha(backdrop));
 }
 
 pub(crate) fn resize_launcher(window: &mut Window, height: f32) {

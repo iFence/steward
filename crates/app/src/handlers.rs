@@ -156,7 +156,7 @@ pub(crate) fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) 
                 crate::window::hide_window(window, cx);
             } else {
                 services.request_launcher_reset();
-                crate::platform::show(window, crate::config::LAUNCHER_WIDTH, height);
+                crate::window::show_launcher(window, height, &services);
                 cx.activate(true);
             }
         });
@@ -173,11 +173,7 @@ pub(crate) fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) 
     state.borrow_mut().window = Some(handle);
     if let Some(handle) = state.borrow().window {
         let _ = handle.update(cx, |_, window, cx| {
-            crate::platform::show(
-                window,
-                crate::config::LAUNCHER_WIDTH,
-                crate::config::LAUNCHER_HEIGHT,
-            );
+            crate::window::show_launcher(window, crate::config::LAUNCHER_HEIGHT, &services);
             cx.activate(true);
         });
     }

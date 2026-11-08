@@ -169,25 +169,6 @@ mod windows {
         unsafe { GetForegroundWindow() }
     }
 
-    /// Whether the cursor currently sits inside `hwnd`'s window frame. The
-    /// foreground watch uses this to keep the launcher up while the user is
-    /// still interacting with it (clicking it, dragging it, or composing IME
-    /// text) even when it is momentarily not the foreground window.
-    pub fn cursor_hits_window(hwnd: HWND) -> bool {
-        unsafe {
-            let mut cursor: POINT = std::mem::zeroed();
-            let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-            let got_cursor = GetCursorPos(&mut cursor) != 0;
-            let got_rect = GetWindowRect(hwnd, &mut rect) != 0;
-            got_cursor
-                && got_rect
-                && cursor.x >= rect.left
-                && cursor.x < rect.right
-                && cursor.y >= rect.top
-                && cursor.y < rect.bottom
-        }
-    }
-
     pub fn hide(window: &Window) {
         if let Some(hwnd) = hwnd(window) {
             unsafe {

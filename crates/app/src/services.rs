@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
     Arc, RwLock,
 };
 
@@ -13,6 +13,7 @@ use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginNotice};
 use steward_plugin_host::PluginHost;
 use steward_plugin_registry::{PluginMeta, Registry};
 use steward_storage::Storage;
+use steward_ui_components::palette;
 use tokio::sync::oneshot;
 
 use crate::i18n::UiStrings;
@@ -53,6 +54,8 @@ pub struct LauncherQueryPort {
     search_revision: Arc<AtomicU64>,
     locale_revision: Arc<AtomicU64>,
     launcher_reset_revision: Arc<AtomicU64>,
+    launcher_focus_revision: Arc<AtomicU64>,
+    launcher_scrim_alpha: Arc<AtomicU32>,
 }
 
 #[derive(Clone)]
@@ -105,12 +108,16 @@ impl AppServices {
     ) -> Self {
         let locale_revision = Arc::new(AtomicU64::new(1));
         let launcher_reset_revision = Arc::new(AtomicU64::new(0));
+        let launcher_focus_revision = Arc::new(AtomicU64::new(0));
+        let launcher_scrim_alpha = Arc::new(AtomicU32::new(palette::SCRIM_ALPHA.to_bits()));
         Self {
             query: LauncherQueryPort {
                 requests,
                 search_revision: search_revision.clone(),
                 locale_revision,
                 launcher_reset_revision,
+                launcher_focus_revision,
+                launcher_scrim_alpha,
             },
             commands: WindowCommandPort { window_commands },
             settings: UiSettingsPort {
@@ -249,6 +256,31 @@ impl AppServices {
         self.query.launcher_reset_revision.load(Ordering::Relaxed)
     }
 
+    pub fn request_launcher_focus(&self) {
+        self.query
+            .launcher_focus_revision
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn launcher_focus_revision(&self) -> u64 {
+        self.query.launcher_focus_revision.load(Ordering::Relaxed)
+    }
+
+    pub fn set_launcher_scrim_alpha(&self, alpha: f32) {
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(palette::SCRIM_ALPHA, palette::SCRIM_ALPHA_MAX)
+        } else {
+            palette::SCRIM_ALPHA
+        };
+        self.query
+            .launcher_scrim_alpha
+            .store(alpha.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn launcher_scrim_alpha(&self) -> f32 {
+        f32::from_bits(self.query.launcher_scrim_alpha.load(Ordering::Relaxed))
+    }
+
     pub fn notice(&self) -> Option<PluginNotice> {
         self.notices
             .notice
@@ -308,6 +340,14 @@ impl LauncherServices {
 
     pub fn launcher_reset_revision(&self) -> u64 {
         self.query.launcher_reset_revision.load(Ordering::Relaxed)
+    }
+
+    pub fn launcher_focus_revision(&self) -> u64 {
+        self.query.launcher_focus_revision.load(Ordering::Relaxed)
+    }
+
+    pub fn launcher_scrim_alpha(&self) -> f32 {
+        f32::from_bits(self.query.launcher_scrim_alpha.load(Ordering::Relaxed))
     }
 
     pub fn notice(&self) -> Option<PluginNotice> {
@@ -627,6 +667,16 @@ mod tests {
         services.clear_notice();
         assert!(services.notice_port().notice().is_none());
         assert_eq!(services.search_revision(), 2);
+    }
+
+    #[test]
+    fn launcher_focus_requests_reach_the_surface() {
+        let services = services();
+        let launcher = services.launcher();
+
+        assert_eq!(launcher.launcher_focus_revision(), 0);
+        services.request_launcher_focus();
+        assert_eq!(launcher.launcher_focus_revision(), 1);
     }
 
     #[test]

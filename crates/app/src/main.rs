@@ -157,7 +157,7 @@ fn main() {
             }
             if std::env::var_os("STEWARD_SHOW_ON_START").is_some() {
                 let _ = handle.update(cx, |_, window, cx| {
-                    platform::show(window, config::LAUNCHER_WIDTH, config::LAUNCHER_HEIGHT);
+                    window::show_launcher(window, config::LAUNCHER_HEIGHT, &services);
                     cx.activate(true);
                 });
             }

@@ -22,7 +22,7 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
     #[cfg(target_os = "windows")]
     let mut cached_launcher_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
     #[cfg(target_os = "windows")]
-    let mut last_foreground_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
+    let mut launcher_was_foreground = false;
 
     cx.spawn(async move |cx| loop {
         state.borrow_mut().search.borrow_mut().poll();
@@ -79,22 +79,22 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
             if let Some(hwnd) = cached_launcher_hwnd {
                 if crate::platform::is_hwnd_visible(hwnd) {
                     let foreground = crate::platform::foreground_hwnd();
-                    match last_foreground_hwnd {
-                        None => last_foreground_hwnd = Some(foreground),
-                        Some(previous) if previous != foreground => {
-                            last_foreground_hwnd = Some(foreground);
-                            if foreground != hwnd && !crate::platform::cursor_hits_window(hwnd) {
-                                if let Some(handle) = state.borrow().window {
-                                    let _ = handle.update(cx, |_, window, cx| {
-                                        crate::window::hide_window(window, cx)
-                                    });
-                                }
-                            }
+                    if foreground == hwnd {
+                        launcher_was_foreground = true;
+                    } else if launcher_was_foreground {
+                        // Hide on every tick after a real focus loss, not only
+                        // on the transition frame. A newly opened window may
+                        // cover the launcher while the cursor remains over the
+                        // same screen point; that must not keep the stale
+                        // launcher visible indefinitely.
+                        launcher_was_foreground = false;
+                        if let Some(handle) = state.borrow().window {
+                            let _ = handle
+                                .update(cx, |_, window, cx| crate::window::hide_window(window, cx));
                         }
-                        Some(_) => {}
                     }
                 } else {
-                    last_foreground_hwnd = None;
+                    launcher_was_foreground = false;
                 }
             }
         }
