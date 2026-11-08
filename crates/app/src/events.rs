@@ -19,6 +19,17 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
     let tray_events = TrayIconEvent::receiver();
     let menu_events = MenuEvent::receiver();
 
+    // The activation observer handles the normal WM_ACTIVATE path. Windows can
+    // still leave a freshly shown launcher visible without making it the
+    // foreground window (for example when the foreground lock denies
+    // SetForegroundWindow), so the observer never receives the later
+    // deactivation. Watch the foreground as a fallback while the launcher is
+    // visible, without round-tripping through GPUI on every idle tick.
+    #[cfg(target_os = "windows")]
+    let mut cached_launcher_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
+    #[cfg(target_os = "windows")]
+    let mut last_foreground_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
+
     cx.spawn(async move |cx| loop {
         state.borrow_mut().search.borrow_mut().poll();
         drain_clipboard(&state);
@@ -54,6 +65,44 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
                 _ => {}
             }
         }
+
+        #[cfg(target_os = "windows")]
+        {
+            let handle = state.borrow().window;
+            match handle {
+                None => cached_launcher_hwnd = None,
+                Some(handle) if cached_launcher_hwnd.is_none() => {
+                    cached_launcher_hwnd = handle
+                        .update(cx, |_, window, _| crate::platform::hwnd(window))
+                        .ok()
+                        .flatten();
+                }
+                Some(_) => {}
+            }
+
+            if let Some(hwnd) = cached_launcher_hwnd {
+                if crate::platform::is_hwnd_visible(hwnd) {
+                    let foreground = crate::platform::foreground_hwnd();
+                    match last_foreground_hwnd {
+                        None => last_foreground_hwnd = Some(foreground),
+                        Some(previous) if previous != foreground => {
+                            last_foreground_hwnd = Some(foreground);
+                            if foreground != hwnd && !crate::platform::cursor_hits_window(hwnd) {
+                                if let Some(handle) = state.borrow().window {
+                                    let _ = handle.update(cx, |_, window, cx| {
+                                        crate::window::hide_window(window, cx)
+                                    });
+                                }
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                } else {
+                    last_foreground_hwnd = None;
+                }
+            }
+        }
+
         cx.background_executor()
             .timer(Duration::from_millis(20))
             .await;
