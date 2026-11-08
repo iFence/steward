@@ -9,6 +9,14 @@ Conventions:
 
 ## v0.3.0
 
+### Reliability
+
+- **Plugin launch diagnostics**: plugin packages are verified off the UI thread,
+  package receipts are accepted only after a healthy first frame, and launch
+  failures now appear as dismissible launcher notices.
+- **Support logs**: Steward writes daily rolling logs under its data directory
+  and retains seven days for troubleshooting.
+
 ### New Plugin Platform
 
 - **Native UI**: Steward's launcher runs as an NSH Rust surface on GPUI Fast,

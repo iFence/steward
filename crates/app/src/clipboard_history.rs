@@ -20,6 +20,7 @@ use std::{
 
 use crossbeam_channel::Sender;
 use steward_storage::Storage;
+use tracing::error;
 
 /// Clipboard snapshot handed to NSH plugin windows.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -61,7 +62,7 @@ fn run_watcher(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>, stop: Arc<Ato
     let storage = match Storage::open_at(&data_dir) {
         Ok(storage) => storage,
         Err(error) => {
-            eprintln!("[steward] clipboard watcher: cannot open storage: {error:#}");
+            error!(error = %format!("{error:#}"), "clipboard watcher cannot open storage");
             return;
         }
     };
@@ -71,7 +72,7 @@ fn run_watcher(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>, stop: Arc<Ato
     let mut clipboard = match arboard::Clipboard::new() {
         Ok(clipboard) => clipboard,
         Err(error) => {
-            eprintln!("[steward] clipboard watcher: cannot open clipboard: {error}");
+            error!(error = %error, "clipboard watcher cannot open clipboard");
             return;
         }
     };
@@ -91,9 +92,9 @@ fn run_watcher(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>, stop: Arc<Ato
                 last_text = Some(text.clone());
                 let now = unix_seconds();
                 if let Err(error) = storage.insert_clipboard(&text, now) {
-                    eprintln!("[steward] clipboard watcher: insert failed: {error:#}");
+                    error!(error = %format!("{error:#}"), "clipboard watcher insert failed");
                 } else if let Err(error) = storage.trim_clipboard(CLIPBOARD_HISTORY_LIMIT) {
-                    eprintln!("[steward] clipboard watcher: trim failed: {error:#}");
+                    error!(error = %format!("{error:#}"), "clipboard watcher trim failed");
                 }
                 let _ = tx.send(recent_entries(&storage));
             }

@@ -1,10 +1,11 @@
 //! Route launcher queries without loading any plugin VM.
 
 use nucleo::{Config, Matcher, Utf32Str, Utf32String};
-use steward_core_engine::search_haystacks;
 use steward_plugin_registry::{PluginCommand, TriggerType};
+use steward_search::search_haystacks;
 
 const MAX_ROUTE_HAYSTACKS: usize = 32;
+const MAX_ROUTE_HITS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteHit {
@@ -13,6 +14,7 @@ pub struct RouteHit {
     pub title: String,
     pub input: String,
     pub fuzzy: bool,
+    pub score: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +24,7 @@ struct Route {
     title: String,
     value: Option<String>,
     kind: TriggerType,
+    regex: Option<regex::Regex>,
     haystacks: Vec<Utf32String>,
     haystack_texts: Vec<String>,
 }
@@ -57,6 +60,10 @@ impl RouteIndex {
                 title: command.title.clone(),
                 value: command.trigger.value.clone(),
                 kind: command.trigger.kind,
+                regex: (command.trigger.kind == TriggerType::Regex)
+                    .then_some(command.trigger.value.as_deref())
+                    .flatten()
+                    .and_then(|pattern| regex::Regex::new(pattern).ok()),
                 haystacks,
                 haystack_texts,
             };
@@ -99,6 +106,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         input: query.to_owned(),
                         fuzzy: !strong_match(route, &needle_text),
+                        score,
                     },
                 ));
             }
@@ -122,6 +130,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         input: rest.trim().to_owned(),
                         fuzzy: false,
+                        score: u16::MAX,
                     });
                 }
             }
@@ -129,7 +138,7 @@ impl RouteIndex {
         hits.extend(prefix_hits);
 
         for route in &self.regexes {
-            if let Ok(regex) = regex::Regex::new(route.value.as_deref().unwrap_or("")) {
+            if let Some(regex) = &route.regex {
                 if regex.is_match(query) {
                     hits.push(RouteHit {
                         plugin_id: route.plugin_id.clone(),
@@ -137,10 +146,12 @@ impl RouteIndex {
                         title: route.title.clone(),
                         input: query.to_owned(),
                         fuzzy: false,
+                        score: u16::MAX,
                     });
                 }
             }
         }
+        hits.truncate(MAX_ROUTE_HITS);
         hits
     }
 }
@@ -231,5 +242,22 @@ mod tests {
         index.add_plugin("short", &[command("s", TriggerType::Prefix, Some("ca "))]);
         index.add_plugin("long", &[command("l", TriggerType::Prefix, Some("cal "))]);
         assert_eq!(index.match_query("cal x")[0].plugin_id, "long");
+    }
+
+    #[test]
+    fn results_are_capped_per_query() {
+        let mut index = RouteIndex::new();
+        let commands = (0..40)
+            .map(|index| command(&format!("run{index}"), TriggerType::Command, None))
+            .collect::<Vec<_>>();
+        index.add_plugin("p", &commands);
+        assert_eq!(index.match_query("run").len(), MAX_ROUTE_HITS);
+    }
+
+    #[test]
+    fn invalid_regexes_are_never_returned() {
+        let mut index = RouteIndex::new();
+        index.add_plugin("p", &[command("broken", TriggerType::Regex, Some("["))]);
+        assert!(index.match_query("anything").is_empty());
     }
 }

@@ -8,15 +8,16 @@ use nsh_core::keymap::When;
 use nsh_core::ui::{prelude::*, px, rgb};
 use steward_ui_components::{result_list, LauncherRow};
 
-use crate::services::{services, AppServices, RowAction, WindowCommand};
+use crate::services::{services, LauncherServices, RowAction, WindowCommand};
 
 const HEADER_HEIGHT: f32 = 60.0;
 const MAX_VISIBLE_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 42.0;
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(40);
 
 #[component]
 pub fn StewardLauncher() -> impl IntoElement {
-    let app: Arc<AppServices> = services().expect("launcher AppServices in EngineContext");
+    let app: Arc<LauncherServices> = services().expect("launcher services in EngineContext");
     let query = signal(String::new());
     let rows = signal(Vec::<LauncherRow>::new());
     let actions = signal(Vec::<RowAction>::new());
@@ -34,19 +35,38 @@ pub fn StewardLauncher() -> impl IntoElement {
             generation.set(next);
             let app = app.clone();
             let query_text = text.to_owned();
-            spawn(async move {
-                if let Some(reply) = app.search(next, query_text).await {
-                    if generation.get() == reply.generation {
-                        let visible_rows = reply.rows.len().min(MAX_VISIBLE_ROWS);
-                        let height = HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT;
-                        rows.set(reply.rows);
-                        actions.set(reply.actions);
-                        selected.set(0);
-                        first_visible.set(0);
-                        list_ref.scroll_to_index(0, percentage(0.0), px(0.0), false);
-                        app.send_window_command(WindowCommand::Resize { height });
-                    }
+            set_timeout(SEARCH_DEBOUNCE, move || {
+                if generation.get_untracked() != next {
+                    return;
                 }
+                spawn(async move {
+                    if let Some(reply) = app.search(next, query_text).await {
+                        if generation.get() == reply.generation {
+                            let mut rows_value = reply.rows;
+                            let mut actions_value = reply.actions;
+                            if let Some(notice) = app.notice() {
+                                rows_value.insert(
+                                    0,
+                                    LauncherRow {
+                                        id: "launch-notice".into(),
+                                        title: notice.title,
+                                        subtitle: notice.message,
+                                        icon: None,
+                                    },
+                                );
+                                actions_value.insert(0, RowAction::DismissNotice);
+                            }
+                            let visible_rows = rows_value.len().min(MAX_VISIBLE_ROWS);
+                            let height = HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT;
+                            rows.set(rows_value);
+                            actions.set(actions_value);
+                            selected.set(0);
+                            first_visible.set(0);
+                            list_ref.scroll_to_index(0, percentage(0.0), px(0.0), false);
+                            app.send_window_command(WindowCommand::Resize { height });
+                        }
+                    }
+                });
             });
         })
     };
@@ -238,7 +258,11 @@ fn next_selection(current: usize, len: usize, delta: isize) -> Option<usize> {
 /// evaluate the current query directly when it is selected instead of
 /// depending on an asynchronous search reply having updated `actions` yet.
 fn submission_action(actions: &[RowAction], selected: usize, text: &str) -> Option<RowAction> {
-    if selected == 0 {
+    if selected == 0
+        && actions
+            .first()
+            .is_none_or(|action| matches!(action, RowAction::CopyText(_)))
+    {
         if let Some(value) = steward_core_engine::try_evaluate(text.trim()) {
             return Some(RowAction::CopyText(steward_core_engine::format_value(
                 value,
@@ -299,6 +323,15 @@ mod tests {
     }
 
     #[test]
+    fn enter_dismisses_a_notice_instead_of_copying_a_calculation() {
+        let actions = [RowAction::DismissNotice, RowAction::CopyText("64".into())];
+        assert_eq!(
+            submission_action(&actions, 0, "8*8"),
+            Some(RowAction::DismissNotice)
+        );
+    }
+
+    #[test]
     fn summoning_again_clears_the_launcher_query() {
         let placeholder = "Search apps or type a command...";
         let (request_tx, _request_rx) = crossbeam_channel::unbounded();
@@ -322,7 +355,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
         ));
         let config = EngineConfig {
-            context: EngineContext::default().with(services.clone()),
+            context: EngineContext::default().with(std::sync::Arc::new(services.launcher())),
             ..EngineConfig::new(Root::of::<StewardLauncher>())
         };
         let mut app = Headless::start(config).unwrap();

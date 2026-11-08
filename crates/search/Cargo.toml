@@ -1,0 +1,8 @@
+[package]
+name = "steward-search"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nucleo.workspace = true
+pinyin.workspace = true

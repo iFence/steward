@@ -10,10 +10,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use nucleo::{Config, Matcher, Utf32Str, Utf32String};
-use pinyin::ToPinyinMulti;
 use serde::{Deserialize, Serialize};
 
 pub use nucleo;
+pub use steward_search::search_haystacks;
 
 mod scanner;
 
@@ -175,119 +175,6 @@ impl Engine {
     fn path_key(&self, app: &AppEntry) -> String {
         app.path.to_string_lossy().into_owned()
     }
-}
-
-/// Build the search haystack variants for a label or keyword: the text itself
-/// plus, for Chinese text, compact full pinyin (`zidongbofang`), full pinyin
-/// with spaces (`zi dong bo fang`) and first-letter initials (`zdbf`), so
-/// queries like `zd` can find 终端 / 自动播放 / 设置向导 the way other launchers
-/// do. Characters without a pinyin reading (Latin, digits, punctuation) are
-/// copied through, keeping mixed names such as "QQ音乐" searchable by either
-/// part. App names and plugin keywords share this matcher vocabulary.
-pub fn search_haystacks(name: &str) -> Vec<Utf32String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut variants = Vec::new();
-    for text in std::iter::once(name.to_owned()).chain(pinyin_variants(name)) {
-        if seen.insert(text.clone()) {
-            variants.push(Utf32String::from(text));
-        }
-    }
-    variants
-}
-
-/// Pinyin search forms for `name`. Pure-Latin names yield no extra variants
-/// (the caller keeps the original name, and nucleo is case-insensitive).
-fn pinyin_variants(name: &str) -> Vec<String> {
-    let mut full_variants = vec![String::new()];
-    let mut spaced_variants = vec![String::new()];
-    let mut initials_variants = vec![String::new()];
-
-    for ch in name.chars() {
-        if let Some(multi) = ch.to_pinyin_multi() {
-            let mut readings = Vec::new();
-            let mut letters = Vec::new();
-            for syllable in multi {
-                readings.push(syllable.plain());
-                letters.push(syllable.first_letter());
-            }
-            // Cartesian product over all readings (polyphones like 乐 have
-            // yue/le, 行 has xing/hang), capped so names with several
-            // polyphones cannot blow up the index.
-            full_variants =
-                expand_pinyin(full_variants, &readings, |acc, part| format!("{acc}{part}"));
-            spaced_variants = expand_pinyin(spaced_variants, &readings, |acc, part| {
-                if acc.is_empty() {
-                    part.to_string()
-                } else {
-                    format!("{acc} {part}")
-                }
-            });
-            initials_variants = expand_pinyin(initials_variants, &letters, |acc, part| {
-                format!("{acc}{part}")
-            });
-        } else if !ch.is_whitespace() {
-            let c = ch.to_ascii_lowercase();
-            for variant in &mut full_variants {
-                variant.push(c);
-            }
-            for variant in &mut spaced_variants {
-                if !variant.is_empty() {
-                    variant.push(' ');
-                }
-                variant.push(c);
-            }
-            for variant in &mut initials_variants {
-                variant.push(c);
-            }
-        }
-    }
-
-    let lowercase = name.to_ascii_lowercase();
-    let mut variants = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for text in full_variants
-        .into_iter()
-        .chain(spaced_variants)
-        .chain(initials_variants)
-    {
-        if text.is_empty() || text == lowercase {
-            continue;
-        }
-        if seen.insert(text.clone()) {
-            variants.push(text);
-        }
-        if variants.len() >= MAX_PINYIN_HANSTACKS {
-            break;
-        }
-    }
-    variants
-}
-
-/// Upper bound on pinyin search forms generated per app name.
-const MAX_PINYIN_HANSTACKS: usize = 12;
-
-/// Combine every existing variant with every reading, stopping once
-/// [`MAX_PINYIN_HANSTACKS`] is reached.
-fn expand_pinyin(
-    variants: Vec<String>,
-    parts: &[&str],
-    combine: impl Fn(String, &str) -> String,
-) -> Vec<String> {
-    let mut out = Vec::with_capacity(
-        variants
-            .len()
-            .saturating_mul(parts.len())
-            .min(MAX_PINYIN_HANSTACKS),
-    );
-    'outer: for variant in variants {
-        for part in parts {
-            if out.len() >= MAX_PINYIN_HANSTACKS {
-                break 'outer;
-            }
-            out.push(combine(variant.clone(), part));
-        }
-    }
-    out
 }
 
 impl ScoredApp {

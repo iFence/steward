@@ -2,6 +2,9 @@
 
 > Current architecture as of v0.3.0. The migration plan, evidence, and release
 > gates are in [nsh-migration.md](nsh-migration.md).
+>
+> The tracked plugin-platform responsibilities and hardening work are in
+> [plugin-platform-refactor.md](plugin-platform-refactor.md).
 
 ## Product Shape
 
@@ -49,10 +52,17 @@ inside `crates/app/src/plugin_window.rs` when a verified package opens.
 |---|---|
 | `steward-app` | GPUI Fast application, windows, tray, hotkey, search events, plugin windows |
 | `steward-core-engine` | application matching, calculator, URL detection |
+| `steward-search` | shared pinyin haystacks and fuzzy-search vocabulary |
+| `steward-plugin-contract` | versioned launch, notice, error, and session DTOs |
 | `steward-plugin-registry` | strict `plugin.json` v2 parser and SQLite route cache |
-| `steward-plugin-host` | package trust, signature/certificate verification, route index, launch preparation |
+| `steward-plugin-host` | catalog/route facade, package trust, capability policy, asynchronous launch preparation |
 | `steward-storage` | SQLite settings, usage, app cache, and clipboard rows |
 | `steward-ui-components` | NSH Rust launcher rows and palette |
+
+The application splits launcher search into built-in, application, and plugin
+sources. A narrow launcher service exposes only the query, command, settings,
+and notice ports needed by the NSH shell; settings and plugin windows continue
+to share the application-service composition root.
 
 There is no plugin-runtime executable and no custom IPC protocol crate.
 

@@ -2,53 +2,73 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use gpui::{
     px, size, App, AppContext, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions,
 };
 use nsh_engine::HostChannel;
 use nsh_platform_gpui::AppOptions;
+use steward_plugin_contract::LaunchRequest;
+use steward_plugin_host::PluginLaunch;
 
 use crate::nsh_surface::{new_view, plugin_limits};
 use crate::services::WindowCommand;
-use crate::state::{AppState, PluginWindow};
+use crate::state::{AppState, PluginRuntimeEvent, PluginWindow};
 
-pub(crate) fn open_or_focus(
+const PLUGIN_WINDOW_WIDTH: f32 = 900.0;
+const PLUGIN_WINDOW_HEIGHT: f32 = 680.0;
+const FIRST_FRAME_GRACE: Duration = Duration::from_millis(250);
+
+pub(crate) fn focus_and_send(
+    cx: &mut App,
+    state: &Rc<RefCell<AppState>>,
+    request: &LaunchRequest,
+) -> bool {
+    let existing = {
+        let state_ref = state.borrow();
+        state_ref
+            .plugin_windows
+            .get(&request.plugin_id)
+            .map(|window| (window.host.clone(), window.handle))
+    };
+    let Some((host, handle)) = existing else {
+        return false;
+    };
+    let _ = host.send(
+        "steward.command",
+        serde_json::json!({
+            "command": request.command,
+            "input": request.input,
+        }),
+    );
+    let _ = handle.update(cx, |_, window, cx| {
+        crate::platform::show(window, PLUGIN_WINDOW_WIDTH, PLUGIN_WINDOW_HEIGHT);
+        cx.activate(true);
+    });
+    true
+}
+
+pub(crate) fn open_launch(
     cx: &mut App,
     state: Rc<RefCell<AppState>>,
-    plugin_id: String,
-    command: String,
-    title: String,
-    input: String,
+    initial: LaunchRequest,
+    latest: LaunchRequest,
+    launch: PluginLaunch,
 ) -> anyhow::Result<()> {
-    if let Some(existing) = state.borrow().plugin_windows.get(&plugin_id) {
-        let _ = existing.host.send(
-            "steward.command",
-            serde_json::json!({ "command": command, "input": input }),
-        );
-        let handle = existing.handle;
-        let _ = handle.update(cx, |_, window, cx| {
-            crate::platform::show(window, 900.0, 680.0);
-            cx.activate(true);
-        });
+    if focus_and_send(cx, &state, &latest) {
         return Ok(());
     }
 
-    let (launch, services, data_dir, entries) = {
+    let (services, data_dir, entries, events) = {
         let state_ref = state.borrow();
-        let services = state_ref.services.clone();
-        let locale = services.locale();
-        let accent = services.accent();
-        let launch = state_ref
-            .search
-            .borrow()
-            .prepare_launch(&plugin_id, &command, &title, &input, &locale, &accent)?;
-        state_ref.search.borrow_mut().accept_launch(&launch)?;
         (
-            launch,
-            services,
+            state_ref.services.clone(),
             state_ref.data_dir.join("nsh-data"),
             state_ref.clipboard_entries.clone(),
+            state_ref.plugin_events.clone(),
         )
     };
 
@@ -65,19 +85,28 @@ pub(crate) fn open_or_focus(
         }
     });
     host.handle("steward.window.close", {
-        let plugin_id = plugin_id.clone();
+        let request = initial.clone();
         let services = services.clone();
         move |call| {
-            services.send_window_command(WindowCommand::ClosePlugin(plugin_id.clone()));
+            services.send_window_command(WindowCommand::ClosePlugin(request.plugin_id.clone()));
             call.resolve(serde_json::json!({}));
         }
     });
 
+    let plugin_id = initial.plugin_id.clone();
+    let window_plugin_id = plugin_id.clone();
     let app_id = launch.app_id.clone();
     let package = launch.package;
-    let window_plugin_id = plugin_id.clone();
+    let receipt = package.receipt.clone();
     let data_plugin_id = plugin_id.clone();
-    let bounds = Bounds::centered(None, size(px(900.0), px(680.0)), cx);
+    let title = initial.title.clone();
+    let bounds = Bounds::centered(
+        None,
+        size(px(PLUGIN_WINDOW_WIDTH), px(PLUGIN_WINDOW_HEIGHT)),
+        cx,
+    );
+    let fatal_error = Arc::new(Mutex::new(None::<String>));
+    let healthy = Arc::new(AtomicBool::new(false));
     let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -92,10 +121,14 @@ pub(crate) fn open_or_focus(
         },
         {
             let host = host.clone();
+            let events = events.clone();
+            let fatal_error = fatal_error.clone();
+            let healthy = healthy.clone();
+            let error_request = initial.clone();
             move |window, cx| {
                 cx.new(|cx| {
                     let options = AppOptions {
-                        app_id: app_id.clone(),
+                        app_id,
                         title: window_plugin_id.clone(),
                         data_dir: Some(data_dir.join(&data_plugin_id)),
                         limits: plugin_limits(),
@@ -103,6 +136,38 @@ pub(crate) fn open_or_focus(
                         ..AppOptions::default()
                     };
                     let view = new_view(options, window, cx);
+                    view.on_app_error({
+                        let events = events.clone();
+                        let fatal_error = fatal_error.clone();
+                        let healthy = healthy.clone();
+                        let request = error_request.clone();
+                        move |error| {
+                            tracing::error!(
+                                plugin_id = %request.plugin_id,
+                                error = %error,
+                                fatal = error.is_fatal(),
+                                "plugin application error"
+                            );
+                            if error.is_fatal() {
+                                let message = error.to_string();
+                                if let Ok(mut fatal) = fatal_error.lock() {
+                                    if fatal.is_none() {
+                                        *fatal = Some(message.clone());
+                                        let _ = events.send(PluginRuntimeEvent::Failed {
+                                            plugin_id: request.plugin_id.clone(),
+                                            request: request.clone(),
+                                            code: if healthy.load(Ordering::Relaxed) {
+                                                steward_plugin_contract::PluginErrorCode::RuntimeError
+                                            } else {
+                                                steward_plugin_contract::PluginErrorCode::FirstFrameFailed
+                                            },
+                                            error: message,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    });
                     view.run_package(&package);
                     view.focus_handle(cx).focus(window, cx);
                     view
@@ -111,12 +176,33 @@ pub(crate) fn open_or_focus(
         },
     )?;
     state.borrow_mut().plugin_windows.insert(
-        plugin_id,
+        plugin_id.clone(),
         PluginWindow {
             handle: handle.into(),
             host,
         },
     );
+
+    let initial_for_focus = initial.clone();
+    if latest.command != initial_for_focus.command || latest.input != initial_for_focus.input {
+        let _ = focus_and_send(cx, &state, &latest);
+    }
+
+    let events = events.clone();
+    let fatal_error_for_timer = fatal_error.clone();
+    let healthy_for_timer = healthy.clone();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(FIRST_FRAME_GRACE).await;
+        if fatal_error_for_timer
+            .lock()
+            .map(|fatal| fatal.is_none())
+            .unwrap_or(false)
+        {
+            healthy_for_timer.store(true, Ordering::Relaxed);
+            let _ = events.send(PluginRuntimeEvent::Healthy { plugin_id, receipt });
+        }
+    })
+    .detach();
     Ok(())
 }
 

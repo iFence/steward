@@ -28,7 +28,7 @@ pub(crate) fn shell_options(
         title: "Steward".into(),
         data_dir: Some(data_dir),
         limits: Limits::standalone(),
-        context: EngineContext::default().with(services),
+        context: EngineContext::default().with(Arc::new(services.launcher())),
         ..AppOptions::default()
     }
 }
@@ -39,6 +39,6 @@ pub(crate) fn new_view(
     cx: &mut gpui::Context<AppView>,
 ) -> AppView {
     let view = AppView::new(options, window, cx);
-    view.on_app_error(|error| eprintln!("[steward][nsh] {error}"));
+    view.on_app_error(|error| tracing::error!(error = %error, "NSH application error"));
     view
 }

@@ -5,6 +5,9 @@
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
 > commands, results, deviations, and any remaining release gates.
+>
+> Phases 1 and 2 of the follow-up plugin-platform work are tracked in
+> [plugin-platform-refactor.md](plugin-platform-refactor.md).
 
 ## Why NSH
 
@@ -390,12 +393,10 @@ release measurements. NSH-4 remains open until the gates above are measured.
 
 ## Known Risks Before Release
 
-- Package verification and unpacking currently happen synchronously on the
-  UI/event thread in `PluginHost::prepare_launch`. Move this work to a worker
-  before packages or disks become large enough to stall the launcher.
-- The verified package receipt is accepted before the first NSH frame is
-  confirmed healthy. The release candidate should accept the receipt only after
-  the window reaches a healthy first frame.
+- Package verification and receipt handling are now asynchronous: launch work
+  runs on a worker and a receipt is accepted only after the first frame plus a
+  250 ms fatal-error grace period. See
+  [plugin-platform-refactor.md](plugin-platform-refactor.md).
 - Automated coverage verifies routing, manifests, signing, headless plugin
   behavior, and process-level window opening. Interactive settings controls,
   IME, and input-driven hotkey replacement still need a Windows UI acceptance

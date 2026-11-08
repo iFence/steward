@@ -6,7 +6,8 @@ autotests = false
 
 [dependencies]
 steward-plugin-registry = { path = "../plugin-registry" }
-steward-core-engine = { path = "../core-engine" }
+steward-plugin-contract = { path = "../plugin-contract" }
+steward-search = { path = "../search" }
 nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-package.workspace = true
@@ -15,3 +16,4 @@ serde_json.workspace = true
 anyhow.workspace = true
 regex.workspace = true
 nucleo.workspace = true
+crossbeam-channel.workspace = true

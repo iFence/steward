@@ -8,6 +8,7 @@ use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyManager,
 };
+use tracing::warn;
 
 use crate::config::SUMMON_HOTKEY_SETTING;
 use crate::state::AppState;
@@ -27,7 +28,11 @@ pub(crate) fn setup(state: &Rc<RefCell<AppState>>) -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("create global hotkey manager")?;
     let mut hotkey = persisted_summon_hotkey(&state.borrow().storage.borrow());
     if let Err(error) = manager.register(hotkey) {
-        eprintln!("failed to register summon hotkey {hotkey}: {error:#}; falling back to default");
+        warn!(
+            hotkey = %hotkey,
+            error = %format!("{error:#}"),
+            "failed to register summon hotkey; falling back to default"
+        );
         hotkey = default_summon_hotkey();
         manager
             .register(hotkey)

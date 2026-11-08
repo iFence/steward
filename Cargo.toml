@@ -3,8 +3,10 @@ resolver = "2"
 members = [
     "crates/app",
     "crates/core-engine",
+    "crates/plugin-contract",
     "crates/plugin-host",
     "crates/plugin-registry",
+    "crates/search",
     "crates/storage",
     "crates/ui-components",
 ]
@@ -41,6 +43,8 @@ arboard = "3"
 pinyin = { version = "0.11", default-features = false, features = ["plain", "heteronym"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
 anyhow = "1"
 dirs = "6"
 crossbeam-channel = "0.5"

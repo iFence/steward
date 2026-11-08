@@ -39,11 +39,15 @@ steward-storage = { path = "../storage" }
 steward-ui-components = { path = "../ui-components" }
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-plugin-host = { path = "../plugin-host" }
+steward-plugin-contract = { path = "../plugin-contract" }
 serde_json.workspace = true
 serde.workspace = true
 tokio.workspace = true
 arboard.workspace = true
 base64.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon.workspace = true

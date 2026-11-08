@@ -31,3 +31,4 @@ settings-launch-at-startup = Launch at Startup
 settings-accent-color = Accent Color
 settings-summon-steward = Summon Steward
 settings-hotkey-invalid = Enter a valid key binding, for example control+alt+Space.
+plugin-launch-failed = Unable to open plugin

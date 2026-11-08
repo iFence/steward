@@ -1,14 +1,22 @@
 //! Steward's NSH plugin catalog, route index, and signed-package launcher.
 
+mod catalog;
+mod launcher;
+mod policy;
 mod route;
+mod trust;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use nsh_engine::{verify_package, Capabilities, LoadedPackage};
-use nsh_package::{PublicKey, TrustStore};
+use nsh_engine::LoadedPackage;
+use nsh_package::PackageReceipt;
+use steward_plugin_contract::{LaunchRequest, PluginErrorCode};
 use steward_plugin_registry::PluginMeta;
+
+use catalog::PluginCatalog;
+use launcher::LaunchMetadata;
+use trust::PackageTrust;
 
 pub use route::{RouteHit, RouteIndex};
 
@@ -41,46 +49,56 @@ pub enum PluginHostError {
     CommandNotFound { plugin_id: String, command: String },
     #[error("plugin package failed verification: {0}")]
     Package(String),
+    #[error("read plugin package: {0}")]
+    ReadFailed(String),
     #[error("plugin package id '{actual}' does not match manifest id '{expected}'")]
     IdMismatch { expected: String, actual: String },
     #[error("plugin package version '{actual}' does not match manifest version '{expected}'")]
     VersionMismatch { expected: String, actual: String },
     #[error("no NSH trust root is configured")]
     NoTrustRoot,
+    #[error("plugin launch worker exited without a result")]
+    WorkerExited,
+}
+
+impl PluginHostError {
+    pub fn code(&self) -> PluginErrorCode {
+        match self {
+            Self::NotFound(_) => PluginErrorCode::NotFound,
+            Self::CommandNotFound { .. } => PluginErrorCode::CommandNotFound,
+            Self::Package(_) | Self::NoTrustRoot => PluginErrorCode::TrustFailure,
+            Self::ReadFailed(_) => PluginErrorCode::ReadFailed,
+            Self::IdMismatch { .. } => PluginErrorCode::IdMismatch,
+            Self::VersionMismatch { .. } => PluginErrorCode::VersionMismatch,
+            Self::WorkerExited => PluginErrorCode::RuntimeError,
+        }
+    }
 }
 
 pub struct PluginHost {
     config: HostConfig,
     routes: RouteIndex,
-    plugins: HashMap<String, PluginMeta>,
-    trust: TrustStore,
+    catalog: PluginCatalog,
+    trust: PackageTrust,
 }
 
 impl PluginHost {
     pub fn new(config: HostConfig) -> Result<Self> {
-        let trust = TrustStore::open(config.data_dir.join("nsh-trust"))
-            .map_err(|error| anyhow::anyhow!("open NSH trust store: {error}"))?;
+        let trust = PackageTrust::new(config.data_dir.join("nsh-trust"))?;
         Ok(Self {
             config,
             routes: RouteIndex::new(),
-            plugins: HashMap::new(),
+            catalog: PluginCatalog::default(),
             trust,
         })
     }
 
     pub fn add_trust_root_base64(&mut self, key: &str) -> Result<()> {
-        let key = PublicKey::from_base64(key)
-            .map_err(|error| anyhow::anyhow!("invalid NSH trust root: {error}"))?;
-        self.trust.add_root(key);
-        Ok(())
+        self.trust.add_root_base64(key)
     }
 
     pub fn set_plugins(&mut self, metas: &[PluginMeta]) {
-        self.plugins = metas
-            .iter()
-            .cloned()
-            .map(|meta| (meta.manifest.id.clone(), meta))
-            .collect();
+        self.catalog.set_plugins(metas);
         self.routes.clear();
         for meta in metas {
             self.routes
@@ -96,79 +114,58 @@ impl PluginHost {
         self.routes.len()
     }
 
-    pub fn prepare_launch(
+    /// Verifies a launch package on a worker after validating routing metadata
+    /// and trust-root availability on the caller's thread.
+    pub fn start_launch(
         &self,
-        plugin_id: &str,
-        command: &str,
-        input: &str,
-        locale: &str,
-        accent: &str,
-        dark: bool,
-    ) -> std::result::Result<PluginLaunch, PluginHostError> {
+        request: LaunchRequest,
+    ) -> std::result::Result<
+        crossbeam_channel::Receiver<std::result::Result<PluginLaunch, PluginHostError>>,
+        PluginHostError,
+    > {
+        let metadata = self.launch_metadata(&request)?;
+        let roots = self.trust.roots().to_vec();
+        let data_dir = self.config.data_dir.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(launcher::load(metadata, &roots, &data_dir));
+        });
+        Ok(rx)
+    }
+
+    pub fn accept_receipt(&mut self, receipt: &PackageReceipt) -> Result<()> {
+        self.trust
+            .accept_receipt(receipt)
+            .map_err(|error| anyhow::anyhow!("accept NSH package: {error}"))
+    }
+
+    fn launch_metadata(
+        &self,
+        request: &LaunchRequest,
+    ) -> std::result::Result<LaunchMetadata, PluginHostError> {
         let meta = self
-            .plugins
-            .get(plugin_id)
-            .ok_or_else(|| PluginHostError::NotFound(plugin_id.to_owned()))?;
-        let _command_meta = meta
+            .catalog
+            .get(&request.plugin_id)
+            .ok_or_else(|| PluginHostError::NotFound(request.plugin_id.clone()))?;
+        if !meta
             .manifest
             .commands
             .iter()
-            .find(|candidate| candidate.name == command)
-            .ok_or_else(|| PluginHostError::CommandNotFound {
-                plugin_id: plugin_id.to_owned(),
-                command: command.to_owned(),
-            })?;
-        if self.trust.roots().is_empty() {
+            .any(|command| command.name == request.command)
+        {
+            return Err(PluginHostError::CommandNotFound {
+                plugin_id: request.plugin_id.clone(),
+                command: request.command.clone(),
+            });
+        }
+        if !self.trust.has_roots() {
             return Err(PluginHostError::NoTrustRoot);
         }
-        let bytes = std::fs::read(&meta.package).map_err(|error| {
-            PluginHostError::Package(format!("read {}: {error}", meta.package.display()))
-        })?;
-        let mut package = verify_package(
-            &self.trust,
-            &bytes,
-            &self.config.data_dir.join("nsh-assets"),
-        )
-        .map_err(PluginHostError::Package)?;
-        if package.app.id != meta.manifest.id {
-            return Err(PluginHostError::IdMismatch {
-                expected: meta.manifest.id.clone(),
-                actual: package.app.id.clone(),
-            });
-        }
-        if package.app.version != meta.manifest.version {
-            return Err(PluginHostError::VersionMismatch {
-                expected: meta.manifest.version.clone(),
-                actual: package.app.version.clone(),
-            });
-        }
-        let mut granted = Capabilities::default();
-        granted.clipboard = true;
-        granted.fs.read = vec!["${dataDir}".into()];
-        granted.fs.write = vec!["${dataDir}".into()];
-        granted.host = vec!["steward.*".into()];
-        let mut open_url = nsh_core::access::OpenUrlGrant::default();
-        open_url.schemes = vec!["https".into(), "mailto".into()];
-        granted.open_url = Some(open_url);
-        package.bundle.policy.granted = Some(granted);
-        let mut params = serde_json::Map::new();
-        params.insert("pluginId".into(), plugin_id.into());
-        params.insert("command".into(), command.into());
-        params.insert("input".into(), input.into());
-        params.insert("locale".into(), locale.into());
-        params.insert("accent".into(), accent.into());
-        params.insert("dark".into(), dark.into());
-        Ok(PluginLaunch {
-            plugin_id: plugin_id.to_owned(),
-            app_id: package.app.id.clone(),
-            package,
-            params,
+        Ok(LaunchMetadata {
+            request: request.clone(),
+            package_path: meta.package.clone(),
+            expected_id: meta.manifest.id.clone(),
+            expected_version: meta.manifest.version.clone(),
         })
-    }
-
-    pub fn accept_launch(&mut self, launch: &PluginLaunch) -> Result<()> {
-        self.trust
-            .accept_receipt(&launch.package.receipt)
-            .map_err(|error| anyhow::anyhow!("accept NSH package: {error}"))
     }
 }

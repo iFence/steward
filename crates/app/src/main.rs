@@ -8,12 +8,15 @@ mod autostart;
 mod clipboard_history;
 mod config;
 mod events;
+mod handlers;
 mod hotkeys;
 mod i18n;
 mod launch;
+mod logging;
 mod nsh_surface;
 mod platform;
 mod plugin_window;
+mod search;
 mod services;
 mod settings;
 mod shell;
@@ -30,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use gpui::App;
 use gpui_platform::application;
 use steward_storage::Storage;
+use tracing::{error, info, warn};
 
 use crate::config::{DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
 use crate::i18n::Localization;
@@ -46,12 +50,6 @@ fn main() {
         return;
     }
 
-    #[cfg(target_os = "windows")]
-    platform::set_dpi_awareness();
-    #[cfg(target_os = "windows")]
-    platform::enable_dark_mode();
-    autostart::repair_autostart_path();
-
     let data_dir = std::env::var_os("STEWARD_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -59,6 +57,19 @@ fn main() {
                 .expect("no OS data directory available")
                 .join("Steward")
         });
+    let log_guard = match logging::init(&data_dir) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            eprintln!("failed to initialize file logging: {error:#}");
+            None
+        }
+    };
+    info!(data_dir = %data_dir.display(), "starting Steward");
+    #[cfg(target_os = "windows")]
+    platform::set_dpi_awareness();
+    #[cfg(target_os = "windows")]
+    platform::enable_dark_mode();
+    autostart::repair_autostart_path();
     let storage = Rc::new(RefCell::new(
         Storage::open().expect("failed to open the Steward storage database"),
     ));
@@ -89,6 +100,7 @@ fn main() {
 
     let (request_tx, request_rx) = crossbeam_channel::unbounded();
     let (command_tx, command_rx) = crossbeam_channel::unbounded();
+    let (plugin_event_tx, plugin_event_rx) = crossbeam_channel::unbounded();
     let services = Arc::new(AppServices::new(
         request_tx,
         command_tx,
@@ -123,7 +135,10 @@ fn main() {
         hotkey_manager: None,
         summon_hotkey: None,
         plugin_windows: Default::default(),
+        plugin_events: plugin_event_tx,
+        plugin_events_rx: plugin_event_rx,
         _clipboard_watcher: clipboard_watcher,
+        _log_guard: log_guard,
     }));
 
     application().with_assets(gpui_kit::assets::Assets).run({
@@ -149,44 +164,29 @@ fn main() {
 
             match tray::setup_tray(&i18n) {
                 Ok(tray) => *state.borrow().tray.borrow_mut() = Some(tray),
-                Err(error) => eprintln!("failed to create tray icon: {error:#}"),
+                Err(error) => error!(error = %format!("{error:#}"), "failed to create tray icon"),
             }
             if let Err(error) = hotkeys::setup(&state) {
-                eprintln!("failed to setup summon hotkey: {error:#}");
+                error!(error = %format!("{error:#}"), "failed to setup summon hotkey");
             }
             if let Err(error) = events::spawn(state.clone(), cx) {
-                eprintln!("failed to start event loop: {error:#}");
+                error!(error = %format!("{error:#}"), "failed to start event loop");
             }
             if let Ok(plugin_id) = std::env::var("STEWARD_SMOKE_PLUGIN") {
-                let smoke_state = state.clone();
                 let command =
                     std::env::var("STEWARD_SMOKE_COMMAND").unwrap_or_else(|_| plugin_id.clone());
                 let title =
                     std::env::var("STEWARD_SMOKE_TITLE").unwrap_or_else(|_| command.clone());
-                cx.spawn(async move |cx| {
-                    for _ in 0..50 {
-                        let id = plugin_id.clone();
-                        let cmd = command.clone();
-                        let result = cx.update(|cx| {
-                            crate::plugin_window::open_or_focus(
-                                cx,
-                                smoke_state.clone(),
-                                id.clone(),
-                                cmd.clone(),
-                                title.clone(),
-                                cmd.clone(),
-                            )
-                        });
-                        if result.is_ok() {
-                            return;
-                        }
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(100))
-                            .await;
-                    }
-                    eprintln!("smoke plugin did not become available");
-                })
-                .detach();
+                state.borrow().services.send_window_command(
+                    crate::services::WindowCommand::Activate(
+                        crate::services::RowAction::OpenPlugin {
+                            plugin_id,
+                            command,
+                            title,
+                            input: String::new(),
+                        },
+                    ),
+                );
             }
 
             let closed_state = state.clone();
@@ -224,7 +224,7 @@ fn load_trust_roots(search: &Rc<RefCell<SearchState>>) {
     }
     for root in roots {
         if let Err(error) = search.borrow_mut().add_trust_root(root.trim()) {
-            eprintln!("ignoring invalid NSH trust root: {error:#}");
+            warn!(error = %format!("{error:#}"), "ignoring invalid NSH trust root");
         }
     }
 }

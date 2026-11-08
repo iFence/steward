@@ -2,6 +2,7 @@
 
 #[cfg(any(target_os = "windows", test))]
 use std::path::{Path, PathBuf};
+use tracing::{error, warn};
 
 /// Per-user autostart registry key (HKCU\...\Run). Values run at logon before
 /// the shell starts; no admin rights are needed to write the current user's
@@ -56,17 +57,17 @@ pub(crate) fn autostart_enabled() -> bool {
 pub(crate) fn set_autostart(enabled: bool) -> bool {
     if enabled {
         let Ok(exe) = std::env::current_exe() else {
-            eprintln!("autostart: cannot resolve the current executable path");
+            error!("autostart cannot resolve the current executable path");
             return autostart_enabled();
         };
         let result = write_autostart_value(&quote_autostart_value(&exe));
         if result != 0 {
-            eprintln!("autostart: registry update failed with error 0x{result:x}");
+            error!(result, "autostart registry update failed");
         }
     } else {
         let result = delete_autostart_value();
         if result != 0 && result != ERROR_FILE_NOT_FOUND {
-            eprintln!("autostart: registry delete failed with error 0x{result:x}");
+            error!(result, "autostart registry delete failed");
         }
     }
     autostart_enabled()
@@ -87,7 +88,7 @@ pub(crate) fn sync_autostart_path() -> bool {
         return false;
     };
     let Ok(exe) = std::env::current_exe() else {
-        eprintln!("autostart: cannot resolve the current executable path");
+        error!("autostart cannot resolve the current executable path");
         return false;
     };
     let quoted = quote_autostart_value(&exe);
@@ -96,7 +97,7 @@ pub(crate) fn sync_autostart_path() -> bool {
     }
     let result = write_autostart_value(&quoted);
     if result != 0 {
-        eprintln!("autostart: registry update failed with error 0x{result:x}");
+        error!(result, "autostart registry update failed");
         return false;
     }
     true
@@ -125,7 +126,7 @@ pub(crate) fn repair_autostart_path() -> bool {
     };
     let result = write_autostart_value(&quote_autostart_value(&exe));
     if result != 0 {
-        eprintln!("autostart: registry repair failed with error 0x{result:x}");
+        error!(result, "autostart registry repair failed");
         return false;
     }
     true
@@ -142,7 +143,7 @@ pub(crate) fn repair_autostart_path() -> bool {
 pub(crate) fn unregister_autostart() -> bool {
     let result = delete_autostart_value();
     if result != 0 && result != ERROR_FILE_NOT_FOUND {
-        eprintln!("autostart: registry delete failed with error 0x{result:x}");
+        warn!(result, "autostart registry delete failed");
         return false;
     }
     !autostart_enabled()

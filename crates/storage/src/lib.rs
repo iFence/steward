@@ -4,12 +4,16 @@
 //! (so cold start renders before the first scan finishes) and per-application
 //! usage frequency used to rank launcher results.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
 use steward_core_engine::AppEntry;
+
+mod apps;
+mod clipboard;
+mod schema;
+mod settings;
 
 /// The on-disk database file name inside the data directory.
 const DB_FILE: &str = "steward.db";
@@ -71,53 +75,17 @@ impl Storage {
     }
 
     fn migrate(&self) -> Result<()> {
-        self.conn
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS apps (
-                    path TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    last_seen INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS usage (
-                    path TEXT PRIMARY KEY,
-                    count INTEGER NOT NULL DEFAULT 0,
-                    last_used INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS clipboard_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    text TEXT NOT NULL,
-                    copied_at INTEGER NOT NULL
-                );
-                -- File search was removed; drop snapshots left by older builds.
-                DROP TABLE IF EXISTS settings_blob;
-                DELETE FROM settings WHERE key = 'file_index';",
-            )
-            .context("run schema migrations")
+        schema::migrate(&self.conn)
     }
 
     /// Read a persisted application setting, or `None` when it was never set.
     pub fn get_setting(&self, key: &str) -> Option<String> {
-        self.conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", (key,), |row| {
-                row.get::<_, String>(0)
-            })
-            .ok()
+        settings::get(&self.conn, key)
     }
 
     /// Persist an application setting (insert or replace).
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT INTO settings(key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, value),
-            )
-            .context("set setting")?;
-        Ok(())
+        settings::set(&self.conn, key, value)
     }
 
     /// Record that `text` was copied to the clipboard at `copied_at` (unix
@@ -125,84 +93,33 @@ impl Storage {
     /// textual clipboard change; consecutive duplicates are collapsed by the
     /// watcher, not here. The cache is capped later by `trim_clipboard`.
     pub fn insert_clipboard(&self, text: &str, copied_at: i64) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT INTO clipboard_history(text, copied_at) VALUES (?1, ?2)",
-                (text, copied_at),
-            )
-            .context("insert clipboard history")?;
-        Ok(())
+        clipboard::insert(&self.conn, text, copied_at)
     }
 
     /// The most recent `limit` clipboard entries, newest first.
     pub fn recent_clipboard(&self, limit: i64) -> Result<Vec<ClipboardHistoryRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT id, text, copied_at FROM clipboard_history
-                 ORDER BY copied_at DESC, id DESC LIMIT ?1",
-            )
-            .context("prepare recent clipboard query")?;
-        let rows = stmt
-            .query_map([limit], |row| {
-                Ok(ClipboardHistoryRow {
-                    id: row.get(0)?,
-                    text: row.get(1)?,
-                    copied_at: row.get(2)?,
-                })
-            })
-            .context("query recent clipboard")?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("collect recent clipboard")
+        clipboard::recent(&self.conn, limit)
     }
 
     /// Drop clipboard history older than `keep` newest rows (compact for long
     /// sessions). Called by the watcher when the cache grows past a cap.
     pub fn trim_clipboard(&self, keep: i64) -> Result<()> {
-        self.conn
-            .execute(
-                "DELETE FROM clipboard_history WHERE id NOT IN (
-                    SELECT id FROM clipboard_history
-                    ORDER BY copied_at DESC, id DESC LIMIT ?1
-                )",
-                [keep],
-            )
-            .context("trim clipboard history")?;
-        Ok(())
+        clipboard::trim(&self.conn, keep)
     }
 
     /// Delete the clipboard history entry with the given row id.
     pub fn delete_clipboard(&self, id: i64) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM clipboard_history WHERE id = ?1", (id,))
-            .context("delete clipboard history")?;
-        Ok(())
+        clipboard::delete(&self.conn, id)
     }
 
     /// Record that `path` was launched: bump the count and update last-used.
     pub fn upsert_usage(&self, path: &Path) -> Result<()> {
-        let key = path_key(path);
-        let now = unix_seconds();
-        self.conn
-            .execute(
-                "INSERT INTO usage(path, count, last_used) VALUES (?1, 1, ?2)
-                 ON CONFLICT(path) DO UPDATE SET
-                    count = count + 1,
-                    last_used = excluded.last_used",
-                (key, now),
-            )
-            .context("upsert usage")?;
-        Ok(())
+        apps::upsert_usage(&self.conn, path)
     }
 
     /// Usage count for `path`, or 0 if never launched.
     pub fn frequency(&self, path: &Path) -> u32 {
-        let key = path_key(path);
-        self.conn
-            .query_row("SELECT count FROM usage WHERE path = ?1", (key,), |row| {
-                row.get::<_, u32>(0)
-            })
-            .unwrap_or(0)
+        apps::frequency(&self.conn, path)
     }
 
     /// Convenience: resolve a usage count from a path string (matching the
@@ -214,20 +131,7 @@ impl Storage {
     /// All cached applications from the last successful scan, for acceleration
     /// of cold start.
     pub fn cached_apps(&self) -> Result<Vec<AppEntry>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, name FROM apps")
-            .context("prepare cached apps query")?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(AppEntry {
-                    path: PathBuf::from(row.get::<_, String>(0)?),
-                    name: row.get::<_, String>(1)?,
-                })
-            })
-            .context("query cached apps")?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("collect cached apps")
+        apps::cached(&self.conn)
     }
 
     /// Merge the result of a full scan into the cache: upsert seen apps and
@@ -236,47 +140,7 @@ impl Storage {
     /// callers only invoke it when the scanned set actually differs from the
     /// current index, so an idle reconcile does not touch the database.
     pub fn mark_seen(&mut self, apps: &[AppEntry]) -> Result<()> {
-        let now = unix_seconds();
-        let tx = self.conn.transaction().context("begin scan transaction")?;
-        {
-            let mut stmt = tx
-                .prepare(
-                    "INSERT INTO apps(path, name, last_seen) VALUES (?1, ?2, ?3)
-                     ON CONFLICT(path) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen",
-                )
-                .context("prepare app upsert")?;
-            let mut seen: HashSet<String> = HashSet::with_capacity(apps.len());
-            for app in apps {
-                let key = path_key(&app.path);
-                stmt.execute((&key, &app.name, now))
-                    .context("upsert app cache")?;
-                seen.insert(key);
-            }
-            // Remove cached entries that were not present in this scan
-            // (deleting by path instead of by timestamp so scans in the same
-            // second still prune correctly).
-            let existing = {
-                let mut all = tx
-                    .prepare("SELECT path FROM apps")
-                    .context("prepare cached paths query")?;
-                let paths = all
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .context("query cached paths")?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .context("collect cached paths")?;
-                paths
-            };
-            let mut remove = tx
-                .prepare("DELETE FROM apps WHERE path = ?1")
-                .context("prepare stale app delete")?;
-            for path in existing {
-                if !seen.contains(&path) {
-                    remove.execute([&path]).context("delete stale cached app")?;
-                }
-            }
-        }
-        tx.commit().context("commit scan transaction")?;
-        Ok(())
+        apps::mark_seen(&mut self.conn, apps)
     }
 }
 
