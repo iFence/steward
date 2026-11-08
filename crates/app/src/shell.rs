@@ -195,7 +195,9 @@ fn next_selection(current: usize, len: usize, delta: isize) -> Option<usize> {
     if len == 0 {
         return None;
     }
-    Some((current.min(len - 1) as isize + delta).clamp(0, len as isize - 1) as usize)
+    let current = current.min(len - 1);
+    let next = (current as isize + delta).clamp(0, len as isize - 1) as usize;
+    (next != current).then_some(next)
 }
 
 fn add_input_focus(input: &nsh_core::ui::ElementRef) {
@@ -210,12 +212,13 @@ mod tests {
     use super::next_selection;
 
     #[test]
-    fn selection_moves_and_clamps_to_the_result_bounds() {
+    fn selection_stops_at_the_result_bounds() {
         assert_eq!(next_selection(0, 3, 1), Some(1));
-        assert_eq!(next_selection(2, 3, 1), Some(2));
+        assert_eq!(next_selection(2, 3, 1), None);
         assert_eq!(next_selection(2, 3, -1), Some(1));
-        assert_eq!(next_selection(0, 3, -1), Some(0));
-        assert_eq!(next_selection(9, 3, 1), Some(2));
+        assert_eq!(next_selection(0, 3, -1), None);
+        assert_eq!(next_selection(9, 3, 1), None);
+        assert_eq!(next_selection(9, 3, -1), Some(1));
         assert_eq!(next_selection(0, 0, 1), None);
     }
 }
