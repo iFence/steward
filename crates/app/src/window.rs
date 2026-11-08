@@ -20,6 +20,11 @@ use crate::settings::StewardSettings;
 use crate::shell::StewardLauncher;
 use crate::state::AppState;
 
+// NSH paints an opaque theme background under its view tree by default,
+// which would cover GPUI's Acrylic window background. The launcher paints
+// its own translucent scrim, so its host surface must stay transparent.
+const LAUNCHER_GLASS_THEME: &str = r#"{"cssVars":{"theme":{"background":"transparent"}}}"#;
+
 pub(crate) fn init_common(cx: &mut App) {
     cx.set_quit_mode(QuitMode::Explicit);
 }
@@ -67,6 +72,8 @@ pub(crate) fn open_launcher_window(
                     cx,
                 );
                 view.load(NshApp::Rust(Root::of::<StewardLauncher>()));
+                view.set_theme_json(LAUNCHER_GLASS_THEME, cx)
+                    .expect("launcher glass theme is valid");
                 view.focus_handle(cx).focus(window, cx);
                 view
             })
