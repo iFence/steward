@@ -23,6 +23,8 @@ Conventions:
 - **Launcher keyboard navigation**: Up and Down move the result selection,
   including while the query field is focused, and the list follows the
   selection when it scrolls beyond the visible rows.
+- **Launcher reset**: summoning or reopening the launcher clears the previous
+  query and restores focus to the search field.
 - **Stable result icons**: application icons follow their own rows as the
   virtualized list reuses cells, preventing one app from briefly showing
   another app's icon.

@@ -270,11 +270,15 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
 
 fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
     if let Some(handle) = state.borrow().window {
-        let height = state.borrow().launcher_height;
+        let (height, services) = {
+            let state = state.borrow();
+            (state.launcher_height, state.services.clone())
+        };
         let _ = handle.update(cx, |_, window, cx| {
             if crate::platform::is_visible(window) {
                 crate::window::hide_window(window, cx);
             } else {
+                services.request_launcher_reset();
                 crate::platform::show(window, crate::config::LAUNCHER_WIDTH, height);
                 cx.activate(true);
             }
@@ -285,8 +289,10 @@ fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
         let state = state.borrow();
         (state.services.clone(), state.data_dir.clone())
     };
-    let handle =
-        cx.update(|cx| crate::window::open_launcher_window(cx, state.clone(), services, data_dir));
+    let handle = cx.update(|cx| {
+        crate::window::open_launcher_window(cx, state.clone(), services.clone(), data_dir)
+    });
+    services.request_launcher_reset();
     state.borrow_mut().window = Some(handle);
     if let Some(handle) = state.borrow().window {
         let _ = handle.update(cx, |_, window, cx| {

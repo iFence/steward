@@ -8363,6 +8363,7 @@ dependencies = [
  "nsh-engine",
  "nsh-package",
  "nsh-platform-gpui",
+ "nsh-testing",
  "raw-window-handle",
  "rust-embed",
  "serde",

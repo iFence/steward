@@ -78,6 +78,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [build-dependencies]
 embed-resource = "3"
 
+[dev-dependencies]
+nsh-testing.workspace = true
+
 [package.metadata.bundle]
 name = "Steward"
 identifier = "com.hiaspirin.steward"

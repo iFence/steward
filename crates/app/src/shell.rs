@@ -54,6 +54,7 @@ pub fn StewardLauncher() -> impl IntoElement {
 
     let observed_revision = signal(app.search_revision());
     let observed_locale = signal(app.locale_revision());
+    let observed_launcher_reset = signal(app.launcher_reset_revision());
     set_interval(Duration::from_millis(250), {
         let app = app.clone();
         let filter = filter.clone();
@@ -70,6 +71,18 @@ pub fn StewardLauncher() -> impl IntoElement {
             }
             if search_changed || locale_changed {
                 filter(&query.get_untracked());
+            }
+        }
+    });
+    set_interval(Duration::from_millis(20), {
+        let app = app.clone();
+        let filter = filter.clone();
+        move || {
+            let revision = app.launcher_reset_revision();
+            if revision != observed_launcher_reset.get_untracked() {
+                observed_launcher_reset.set(revision);
+                filter("");
+                input_ref.focus();
             }
         }
     });
@@ -244,8 +257,17 @@ fn add_input_focus(input: &nsh_core::ui::ElementRef) {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_selection, submission_action};
-    use crate::services::RowAction;
+    use std::sync::{atomic::AtomicU64, Arc};
+
+    use nsh_core::ui::{EngineContext, Root};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    use super::{next_selection, submission_action, StewardLauncher};
+    use crate::{
+        i18n::UiStrings,
+        services::{AppServices, RowAction, UiSettings},
+    };
 
     #[test]
     fn selection_stops_at_the_result_bounds() {
@@ -274,5 +296,43 @@ mod tests {
             submission_action(&[calculator, action.clone()], 1, "8*8"),
             Some(action)
         );
+    }
+
+    #[test]
+    fn summoning_again_clears_the_launcher_query() {
+        let placeholder = "Search apps or type a command...";
+        let (request_tx, _request_rx) = crossbeam_channel::unbounded();
+        let (command_tx, _command_rx) = crossbeam_channel::unbounded();
+        let services = Arc::new(AppServices::new(
+            request_tx,
+            command_tx,
+            UiSettings::new(
+                "en".into(),
+                UiStrings {
+                    search_placeholder: placeholder.into(),
+                    application: "Application".into(),
+                    plugin: "Plugin".into(),
+                    calculator: "Calculator".into(),
+                    open_url: "Open URL".into(),
+                },
+                "#863bff".into(),
+                false,
+                "control+alt+Space".into(),
+            ),
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let config = EngineConfig {
+            context: EngineContext::default().with(services.clone()),
+            ..EngineConfig::new(Root::of::<StewardLauncher>())
+        };
+        let mut app = Headless::start(config).unwrap();
+        app.wait_for(&format!("text:{placeholder}")).unwrap();
+        app.type_text(&format!("text:{placeholder}"), "8*8")
+            .unwrap();
+        app.wait_for("text:8*8").unwrap();
+
+        services.request_launcher_reset();
+
+        app.wait_for(&format!("text:{placeholder}")).unwrap();
     }
 }

@@ -76,6 +76,7 @@ pub struct AppServices {
     settings: Arc<RwLock<UiSettings>>,
     search_revision: Arc<AtomicU64>,
     locale_revision: Arc<AtomicU64>,
+    launcher_reset_revision: Arc<AtomicU64>,
 }
 
 impl AppServices {
@@ -91,6 +92,7 @@ impl AppServices {
             settings: Arc::new(RwLock::new(settings)),
             search_revision,
             locale_revision: Arc::new(AtomicU64::new(1)),
+            launcher_reset_revision: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -177,6 +179,14 @@ impl AppServices {
 
     pub fn locale_revision(&self) -> u64 {
         self.locale_revision.load(Ordering::Relaxed)
+    }
+
+    pub fn request_launcher_reset(&self) {
+        self.launcher_reset_revision.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn launcher_reset_revision(&self) -> u64 {
+        self.launcher_reset_revision.load(Ordering::Relaxed)
     }
 }
 
