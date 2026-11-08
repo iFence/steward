@@ -5,3 +5,7 @@ edition.workspace = true
 
 [dependencies]
 nsh-core.workspace = true
+
+[dev-dependencies]
+nsh-engine.workspace = true
+nsh-testing.workspace = true

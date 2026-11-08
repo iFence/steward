@@ -14,12 +14,11 @@ use crate::i18n::Localization;
 
 pub(crate) struct TrayHandle {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
-    _tray: TrayIcon,
+    tray: TrayIcon,
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-pub(crate) fn setup_tray(i18n: &Localization) -> Result<TrayHandle> {
-    let icon = load_tray_icon()?;
+fn build_menu(i18n: &Localization) -> Result<Menu> {
     let settings = MenuItem::with_id(MENU_SETTINGS, i18n.translate("app-settings"), true, None);
     let quit = MenuItem::with_id(MENU_QUIT, i18n.translate("app-quit"), true, None);
     let separator = PredefinedMenuItem::separator();
@@ -28,14 +27,29 @@ pub(crate) fn setup_tray(i18n: &Localization) -> Result<TrayHandle> {
     menu.append(&settings)?;
     menu.append(&separator)?;
     menu.append(&quit)?;
+    Ok(menu)
+}
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub(crate) fn setup_tray(i18n: &Localization) -> Result<TrayHandle> {
+    let icon = load_tray_icon()?;
+    let menu = build_menu(i18n)?;
     let tray = TrayIconBuilder::new()
         .with_tooltip("Steward")
         .with_icon(icon)
         .with_menu(Box::new(menu))
         .build()
         .context("build system tray icon")?;
-    Ok(TrayHandle { _tray: tray })
+    Ok(TrayHandle { tray })
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+impl TrayHandle {
+    pub(crate) fn set_language(&self, i18n: &Localization) -> Result<()> {
+        let menu = build_menu(i18n)?;
+        self.tray.set_menu(Some(Box::new(menu)));
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -58,4 +72,12 @@ fn load_tray_icon() -> Result<Icon> {
 pub(crate) fn setup_tray(i18n: &Localization) -> Result<TrayHandle> {
     let _ = i18n;
     Ok(TrayHandle {})
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+impl TrayHandle {
+    pub(crate) fn set_language(&self, i18n: &Localization) -> Result<()> {
+        let _ = i18n;
+        Ok(())
+    }
 }

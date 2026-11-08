@@ -44,9 +44,9 @@ pub const SELECTION_WASH_MAX: f32 = 0.20;
 /// Alt surface: hover fill, secondary controls, active tabs. Tinycast's
 /// `rowHover` (white 0.05) blended onto [`BACKGROUND`].
 pub const BACKGROUND_ALT: u32 = 0x2c2c31;
-/// Selected result row: a muted brand-violet fill, clear against both the
-/// launcher's translucent surface and the subdued row dividers.
-pub const ROW_BACKGROUND_SELECTED: u32 = 0x4a3b68;
+/// Selected result row: a neutral gray-white fill, independent of the
+/// user's accent color and clear against the subdued row dividers.
+pub const ROW_BACKGROUND_SELECTED: u32 = 0x414146;
 /// Borders and input outlines. Tinycast's `border` (white 0.20) blended onto
 /// [`BACKGROUND`].
 pub const BORDER: u32 = 0x4d4d50;

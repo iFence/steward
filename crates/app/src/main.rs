@@ -33,7 +33,7 @@ use steward_storage::Storage;
 
 use crate::config::{DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
 use crate::i18n::Localization;
-use crate::services::{AppServices, SearchState};
+use crate::services::{AppServices, SearchState, UiSettings};
 use crate::state::AppState;
 
 fn main() {
@@ -71,6 +71,7 @@ fn main() {
         Localization::new_with_language(language.as_deref())
             .expect("failed to initialize localization"),
     );
+    let ui_strings = i18n.ui_strings();
     let accent = storage
         .borrow()
         .get_setting(THEME_COLOR_SETTING)
@@ -79,7 +80,7 @@ fn main() {
     let summon_hotkey = hotkeys::persisted_summon_hotkey(&storage.borrow()).to_string();
 
     let search = Rc::new(RefCell::new(
-        SearchState::new(data_dir.clone(), storage.clone())
+        SearchState::new(data_dir.clone(), storage.clone(), ui_strings.clone())
             .expect("failed to initialize launcher search"),
     ));
     load_trust_roots(&search);
@@ -91,10 +92,13 @@ fn main() {
     let services = Arc::new(AppServices::new(
         request_tx,
         command_tx,
-        language.clone().unwrap_or_else(|| "en".into()),
-        accent,
-        autostart,
-        summon_hotkey,
+        UiSettings::new(
+            language.clone().unwrap_or_else(|| "en".into()),
+            ui_strings,
+            accent,
+            autostart,
+            summon_hotkey,
+        ),
         search_revision,
     ));
     let (clipboard_tx, clipboard_rx) = crossbeam_channel::unbounded();
@@ -122,11 +126,12 @@ fn main() {
         _clipboard_watcher: clipboard_watcher,
     }));
 
-    application().run({
+    application().with_assets(gpui_kit::assets::Assets).run({
         let state = state.clone();
         let i18n = i18n.clone();
         let services = services.clone();
         move |cx: &mut App| {
+            settings::init_ui(cx, &services.accent());
             window::init_common(cx);
             nsh_platform_gpui::set_ui_sets(vec![nsh_base::registry()]);
             let handle =

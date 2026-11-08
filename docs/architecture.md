@@ -30,7 +30,7 @@ steward-app.exe
         |     +-- plugin route catalog
         |
         +-- Steward settings window
-        |     +-- NSH Rust root
+        |     +-- GPUI Kit Root + Settings
         |     +-- language, accent, autostart, summon hotkey
         |
         +-- plugin window (one per plugin ID)

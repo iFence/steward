@@ -148,7 +148,7 @@ fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                 cx.update(|cx| crate::plugin_window::close(cx, state, &plugin_id));
             }
             WindowCommand::SetLanguage(locale) => {
-                set_language(state, &locale);
+                set_language(cx, state, &locale);
             }
             WindowCommand::SetAccent(accent) => {
                 set_accent(state, &accent);
@@ -176,14 +176,24 @@ fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
     }
 }
 
-fn set_language(state: &Rc<RefCell<AppState>>, locale: &str) {
-    let state = state.borrow();
-    if let Err(error) = state.storage.borrow().set_setting(LANGUAGE_SETTING, locale) {
-        eprintln!("persist language: {error:#}");
-        return;
+fn set_language(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, locale: &str) {
+    {
+        let state = state.borrow();
+        if let Err(error) = state.storage.borrow().set_setting(LANGUAGE_SETTING, locale) {
+            eprintln!("persist language: {error:#}");
+            return;
+        }
+        state.i18n.select_language(locale);
+        let strings = state.i18n.ui_strings();
+        state.services.set_locale(locale, strings.clone());
+        state.search.borrow_mut().set_ui_strings(strings);
+        if let Some(tray) = state.tray.borrow().as_ref() {
+            if let Err(error) = tray.set_language(&state.i18n) {
+                eprintln!("update tray language: {error:#}");
+            }
+        };
     }
-    state.i18n.select_language(locale);
-    state.services.set_locale(locale);
+    cx.update(|cx| cx.refresh_windows());
 }
 
 fn set_accent(state: &Rc<RefCell<AppState>>, accent: &str) {
@@ -225,6 +235,9 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
         RowAction::CopyText(text) => {
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let _ = clipboard.set_text(text);
+            }
+            if let Some(handle) = state.borrow().window {
+                let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
             }
         }
         RowAction::OpenUrl(url) => {

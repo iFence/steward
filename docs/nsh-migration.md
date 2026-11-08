@@ -17,8 +17,8 @@ private protocol.
 NSH replaces that vertical stack with a maintained Rust UI engine and TSX
 application runtime:
 
-- Steward's launcher and settings use NSH Rust components, so the shell has no
-  plugin VM.
+- Steward's launcher uses NSH Rust components and its settings window uses
+  GPUI Kit's `Settings` component, so the shell has no plugin VM.
 - Plugins are first-class NSH applications with native components, signals,
   input handling, and window lifecycle.
 - Steward keeps only the product-specific pieces: search, routing, clipboard
@@ -40,11 +40,13 @@ application runtime:
 
 ## Decisions
 
-1. Steward's launcher and settings are NSH Rust roots rendered by
-   `nsh-platform-gpui`.
+1. Steward's launcher is an NSH Rust root rendered by `nsh-platform-gpui`;
+   the settings window is a GPUI Kit view with `Root` and `Settings`.
 2. The product uses GPUI Fast directly and pins:
    - `gpui-fast = =0.1.9`
    - `gpui-fast-platform = =0.1.9`
+   - `gpui-kit = =0.7.3` with its `gpui-fast` feature, so NSH and the
+     settings components share one GPUI backend.
 3. NSH is pinned to git revision
    `5359c07ff7b5728e67957c24322373309c90666b` rather than crates.io `0.2.0`.
    The published `0.2.0` predates `HostChannel` and `EngineContext`, which the
@@ -75,7 +77,9 @@ Windows app process
         +-- NSH Rust launcher
         |     +-- application search and built-in commands
         |     +-- plugin.json route catalog
-        |     +-- settings
+        |
+        +-- GPUI Kit settings
+        |     +-- Settings pages, groups, items, and fields
         |
         +-- NSH plugin window (one per plugin ID)
               +-- signed plugin.nshpkg
@@ -157,7 +161,7 @@ Host events:
 |---|---|---|
 | NSH-0 | complete | Decisions, contracts, and migration ledger |
 | NSH-1 | complete | GPUI Fast/NSH dependency and embedding proof |
-| NSH-2 | complete | NSH Rust launcher, search pages, and settings |
+| NSH-2 | complete | NSH Rust launcher and search; GPUI Kit settings |
 | NSH-3 | complete | Registry, host, SDK, and official plugin cutover |
 | NSH-4 | in progress | Packaging, CI, docs, production trust, and release measurements |
 
@@ -220,7 +224,7 @@ Files:
 
 Acceptance:
 
-- Launcher and settings are NSH Rust roots.
+- The launcher is an NSH Rust root; settings use GPUI Kit `Root` and `Settings`.
 - Application search, plugin routes, calculator, URL open, keyboard navigation,
   IME, resize, summon/hide, tray, hotkeys, language, accent, autostart, and
   summon-hotkey editing are wired.
@@ -233,7 +237,7 @@ Evidence:
 - `cargo test --workspace`: passed.
 - `cargo check -p steward-app` and workspace tests pass.
 - Settings persist language, accent, autostart, and summon hotkey changes.
-- `STEWARD_SHOW_SETTINGS=1` opened the settings root without a process crash.
+- `STEWARD_SHOW_SETTINGS=1` opens the GPUI Kit settings window.
 
 ### NSH-3: Plugin cutover
 

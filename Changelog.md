@@ -11,8 +11,9 @@ Conventions:
 
 ### New Plugin Platform
 
-- **NSH Native UI**: Steward's launcher and settings now run as NSH Rust
-  surfaces on GPUI Fast. The shell starts no JavaScript VM.
+- **Native UI**: Steward's launcher runs as an NSH Rust surface on GPUI Fast,
+  while settings use GPUI Kit's page, group, and field components. The shell
+  starts no JavaScript VM.
 - **Settings**: language, accent, autostart, and summon-hotkey changes are
   persisted.
 - **Launcher readability**: the query field now uses high-contrast text and

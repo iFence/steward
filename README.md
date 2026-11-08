@@ -18,9 +18,10 @@
 Steward is a Windows launcher and plugin platform built with Rust, GPUI Fast,
 and Native Shell (NSH).
 
-The launcher and settings are NSH Rust surfaces, so they start no JavaScript
-VM. Plugin commands open signed TSX applications in full NSH windows with a
-64 MiB VM, time/node quotas, and least-privilege capabilities.
+The launcher is an NSH Rust surface and the settings window uses GPUI Kit
+components, so neither starts a JavaScript VM. Plugin commands open signed TSX
+applications in full NSH windows with a 64 MiB VM, time/node quotas, and
+least-privilege capabilities.
 
 <p align="center">
   <img src="assets/1.png" alt="Steward screenshot" width="760">
@@ -118,7 +119,7 @@ top-level plugin directory under `%APPDATA%\Steward\plugins`.
 - [x] M1: application launcher MVP
 - [x] NSH-0: migration decisions and contracts
 - [x] NSH-1: GPUI Fast and NSH embedding
-- [x] NSH-2: NSH Rust launcher and settings
+- [x] NSH-2: NSH Rust launcher and GPUI Kit settings
 - [x] NSH-3: NSH plugin windows and official plugin migration
 - [ ] NSH-4: production keys, release benchmarks, and final acceptance
 

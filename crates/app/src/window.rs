@@ -9,6 +9,7 @@ use gpui::{
     px, size, App, AppContext, Bounds, Focusable, QuitMode, TitlebarOptions, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
+use gpui_kit::component::Root as KitRoot;
 use nsh_platform_gpui::{App as NshApp, Root};
 
 use crate::config::{LAUNCHER_HEIGHT, LAUNCHER_WIDTH};
@@ -79,7 +80,7 @@ pub(crate) fn open_settings_window(
     cx: &mut App,
     state: Rc<RefCell<AppState>>,
     services: Arc<AppServices>,
-    data_dir: std::path::PathBuf,
+    _data_dir: std::path::PathBuf,
 ) -> gpui::AnyWindowHandle {
     if let Some(handle) = state.borrow().settings_window {
         let _ = handle.update(cx, |_, window, cx| {
@@ -88,31 +89,31 @@ pub(crate) fn open_settings_window(
         });
         return handle;
     }
+    let i18n = state.borrow().i18n.clone();
+    let title = format!("Steward {}", i18n.translate("app-settings"));
+    let window_title = title.clone();
     let bounds = Bounds::centered(None, size(px(760.0), px(560.0)), cx);
     let handle = cx
         .open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(720.0), px(480.0))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Steward Settings".into()),
+                    title: Some(title.into()),
                     ..Default::default()
                 }),
                 show: true,
                 focus: true,
                 is_resizable: true,
+                window_background: WindowBackgroundAppearance::Opaque,
                 ..Default::default()
             },
             move |window, cx| {
-                window.set_window_title("Steward Settings");
-                cx.new(|cx| {
-                    let view = new_view(
-                        shell_options(services.clone(), data_dir.clone()),
-                        window,
-                        cx,
-                    );
-                    view.load(NshApp::Rust(Root::of::<StewardSettings>()));
-                    view
-                })
+                window.set_window_title(&window_title);
+                platform::force_dark_titlebar(window);
+                let settings =
+                    cx.new(|cx| StewardSettings::new(window, cx, services.clone(), i18n.clone()));
+                cx.new(|cx| KitRoot::new(settings, window, cx))
             },
         )
         .expect("open Steward settings window");

@@ -12,6 +12,16 @@ use unic_langid::LanguageIdentifier;
 #[folder = "i18n/"]
 struct Assets;
 
+/// Localized strings consumed by the NSH launcher surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiStrings {
+    pub search_placeholder: String,
+    pub application: String,
+    pub plugin: String,
+    pub calculator: String,
+    pub open_url: String,
+}
+
 /// Compiled Fluent resources bound to the `main` domain (see `main.ftl`).
 pub struct Localization {
     loader: FluentLanguageLoader,
@@ -82,6 +92,17 @@ impl Localization {
     pub fn translate(&self, message_id: &str) -> String {
         self.loader.get(message_id)
     }
+
+    /// Snapshot the strings rendered by the launcher's Rust surface.
+    pub fn ui_strings(&self) -> UiStrings {
+        UiStrings {
+            search_placeholder: self.translate("search-placeholder"),
+            application: self.translate("application"),
+            plugin: self.translate("plugin"),
+            calculator: self.translate("calculator"),
+            open_url: self.translate("open-url"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +122,10 @@ mod tests {
         assert_eq!(localization.translate("open-in-browser"), "用浏览器打开");
         assert_eq!(localization.translate("command"), "命令");
         assert_eq!(localization.language(), "zh");
+        assert_ne!(
+            localization.ui_strings().search_placeholder,
+            "Search apps or type a command..."
+        );
 
         localization.select_language("ko");
         assert_eq!(localization.translate("app-autostart"), "로그인 시 실행");

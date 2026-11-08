@@ -21,11 +21,13 @@ license = "MIT"
 # must be upgraded as one reviewed change.
 gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false, features = ["font-kit", "wayland", "x11"] }
 gpui_platform = { package = "gpui-fast-platform", version = "=0.1.9", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui-kit = { version = "=0.7.3", features = ["gpui-fast"] }
 nsh-core = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
 nsh-base = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false }
 nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
 nsh-package = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
 nsh-platform-gpui = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false, features = ["js"] }
+nsh-testing = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false }
 thiserror = "2"
 global-hotkey = "0.8"
 tray-icon = "0.24"

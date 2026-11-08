@@ -14,6 +14,8 @@ use steward_plugin_registry::{PluginMeta, Registry};
 use steward_storage::Storage;
 use tokio::sync::oneshot;
 
+use crate::i18n::UiStrings;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowAction {
     LaunchApp(PathBuf),
@@ -41,11 +43,30 @@ pub struct SearchRequest {
 }
 
 #[derive(Debug, Clone)]
-struct UiSettings {
+pub struct UiSettings {
     locale: String,
+    strings: UiStrings,
     accent: String,
     autostart: bool,
     summon_hotkey: String,
+}
+
+impl UiSettings {
+    pub fn new(
+        locale: String,
+        strings: UiStrings,
+        accent: String,
+        autostart: bool,
+        summon_hotkey: String,
+    ) -> Self {
+        Self {
+            locale,
+            strings,
+            accent,
+            autostart,
+            summon_hotkey,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -54,28 +75,22 @@ pub struct AppServices {
     window_commands: crossbeam_channel::Sender<WindowCommand>,
     settings: Arc<RwLock<UiSettings>>,
     search_revision: Arc<AtomicU64>,
+    locale_revision: Arc<AtomicU64>,
 }
 
 impl AppServices {
     pub fn new(
         requests: crossbeam_channel::Sender<SearchRequest>,
         window_commands: crossbeam_channel::Sender<WindowCommand>,
-        locale: String,
-        accent: String,
-        autostart: bool,
-        summon_hotkey: String,
+        settings: UiSettings,
         search_revision: Arc<AtomicU64>,
     ) -> Self {
         Self {
             requests,
             window_commands,
-            settings: Arc::new(RwLock::new(UiSettings {
-                locale,
-                accent,
-                autostart,
-                summon_hotkey,
-            })),
+            settings: Arc::new(RwLock::new(settings)),
             search_revision,
+            locale_revision: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -102,6 +117,13 @@ impl AppServices {
             .unwrap_or_else(|_| "en".into())
     }
 
+    pub fn search_placeholder(&self) -> String {
+        self.settings
+            .read()
+            .map(|settings| settings.strings.search_placeholder.clone())
+            .unwrap_or_else(|_| "Search apps or type a command...".into())
+    }
+
     pub fn accent(&self) -> String {
         self.settings
             .read()
@@ -123,10 +145,12 @@ impl AppServices {
             .unwrap_or_else(|_| "control+alt+Space".into())
     }
 
-    pub fn set_locale(&self, locale: impl Into<String>) {
+    pub fn set_locale(&self, locale: impl Into<String>, strings: UiStrings) {
         if let Ok(mut settings) = self.settings.write() {
             settings.locale = locale.into();
+            settings.strings = strings;
         }
+        self.locale_revision.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn set_accent(&self, accent: impl Into<String>) {
@@ -150,6 +174,10 @@ impl AppServices {
     pub fn search_revision(&self) -> u64 {
         self.search_revision.load(Ordering::Relaxed)
     }
+
+    pub fn locale_revision(&self) -> u64 {
+        self.locale_revision.load(Ordering::Relaxed)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +199,7 @@ pub fn services() -> Option<Arc<AppServices>> {
 
 pub struct SearchState {
     engine: Engine,
+    strings: UiStrings,
     storage: std::rc::Rc<std::cell::RefCell<Storage>>,
     icon_cache: HashMap<PathBuf, Option<String>>,
     plugin_host: PluginHost,
@@ -186,6 +215,7 @@ impl SearchState {
     pub fn new(
         data_dir: PathBuf,
         storage: std::rc::Rc<std::cell::RefCell<Storage>>,
+        strings: UiStrings,
     ) -> anyhow::Result<Self> {
         let cached = storage.borrow().cached_apps().unwrap_or_default();
         let mut engine = Engine::new();
@@ -202,6 +232,7 @@ impl SearchState {
         plugin_host.set_plugins(&cached_plugins);
         Ok(Self {
             engine,
+            strings,
             storage,
             icon_cache: HashMap::new(),
             plugin_host,
@@ -225,6 +256,10 @@ impl SearchState {
 
     pub fn revision_handle(&self) -> Arc<AtomicU64> {
         self.search_revision.clone()
+    }
+
+    pub fn set_ui_strings(&mut self, strings: UiStrings) {
+        self.strings = strings;
     }
 
     pub fn prepare_launch(
@@ -296,10 +331,10 @@ impl SearchState {
         if !trimmed.is_empty() {
             if let Some(value) = steward_core_engine::try_evaluate(trimmed) {
                 let text = steward_core_engine::format_value(value);
-                rows.push(row("calc", "Calculator", &text, None));
+                rows.push(row("calc", &self.strings.calculator, &text, None));
                 actions.push(RowAction::CopyText(text));
             } else if steward_core_engine::try_openable(trimmed).is_some() {
-                rows.push(row("url", "Open URL", trimmed, None));
+                rows.push(row("url", &self.strings.open_url, trimmed, None));
                 actions.push(RowAction::OpenUrl(trimmed.to_owned()));
             }
         }
@@ -312,7 +347,7 @@ impl SearchState {
         for hit in app_hits {
             let icon = self.app_icon(&hit.app.path);
             let id = format!("app:{}", hit.app.path.display());
-            rows.push(row(&id, &hit.app.name, "Application", icon));
+            rows.push(row(&id, &hit.app.name, &self.strings.application, icon));
             actions.push(RowAction::LaunchApp(hit.app.path));
         }
 
@@ -327,7 +362,7 @@ impl SearchState {
             rows.push(row(
                 &format!("plugin:{plugin_id}:{command}"),
                 &title,
-                "Plugin",
+                &self.strings.plugin,
                 None,
             ));
             actions.push(RowAction::OpenPlugin {

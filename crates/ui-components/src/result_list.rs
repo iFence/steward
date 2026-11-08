@@ -8,7 +8,7 @@ const ROW_HEIGHT: f32 = 42.0;
 const ICON_SIZE: f32 = 24.0;
 const DETAIL_WIDTH: f32 = 240.0;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LauncherRow {
     pub id: String,
     pub title: String,
@@ -35,7 +35,7 @@ pub fn result_list(
         // selection highlight follow the cell's current index.
         let row = computed(move || {
             let index = at.index();
-            rows.with(|rows| rows[index].clone())
+            rows.with(|rows| row_at(rows, index))
         });
         let has_icon = move || row.with(|row| row.icon.is_some());
         let icon_src = move || row.with(|row| row.icon.clone().unwrap_or_default());
@@ -86,6 +86,7 @@ pub fn result_list(
                 ),
             )
     })
+    .keys(move || rows.with(|rows| rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>()))
     .estimated_item_size(px(ROW_HEIGHT))
     .on_viewable_items_change(move |viewable: &ViewableItems| {
         if let Some((first, _)) = viewable.viewable {
@@ -96,4 +97,65 @@ pub fn result_list(
     .flex_1()
     .min_h(px(0.0))
     .w_full()
+}
+
+/// A recycled cell can outlive the result that filled it for one commit.
+/// Return an empty row rather than indexing an empty result list.
+fn row_at(rows: &[LauncherRow], index: usize) -> LauncherRow {
+    rows.get(index).cloned().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use nsh_core::ui::{prelude::*, Root};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    use super::{result_list, row_at, LauncherRow};
+
+    #[test]
+    fn an_out_of_range_result_row_is_empty() {
+        let row = row_at(&[], 0);
+        assert!(row.id.is_empty());
+        assert!(row.title.is_empty());
+        assert!(row.subtitle.is_empty());
+        assert_eq!(row.icon, None);
+    }
+
+    #[component]
+    fn ResultsThatBecomeEmpty() -> impl IntoElement {
+        let rows = signal(Vec::<LauncherRow>::new());
+        let selected = signal(0);
+        let first_visible = signal(0);
+        let list_ref = element_ref();
+
+        set_timeout(Duration::from_millis(50), move || {
+            rows.set(vec![LauncherRow {
+                id: "first".into(),
+                title: "first".into(),
+                subtitle: "64".into(),
+                icon: None,
+            }]);
+        });
+        set_timeout(Duration::from_millis(100), move || rows.set(Vec::new()));
+        set_timeout(Duration::from_millis(150), move || {
+            rows.set(vec![LauncherRow {
+                id: "restored".into(),
+                title: "restored".into(),
+                subtitle: "64".into(),
+                icon: None,
+            }]);
+        });
+
+        result_list(rows, selected, &list_ref, first_visible, |_| {})
+    }
+
+    #[test]
+    fn results_reappear_after_an_empty_update() {
+        let mut app =
+            Headless::start(EngineConfig::new(Root::of::<ResultsThatBecomeEmpty>())).unwrap();
+        app.wait_for("restored").unwrap();
+    }
 }

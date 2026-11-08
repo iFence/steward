@@ -18,9 +18,9 @@
 Steward 是一个面向 Windows 的启动器与插件平台，使用 Rust、GPUI Fast 和
 Native Shell（NSH）构建。
 
-启动器和设置页都是 NSH Rust 界面，不启动 JavaScript VM。插件命令会在完整
-NSH 窗口中打开已签名的 TSX 应用，并为每个窗口配置 64 MiB VM、调用时限、节点
-上限和最小权限能力。
+启动器是 NSH Rust 界面，设置页使用 GPUI Kit 组件，两者都不启动 JavaScript
+VM。插件命令会在完整 NSH 窗口中打开已签名的 TSX 应用，并为每个窗口配置
+64 MiB VM、调用时限、节点上限和最小权限能力。
 
 <p align="center">
   <img src="assets/1.png" alt="Steward 截图" width="760">
@@ -117,7 +117,7 @@ $env:STEWARD_NSH_RELEASE_CERT = "<path-or-secret>"
 - [x] M1：应用启动器 MVP
 - [x] NSH-0：迁移决策与公共契约
 - [x] NSH-1：GPUI Fast 与 NSH 嵌入
-- [x] NSH-2：NSH Rust 启动器与设置页
+- [x] NSH-2：NSH Rust 启动器与 GPUI Kit 设置页
 - [x] NSH-3：NSH 插件窗口与官方插件迁移
 - [ ] NSH-4：生产签名密钥、Release 基准与最终验收
 

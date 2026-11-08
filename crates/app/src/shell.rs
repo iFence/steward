@@ -53,13 +53,22 @@ pub fn StewardLauncher() -> impl IntoElement {
     filter("");
 
     let observed_revision = signal(app.search_revision());
+    let observed_locale = signal(app.locale_revision());
     set_interval(Duration::from_millis(250), {
         let app = app.clone();
         let filter = filter.clone();
         move || {
             let revision = app.search_revision();
-            if revision != observed_revision.get_untracked() {
+            let locale_revision = app.locale_revision();
+            let search_changed = revision != observed_revision.get_untracked();
+            let locale_changed = locale_revision != observed_locale.get_untracked();
+            if search_changed {
                 observed_revision.set(revision);
+            }
+            if locale_changed {
+                observed_locale.set(locale_revision);
+            }
+            if search_changed || locale_changed {
                 filter(&query.get_untracked());
             }
         }
@@ -75,9 +84,14 @@ pub fn StewardLauncher() -> impl IntoElement {
         })
     };
     let submit: Rc<dyn Fn(&str)> = {
-        let activate = activate.clone();
-        Rc::new(move |_: &str| {
-            activate(selected.get_untracked());
+        let app = app.clone();
+        Rc::new(move |text: &str| {
+            let action = actions.with_untracked(|actions| {
+                submission_action(actions, selected.get_untracked(), text)
+            });
+            if let Some(action) = action {
+                app.send_window_command(WindowCommand::Activate(action));
+            }
         })
     };
     let select_relative: Rc<dyn Fn(isize)> = {
@@ -152,11 +166,8 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 .bg(rgba(0x00000000))
                                 .value(move || query.get())
                                 .placeholder(move || {
-                                    if app.locale().starts_with("zh") {
-                                        "搜索应用和命令"
-                                    } else {
-                                        "Search apps or type a command..."
-                                    }
+                                    let _ = observed_locale.get();
+                                    app.search_placeholder()
                                 })
                                 .on_change({
                                     let filter = filter.clone();
@@ -210,6 +221,20 @@ fn next_selection(current: usize, len: usize, delta: isize) -> Option<usize> {
     (next != current).then_some(next)
 }
 
+/// Enter activates the selected row. The calculator row is always first, so
+/// evaluate the current query directly when it is selected instead of
+/// depending on an asynchronous search reply having updated `actions` yet.
+fn submission_action(actions: &[RowAction], selected: usize, text: &str) -> Option<RowAction> {
+    if selected == 0 {
+        if let Some(value) = steward_core_engine::try_evaluate(text.trim()) {
+            return Some(RowAction::CopyText(steward_core_engine::format_value(
+                value,
+            )));
+        }
+    }
+    actions.get(selected).cloned()
+}
+
 fn add_input_focus(input: &nsh_core::ui::ElementRef) {
     set_timeout(Duration::from_millis(10), {
         let input = *input;
@@ -219,7 +244,8 @@ fn add_input_focus(input: &nsh_core::ui::ElementRef) {
 
 #[cfg(test)]
 mod tests {
-    use super::next_selection;
+    use super::{next_selection, submission_action};
+    use crate::services::RowAction;
 
     #[test]
     fn selection_stops_at_the_result_bounds() {
@@ -230,5 +256,23 @@ mod tests {
         assert_eq!(next_selection(9, 3, 1), None);
         assert_eq!(next_selection(9, 3, -1), Some(1));
         assert_eq!(next_selection(0, 0, 1), None);
+    }
+
+    #[test]
+    fn enter_copies_the_current_calculation_result() {
+        assert_eq!(
+            submission_action(&[], 0, "8*8"),
+            Some(RowAction::CopyText("64".into()))
+        );
+    }
+
+    #[test]
+    fn enter_still_activates_a_selected_non_calculator_row() {
+        let calculator = RowAction::CopyText("64".into());
+        let action = RowAction::OpenUrl("https://example.com".into());
+        assert_eq!(
+            submission_action(&[calculator, action.clone()], 1, "8*8"),
+            Some(action)
+        );
     }
 }
