@@ -309,8 +309,8 @@ impl SearchState {
             self.engine
                 .query_scored(trimmed, &|path| storage.frequency_str(path))
         };
-        for (index, hit) in app_hits.into_iter().enumerate() {
-            let icon = (index < 8).then(|| self.app_icon(&hit.app.path)).flatten();
+        for hit in app_hits {
+            let icon = self.app_icon(&hit.app.path);
             let id = format!("app:{}", hit.app.path.display());
             rows.push(row(&id, &hit.app.name, "Application", icon));
             actions.push(RowAction::LaunchApp(hit.app.path));
