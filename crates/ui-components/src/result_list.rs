@@ -30,8 +30,13 @@ pub fn result_list(
 ) -> impl IntoElement {
     let count = move || rows.with(Vec::len);
     virtual_list(count, move |at| {
-        let index = at.index();
-        let row = computed(move || rows.with(|rows| rows[index].clone()));
+        // A virtual-list cell is reused for another row when the list scrolls.
+        // Read Position::index inside each reactive binding so the row data and
+        // selection highlight follow the cell's current index.
+        let row = computed(move || {
+            let index = at.index();
+            rows.with(|rows| rows[index].clone())
+        });
         let has_icon = move || row.with(|row| row.icon.is_some());
         let icon_src = move || row.with(|row| row.icon.clone().unwrap_or_default());
         let activate = on_activate.clone();
@@ -45,13 +50,14 @@ pub fn result_list(
             .border_b(px(1.0))
             .border_color(rgb(palette::FOREGROUND).opacity(0.04))
             .bg(move || {
-                if selected.get() == index {
+                if selected.get() == at.index() {
                     rgb(palette::ROW_BACKGROUND_SELECTED)
                 } else {
                     rgba(0x00000000)
                 }
             })
             .on_press(move || {
+                let index = at.index();
                 selected.set(index);
                 activate(index);
             });

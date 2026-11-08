@@ -83,7 +83,17 @@ pub fn StewardLauncher() -> impl IntoElement {
     let select_relative: Rc<dyn Fn(isize)> = {
         Rc::new(move |delta: isize| {
             let len = rows.with_untracked(Vec::len);
+            if len == 0 {
+                return;
+            }
             let Some(next) = next_selection(selected.get_untracked(), len, delta) else {
+                // At either boundary the selection is already correct, but
+                // the list itself can still be offset by a pending or native
+                // scroll. Pin the boundary row back into view.
+                let current = selected.get_untracked().min(len - 1);
+                let position = if delta < 0 { 0.0 } else { 1.0 };
+                selected.update(|selection| *selection = current);
+                list_ref.scroll_to_index(current as u32, percentage(position), px(0.0), false);
                 return;
             };
             selected.set(next);
