@@ -8,10 +8,12 @@
 # Usage:
 #   .\scripts\package-plugins.ps1            # package every plugin
 #   .\scripts\package-plugins.ps1 -Plugin calendar
+#   .\scripts\package-plugins.ps1 -ForceSign # always rebuild signed packages
 
 param(
     [string[]]$Plugin = @(),
-    [string]$OutDir = ""
+    [string]$OutDir = "",
+    [switch]$ForceSign
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,15 +49,21 @@ foreach ($name in $names) {
     }
 
     $package = Join-Path $dir "dist\plugin.nshpkg"
-    if (-not (Test-Path -LiteralPath $package)) {
+    if ($ForceSign -or -not (Test-Path -LiteralPath $package)) {
         $key = $env:STEWARD_NSH_RELEASE_KEY
         $cert = $env:STEWARD_NSH_RELEASE_CERT
         if (-not $key -or -not $cert -or -not (Get-Command nsh -ErrorAction SilentlyContinue)) {
             throw "missing signed package for ${name}: set STEWARD_NSH_RELEASE_KEY/STEWARD_NSH_RELEASE_CERT and install nsh"
         }
+        if (Test-Path -LiteralPath $package) {
+            Remove-Item -Force -LiteralPath $package
+        }
         & nsh publish (Join-Path $dir "App.tsx") --key $key --cert $cert -o $package
         if ($LASTEXITCODE -ne 0) {
             throw "nsh publish failed for $name"
+        }
+        if (-not (Test-Path -LiteralPath $package)) {
+            throw "nsh publish reported success but did not create $package"
         }
     }
 

@@ -1,4 +1,4 @@
-name: Release
+name: Build and Release
 
 on:
   # A version tag publishes a GitHub Release. A manual run only builds and
@@ -7,14 +7,51 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 # The release job below needs to create the release; everything else only reads
 # the repository.
 permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the workspace version
+        shell: bash
+        run: |
+          export PATH="/usr/bin:$PATH"
+          version="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml | tr -d '\r')"
+          if [ -z "$version" ]; then
+            echo "::error::could not read the workspace version from Cargo.toml"
+            exit 1
+          fi
+          echo "workspace version=$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            echo "tag=$tag"
+            if [ "$version" != "$tag" ]; then
+              echo "::error::$GITHUB_REF_NAME does not match the workspace version $version"
+              exit 1
+            fi
+          fi
+
+      - name: Verify the changelog has this release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          export PATH="/usr/bin:$PATH"
+          bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog.md > /dev/null
+
   build-msi:
     name: Build MSI
+    needs: validate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,18 +72,39 @@ jobs:
         shell: pwsh
         run: ./scripts/package-msi.ps1
 
+      - name: Generate MSI checksums
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem "target\wix\*.msi")
+          if ($files.Count -eq 0) {
+              throw "MSI build produced no installer"
+          }
+          $files | ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+          } | Set-Content -LiteralPath "target\wix\SHA256SUMS-msi.txt" -Encoding ascii
+
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
         with:
           name: steward-msi
-          path: target/wix/*.msi
+          path: |
+            target/wix/*.msi
+            target/wix/SHA256SUMS-msi.txt
           if-no-files-found: error
 
   package-plugins:
     name: Package plugins
+    needs: validate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nsh-cli
 
       - uses: pnpm/action-setup@v4
         with:
@@ -66,49 +124,83 @@ jobs:
       - name: build
         run: pnpm build
 
+      # GitHub secrets contain file contents, while the NSH CLI takes paths.
+      # Materialize both secrets outside the checkout and keep them out of logs.
+      - name: Prepare NSH signing files
+        shell: pwsh
+        env:
+          NSH_RELEASE_KEY_CONTENT: ${{ secrets.STEWARD_NSH_RELEASE_KEY }}
+          NSH_RELEASE_CERT_CONTENT: ${{ secrets.STEWARD_NSH_RELEASE_CERT }}
+        run: |
+          function Materialize-NshSecret {
+              param(
+                  [string]$Value,
+                  [string]$Name,
+                  [string]$Destination
+              )
+
+              if ([string]::IsNullOrWhiteSpace($Value)) {
+                  throw "$Name is not configured in repository secrets"
+              }
+              [System.IO.File]::WriteAllText(
+                  $Destination,
+                  $Value.Trim() + [Environment]::NewLine,
+                  [System.Text.UTF8Encoding]::new($false)
+              )
+          }
+
+          Materialize-NshSecret `
+              $env:NSH_RELEASE_KEY_CONTENT `
+              "STEWARD_NSH_RELEASE_KEY" `
+              (Join-Path $env:RUNNER_TEMP "steward-nsh-release.secret")
+          Materialize-NshSecret `
+              $env:NSH_RELEASE_CERT_CONTENT `
+              "STEWARD_NSH_RELEASE_CERT" `
+              (Join-Path $env:RUNNER_TEMP "steward-nsh-release.cert")
+
       - name: Package plugin zips
         shell: pwsh
         env:
-          STEWARD_NSH_RELEASE_KEY: ${{ secrets.STEWARD_NSH_RELEASE_KEY }}
-          STEWARD_NSH_RELEASE_CERT: ${{ secrets.STEWARD_NSH_RELEASE_CERT }}
-        run: ./scripts/package-plugins.ps1
+          STEWARD_NSH_RELEASE_KEY: ${{ runner.temp }}\steward-nsh-release.secret
+          STEWARD_NSH_RELEASE_CERT: ${{ runner.temp }}\steward-nsh-release.cert
+        run: ./scripts/package-plugins.ps1 -ForceSign
+
+      - name: Generate plugin checksums
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem "target\plugins\*.zip")
+          if ($files.Count -eq 0) {
+              throw "plugin packaging produced no archives"
+          }
+          $files | ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+          } | Set-Content -LiteralPath "target\plugins\SHA256SUMS-plugins.txt" -Encoding ascii
 
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v4
         with:
           name: steward-plugins
-          path: target/plugins/*.zip
+          path: |
+            target/plugins/*.zip
+            target/plugins/SHA256SUMS-plugins.txt
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
     # Manual runs have no tag to attach assets to; they stop after the uploads.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-msi, package-plugins]
+    needs: [validate, build-msi, package-plugins]
     # Windows-only pipeline: the publisher runs on the same platform the app
-    # ships on, so no Linux runner is needed anywhere. The tag/version check and
-    # the notes extraction are POSIX shell, run through Git Bash (`shell: bash`).
+    # ships on, so no Linux runner is needed anywhere. Release-note extraction
+    # is POSIX shell, run through Git Bash (`shell: bash`).
     # Git Bash is started with `--noprofile --norc`, which does not put its own
-    # `usr/bin` (sed/head) on PATH, so each step adds it explicitly.
+    # `usr/bin` (awk/tr) on PATH, so each step adds it explicitly.
     runs-on: windows-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      # The MSI version comes from the workspace version, so a mismatched tag
-      # would ship an installer labelled as a different release.
-      - name: Check the tag matches the workspace version
-        shell: bash
-        run: |
-          export PATH="/usr/bin:$PATH"
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
-          tag="${GITHUB_REF_NAME#v}"
-          echo "tag=$tag workspace version=$version"
-          if [ "$version" != "$tag" ]; then
-            echo "::error::$GITHUB_REF_NAME does not match the workspace version $version"
-            exit 1
-          fi
 
       - uses: actions/download-artifact@v4
         with:
@@ -133,4 +225,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "Steward $GITHUB_REF_NAME" \
             --notes-file release-notes.md \
-            dist/*.msi dist/*.zip
+            dist/*.msi dist/*.zip dist/SHA256SUMS-*.txt

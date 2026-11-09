@@ -103,6 +103,22 @@ $env:STEWARD_NSH_RELEASE_CERT = "<path-or-secret>"
 The resulting zip contains only `plugin.json` and `plugin.nshpkg`. Extract its
 top-level plugin directory under `%APPDATA%\Steward\plugins`.
 
+## Releases
+
+Pushing a version tag such as `v0.3.0` starts the Windows build-and-release
+workflow. The tag must match `[workspace.package].version` in `Cargo.toml`, and
+`Changelog.md` must contain a matching `## vX.Y.Z` section. The workflow builds
+the MSI, signs and packages the official plugins, generates SHA-256 checksums,
+and publishes the files on the GitHub Release.
+
+Configure `STEWARD_NSH_RELEASE_KEY` and `STEWARD_NSH_RELEASE_CERT` as repository
+secrets containing the signing key and certificate file contents:
+
+```powershell
+git tag v0.3.0
+git push origin v0.3.0
+```
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)

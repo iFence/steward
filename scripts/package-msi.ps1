@@ -11,9 +11,11 @@
 # Usage:
 #   .\scripts\package-msi.ps1            # build release + MSI
 #   .\scripts\package-msi.ps1 -SkipBuild # reuse an existing release binary
+#   .\scripts\package-msi.ps1 -WixBin <dir> # use an explicit WiX Toolset directory
 
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$WixBin = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,17 +36,46 @@ try {
     if (-not (Test-Path $appExe)) {
         throw "missing $appExe (run without -SkipBuild first)"
     }
-    # Locate WiX: explicit -b argument, WIX env var / PATH (cargo-wix default),
-    # then the portable copy extracted under %USERPROFILE%\.wix\wix314.
+    # Locate WiX: explicit -WixBin, WIX env var / PATH (cargo-wix default),
+    # standard Chocolatey install roots, then the portable copy extracted under
+    # %USERPROFILE%\.wix\wix314.
     $wixBin = ""
-    if ($env:WIX) {
-        $wixBin = Join-Path $env:WIX "bin"
-    } elseif (-not (Get-Command candle -ErrorAction SilentlyContinue)) {
-        $portable = Join-Path $env:USERPROFILE ".wix\wix314"
-        if (Test-Path (Join-Path $portable "candle.exe")) {
-            $wixBin = $portable
+    if ($WixBin) {
+        if (Test-Path (Join-Path $WixBin "candle.exe")) {
+            $wixBin = $WixBin
+        } elseif (Test-Path (Join-Path $WixBin "bin\candle.exe")) {
+            $wixBin = Join-Path $WixBin "bin"
         } else {
-            throw "WiX Toolset v3 not found: set WIX, add candle.exe to PATH, or extract the portable binaries to $portable"
+            throw "WiX Toolset not found under explicit path $WixBin"
+        }
+    } elseif ($env:WIX) {
+        if (Test-Path (Join-Path $env:WIX "candle.exe")) {
+            $wixBin = $env:WIX
+        } elseif (Test-Path (Join-Path $env:WIX "bin\candle.exe")) {
+            $wixBin = Join-Path $env:WIX "bin"
+        } else {
+            throw "WiX Toolset not found under WIX=$env:WIX"
+        }
+    } elseif (-not (Get-Command candle -ErrorAction SilentlyContinue)) {
+        $candidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} "WiX Toolset v3.14"),
+            (Join-Path $env:ProgramFiles "WiX Toolset v3.14"),
+            (Join-Path $env:USERPROFILE ".wix\wix314")
+        )
+        foreach ($candidate in $candidates) {
+            if (Test-Path (Join-Path $candidate "candle.exe")) {
+                $wixBin = $candidate
+                break
+            }
+            if (Test-Path (Join-Path $candidate "bin\candle.exe")) {
+                $wixBin = Join-Path $candidate "bin"
+                break
+            }
+        }
+        if ($wixBin) {
+            Write-Host "Using WiX Toolset at $wixBin"
+        } else {
+            throw "WiX Toolset v3 not found: set WIX, add candle.exe to PATH, pass -WixBin, or extract the portable binaries under $env:USERPROFILE\.wix\wix314"
         }
     }
 

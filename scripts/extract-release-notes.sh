@@ -29,10 +29,13 @@ if [ ! -f "$CHANGELOG" ]; then
 fi
 
 # Strip a leading 'v' so tags and changelog headers match regardless of prefix.
-VERSION="${TAG#v}"
+VERSION="${TAG#[vV]}"
 
 NOTES="$(awk -v ver="$VERSION" '
   BEGIN { found = 0 }
+  {
+    sub(/\r$/, "")
+  }
   /^## / {
     if (found) exit
     token = substr($0, 4)

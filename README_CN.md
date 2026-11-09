@@ -101,6 +101,21 @@ $env:STEWARD_NSH_RELEASE_CERT = "<path-or-secret>"
 生成的 zip 只包含 `plugin.json` 与 `plugin.nshpkg`。把 zip 顶层插件目录解压到
 `%APPDATA%\Steward\plugins` 即可。
 
+## 发布
+
+推送 `v0.3.0` 这类版本 tag 会触发 Windows 构建与发布流水线。tag 必须与
+`Cargo.toml` 中 `[workspace.package].version` 一致，且 `Changelog.md` 必须包含对应的
+`## vX.Y.Z` 小节。流水线会构建 MSI、签名并打包官方插件、生成 SHA-256 校验和，然后
+把产物发布到 GitHub Release。
+
+请在仓库 Secrets 中配置 `STEWARD_NSH_RELEASE_KEY` 和
+`STEWARD_NSH_RELEASE_CERT`，值分别为签名私钥与证书的文件内容：
+
+```powershell
+git tag v0.3.0
+git push origin v0.3.0
+```
+
 ## 文档
 
 - [架构说明](docs/architecture.md)
