@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn summoning_again_clears_the_launcher_query() {
-        let placeholder = "Search apps or type a command...";
+        let placeholder = "Search apps, settings, or type a command...";
         let (request_tx, _request_rx) = crossbeam_channel::unbounded();
         let (command_tx, _command_rx) = crossbeam_channel::unbounded();
         let services = Arc::new(AppServices::new(
@@ -475,6 +475,7 @@ mod tests {
                 UiStrings {
                     search_placeholder: placeholder.into(),
                     application: "Application".into(),
+                    settings: "Windows Settings".into(),
                     plugin: "Plugin".into(),
                     calculator: "Calculator".into(),
                     open_url: "Open URL".into(),

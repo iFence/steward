@@ -89,3 +89,29 @@ pub(crate) fn open_url(url: &str) -> Result<()> {
     let _ = url;
     anyhow::bail!("opening URLs is not yet implemented on this platform")
 }
+
+/// Open a Windows Settings page through its registered `ms-settings:` URI.
+/// Validating the URI scheme here prevents launcher actions from forwarding
+/// arbitrary shell targets through this path.
+#[cfg(target_os = "windows")]
+pub(crate) fn open_settings(uri: &str) -> Result<()> {
+    if !uri.starts_with("ms-settings:") {
+        anyhow::bail!("invalid Windows Settings URI: {uri}");
+    }
+    shell_open(std::path::Path::new(uri))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn open_settings(uri: &str) -> Result<()> {
+    let _ = uri;
+    anyhow::bail!("opening Windows Settings is only supported on Windows")
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn settings_launch_is_rejected_off_windows() {
+        assert!(super::open_settings("ms-settings:display").is_err());
+    }
+}

@@ -18,6 +18,10 @@
 Steward is a Windows launcher and plugin platform built with Rust, GPUI Fast,
 and Native Shell (NSH).
 
+Search installed applications and common Windows Settings pages from the same
+launcher, then open a matching setting directly instead of navigating through
+the Settings app.
+
 The launcher is an NSH Rust surface and the settings window uses GPUI Kit
 components, so neither starts a JavaScript VM. Plugin commands open signed TSX
 applications in full NSH windows with a 64 MiB VM, time/node quotas, and

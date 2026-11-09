@@ -1,8 +1,9 @@
-search-placeholder = 앱 검색 또는 명령 입력...
+search-placeholder = 앱이나 설정 검색 또는 명령 입력...
 app-settings = 설정
 app-autostart = 로그인 시 실행
 app-quit = 종료
 application = 앱
+settings-category = Windows 설정
 open-in-browser = 브라우저에서 열기
 command = 명령
 settings-general = 일반

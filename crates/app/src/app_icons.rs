@@ -5,6 +5,7 @@
 use std::{
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -30,10 +31,22 @@ use windows_sys::Win32::{
 };
 
 const SHELL_ICON_SIZE: i32 = 32;
+const SETTINGS_EXECUTABLE: &str = r"%SystemRoot%\ImmersiveControlPanel\SystemSettings.exe";
+
+#[cfg(test)]
+pub(crate) static ICON_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn app_icon_data_url(path: &Path) -> Option<String> {
     let png = app_icon_png(path)?;
     Some(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+}
+
+/// The Windows Settings app shares one executable across all pages. Extract
+/// its shell icon once and reuse the encoded result for every Settings row.
+pub(crate) fn settings_icon_data_url() -> Option<String> {
+    static ICON: OnceLock<Option<String>> = OnceLock::new();
+    ICON.get_or_init(|| app_icon_data_url(Path::new(SETTINGS_EXECUTABLE)))
+        .clone()
 }
 
 fn app_icon_png(path: &Path) -> Option<Vec<u8>> {
@@ -284,8 +297,21 @@ mod tests {
 
     #[test]
     fn extracts_a_system_executable_icon_as_a_data_url() {
+        let _guard = ICON_TEST_LOCK.lock().unwrap();
         let url =
             app_icon_data_url(Path::new(r"C:\Windows\System32\notepad.exe")).expect("notepad icon");
+        let encoded = url
+            .strip_prefix("data:image/png;base64,")
+            .expect("PNG data URL");
+        let png = STANDARD.decode(encoded).expect("valid base64");
+        let image = image::load_from_memory(&png).expect("valid PNG");
+        assert!(image.to_rgba8().pixels().any(|pixel| pixel.0[3] > 0));
+    }
+
+    #[test]
+    fn extracts_the_windows_settings_icon() {
+        let _guard = ICON_TEST_LOCK.lock().unwrap();
+        let url = settings_icon_data_url().expect("Windows Settings icon");
         let encoded = url
             .strip_prefix("data:image/png;base64,")
             .expect("PNG data URL");

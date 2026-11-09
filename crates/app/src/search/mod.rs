@@ -3,6 +3,7 @@
 mod applications;
 mod builtin;
 mod plugins;
+mod settings;
 
 use std::path::PathBuf;
 
@@ -12,12 +13,14 @@ use tokio::sync::oneshot;
 pub(crate) use applications::ApplicationSource;
 pub(crate) use builtin::BuiltinSource;
 pub(crate) use plugins::PluginSource;
+pub(crate) use settings::{SettingsIndex, SettingsSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowAction {
     LaunchApp(PathBuf),
     CopyText(String),
     OpenUrl(String),
+    OpenSettings(String),
     DismissNotice,
     OpenPlugin {
         plugin_id: String,

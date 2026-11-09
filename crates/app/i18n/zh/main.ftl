@@ -1,8 +1,9 @@
-search-placeholder = 搜索应用或输入命令...
+search-placeholder = 搜索应用、设置或输入命令...
 app-settings = 设置
 app-autostart = 开机自启
 app-quit = 退出
 application = 应用
+settings-category = Windows 设置
 open-in-browser = 用浏览器打开
 command = 命令
 settings-general = 通用

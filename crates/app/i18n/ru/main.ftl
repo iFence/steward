@@ -1,8 +1,9 @@
-search-placeholder = Поиск приложений или ввод команды...
+search-placeholder = Поиск приложений и параметров или ввод команды...
 app-settings = Настройки
 app-autostart = Запуск при входе в систему
 app-quit = Выйти
 application = Приложение
+settings-category = Параметры Windows
 open-in-browser = Открыть в браузере
 command = Команда
 settings-general = Общие

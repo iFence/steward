@@ -1,8 +1,9 @@
-search-placeholder = Apps suchen oder Befehl eingeben...
+search-placeholder = Apps oder Einstellungen suchen oder Befehl eingeben...
 app-settings = Einstellungen
 app-autostart = Beim Anmelden starten
 app-quit = Beenden
 application = Anwendung
+settings-category = Windows-Einstellungen
 open-in-browser = Im Browser öffnen
 command = Befehl
 settings-general = Allgemein

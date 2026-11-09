@@ -17,6 +17,7 @@ struct Assets;
 pub struct UiStrings {
     pub search_placeholder: String,
     pub application: String,
+    pub settings: String,
     pub plugin: String,
     pub calculator: String,
     pub open_url: String,
@@ -101,6 +102,7 @@ impl Localization {
         UiStrings {
             search_placeholder: self.translate("search-placeholder"),
             application: self.translate("application"),
+            settings: self.translate("settings-category"),
             plugin: self.translate("plugin"),
             calculator: self.translate("calculator"),
             open_url: self.translate("open-url"),
@@ -132,7 +134,7 @@ mod tests {
         assert_eq!(localization.language(), "zh");
         assert_ne!(
             localization.ui_strings().search_placeholder,
-            "Search apps or type a command..."
+            "Search apps, settings, or type a command..."
         );
 
         for language in ["de", "fr", "ja", "ko", "ru"] {

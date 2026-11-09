@@ -33,6 +33,9 @@ Conventions:
   starts no JavaScript VM.
 - **Settings**: language, accent, autostart, and summon-hotkey changes are
   persisted.
+- **Windows Settings search**: search common Windows Settings pages by name,
+  localized title, alias, or pinyin and open the exact page through its
+  `ms-settings:` deep link. Results use the Windows Settings system icon.
 - **Launcher readability**: the query field now uses high-contrast text and
   placeholder colors, result rows share the launcher surface with a violet
   selection fill, and the application list refreshes automatically when the

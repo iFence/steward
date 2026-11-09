@@ -17,7 +17,9 @@ use steward_ui_components::palette;
 use tokio::sync::oneshot;
 
 use crate::i18n::UiStrings;
-use crate::search::{ApplicationSource, BuiltinSource, PluginSource, SearchSource};
+use crate::search::{
+    ApplicationSource, BuiltinSource, PluginSource, SearchSource, SettingsIndex, SettingsSource,
+};
 pub use crate::search::{RowAction, SearchReply, SearchRequest};
 
 #[derive(Debug, Clone)]
@@ -185,7 +187,7 @@ impl AppServices {
             .settings
             .read()
             .map(|settings| settings.strings.search_placeholder.clone())
-            .unwrap_or_else(|_| "Search apps or type a command...".into())
+            .unwrap_or_else(|_| "Search apps, settings, or type a command...".into())
     }
 
     pub fn accent(&self) -> String {
@@ -248,8 +250,9 @@ impl AppServices {
             .read()
             .map(|settings| settings.strings.clone())
             .unwrap_or_else(|_| UiStrings {
-                search_placeholder: "Search apps or type a command...".into(),
+                search_placeholder: "Search apps, settings, or type a command...".into(),
                 application: "Application".into(),
+                settings: "Windows Settings".into(),
                 plugin: "Plugin".into(),
                 calculator: "Calculator".into(),
                 open_url: "Open URL".into(),
@@ -344,7 +347,7 @@ impl LauncherServices {
             .settings
             .read()
             .map(|settings| settings.strings.search_placeholder.clone())
-            .unwrap_or_else(|_| "Search apps or type a command...".into())
+            .unwrap_or_else(|_| "Search apps, settings, or type a command...".into())
     }
 
     pub fn search_revision(&self) -> u64 {
@@ -357,8 +360,9 @@ impl LauncherServices {
             .read()
             .map(|settings| settings.strings.clone())
             .unwrap_or_else(|_| UiStrings {
-                search_placeholder: "Search apps or type a command...".into(),
+                search_placeholder: "Search apps, settings, or type a command...".into(),
                 application: "Application".into(),
+                settings: "Windows Settings".into(),
                 plugin: "Plugin".into(),
                 calculator: "Calculator".into(),
                 open_url: "Open URL".into(),
@@ -409,6 +413,8 @@ pub fn services() -> Option<Arc<LauncherServices>> {
 pub struct SearchState {
     engine: Engine,
     strings: UiStrings,
+    locale: String,
+    settings: SettingsIndex,
     storage: std::rc::Rc<std::cell::RefCell<Storage>>,
     icon_cache: HashMap<PathBuf, Option<String>>,
     plugin_host: PluginHost,
@@ -426,6 +432,7 @@ impl SearchState {
         data_dir: PathBuf,
         storage: std::rc::Rc<std::cell::RefCell<Storage>>,
         strings: UiStrings,
+        locale: String,
     ) -> anyhow::Result<Self> {
         let cached = storage.borrow().cached_apps().unwrap_or_default();
         let mut engine = Engine::new();
@@ -443,6 +450,8 @@ impl SearchState {
         Ok(Self {
             engine,
             strings,
+            locale,
+            settings: SettingsIndex::new(),
             storage,
             icon_cache: HashMap::new(),
             plugin_host,
@@ -469,7 +478,8 @@ impl SearchState {
         self.search_revision.clone()
     }
 
-    pub fn set_ui_strings(&mut self, strings: UiStrings) {
+    pub fn set_ui_strings(&mut self, locale: impl Into<String>, strings: UiStrings) {
+        self.locale = locale.into();
         self.strings = strings;
     }
 
@@ -586,8 +596,13 @@ impl SearchState {
             host: &self.plugin_host,
             label: &self.strings.plugin,
         };
-        let mut sources: [&mut dyn SearchSource; 3] =
-            [&mut builtin, &mut applications, &mut plugins];
+        let mut settings = SettingsSource {
+            index: &self.settings,
+            label: &self.strings.settings,
+            locale: &self.locale,
+        };
+        let mut sources: [&mut dyn SearchSource; 4] =
+            [&mut builtin, &mut applications, &mut settings, &mut plugins];
         let contribution = crate::search::collect(&mut sources, trimmed);
         (contribution.rows, contribution.actions)
     }
@@ -663,6 +678,20 @@ mod tests {
         }
     }
 
+    fn ui_strings() -> UiStrings {
+        UiStrings {
+            search_placeholder: "Search".into(),
+            application: "Application".into(),
+            settings: "Windows Settings".into(),
+            plugin: "Plugin".into(),
+            calculator: "Calculator".into(),
+            open_url: "Open URL".into(),
+            launcher_navigate: "Navigate".into(),
+            launcher_open: "Open".into(),
+            launcher_close: "Close".into(),
+        }
+    }
+
     fn services() -> AppServices {
         let (request_tx, _request_rx) = crossbeam_channel::unbounded();
         let (command_tx, _command_rx) = crossbeam_channel::unbounded();
@@ -671,16 +700,7 @@ mod tests {
             command_tx,
             UiSettings::new(
                 "en".into(),
-                UiStrings {
-                    search_placeholder: "Search".into(),
-                    application: "Application".into(),
-                    plugin: "Plugin".into(),
-                    calculator: "Calculator".into(),
-                    open_url: "Open URL".into(),
-                    launcher_navigate: "Navigate".into(),
-                    launcher_open: "Open".into(),
-                    launcher_close: "Close".into(),
-                },
+                ui_strings(),
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
@@ -727,21 +747,7 @@ mod tests {
                 .as_nanos()
         ));
         let storage = Rc::new(RefCell::new(Storage::open_at(&dir).unwrap()));
-        let mut state = SearchState::new(
-            dir.clone(),
-            storage,
-            UiStrings {
-                search_placeholder: "Search".into(),
-                application: "Application".into(),
-                plugin: "Plugin".into(),
-                calculator: "Calculator".into(),
-                open_url: "Open URL".into(),
-                launcher_navigate: "Navigate".into(),
-                launcher_open: "Open".into(),
-                launcher_close: "Close".into(),
-            },
-        )
-        .unwrap();
+        let mut state = SearchState::new(dir.clone(), storage, ui_strings(), "en".into()).unwrap();
         let (tx, rx) = crossbeam_channel::bounded::<
             Result<steward_plugin_host::PluginLaunch, steward_plugin_host::PluginHostError>,
         >(1);
@@ -766,6 +772,33 @@ mod tests {
                 ..
             })
         ));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn windows_settings_are_part_of_local_launcher_results() {
+        let dir = std::env::temp_dir().join(format!(
+            "steward-settings-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = Rc::new(RefCell::new(Storage::open_at(&dir).unwrap()));
+        let mut state = SearchState::new(dir.clone(), storage, ui_strings(), "zh".into()).unwrap();
+
+        #[cfg(target_os = "windows")]
+        let _icon_guard = crate::app_icons::ICON_TEST_LOCK.lock().unwrap();
+        let (rows, actions) = state.local_rows("lanya");
+
+        assert!(rows
+            .iter()
+            .any(|row| row.id == "settings:ms-settings:bluetooth"));
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            RowAction::OpenSettings(uri) if uri == "ms-settings:bluetooth"
+        )));
         std::fs::remove_dir_all(dir).ok();
     }
 }

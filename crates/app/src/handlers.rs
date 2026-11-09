@@ -215,7 +215,7 @@ fn set_language(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, locale: &str) 
         state.i18n.select_language(locale);
         let strings = state.i18n.ui_strings();
         state.services.set_locale(locale, strings.clone());
-        state.search.borrow_mut().set_ui_strings(strings);
+        state.search.borrow_mut().set_ui_strings(locale, strings);
         if let Some(tray) = state.tray.borrow().as_ref() {
             if let Err(error) = tray.set_language(&state.i18n) {
                 error!(error = %format!("{error:#}"), "update tray language");
@@ -266,6 +266,14 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
         RowAction::OpenUrl(url) => {
             if let Err(error) = crate::launch::open_url(&url) {
                 error!(url, error = %format!("{error:#}"), "open URL");
+            }
+        }
+        RowAction::OpenSettings(uri) => {
+            if let Err(error) = crate::launch::open_settings(&uri) {
+                error!(uri, error = %format!("{error:#}"), "open Windows Settings");
+            }
+            if let Some(handle) = state.borrow().window {
+                let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
             }
         }
         RowAction::DismissNotice => state.borrow().services.clear_notice(),

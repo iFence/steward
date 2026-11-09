@@ -82,6 +82,7 @@ fn main() {
         Localization::new_with_language(language.as_deref())
             .expect("failed to initialize localization"),
     );
+    let locale = language.clone().unwrap_or_else(|| i18n.language());
     let ui_strings = i18n.ui_strings();
     let accent = storage
         .borrow()
@@ -91,8 +92,13 @@ fn main() {
     let summon_hotkey = hotkeys::persisted_summon_hotkey(&storage.borrow()).to_string();
 
     let search = Rc::new(RefCell::new(
-        SearchState::new(data_dir.clone(), storage.clone(), ui_strings.clone())
-            .expect("failed to initialize launcher search"),
+        SearchState::new(
+            data_dir.clone(),
+            storage.clone(),
+            ui_strings.clone(),
+            locale.clone(),
+        )
+        .expect("failed to initialize launcher search"),
     ));
     load_trust_roots(&search);
     search.borrow_mut().start();
@@ -104,13 +110,7 @@ fn main() {
     let services = Arc::new(AppServices::new(
         request_tx,
         command_tx,
-        UiSettings::new(
-            language.clone().unwrap_or_else(|| "en".into()),
-            ui_strings,
-            accent,
-            autostart,
-            summon_hotkey,
-        ),
+        UiSettings::new(locale, ui_strings, accent, autostart, summon_hotkey),
         search_revision,
     ));
     let (clipboard_tx, clipboard_rx) = crossbeam_channel::unbounded();

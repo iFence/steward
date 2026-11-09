@@ -1,8 +1,9 @@
-search-placeholder = アプリの検索、またはコマンドを入力...
+search-placeholder = アプリや設定を検索、またはコマンドを入力...
 app-settings = 設定
 app-autostart = サインイン時に起動
 app-quit = 終了
 application = アプリ
+settings-category = Windows の設定
 open-in-browser = ブラウザで開く
 command = コマンド
 settings-general = 一般
