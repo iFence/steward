@@ -8,9 +8,11 @@ use nsh_core::keymap::When;
 use nsh_core::ui::{prelude::*, px, rgb};
 use steward_ui_components::{result_list, LauncherRow};
 
+use crate::config::{
+    LAUNCHER_HEADER_HEIGHT, LAUNCHER_INPUT_HEIGHT, LAUNCHER_INPUT_INSET, LAUNCHER_MARGIN,
+};
 use crate::services::{services, LauncherServices, RowAction, WindowCommand};
 
-const HEADER_HEIGHT: f32 = 60.0;
 const MAX_VISIBLE_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 42.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(40);
@@ -60,7 +62,8 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 actions_value.insert(0, RowAction::DismissNotice);
                             }
                             let visible_rows = rows_value.len().min(MAX_VISIBLE_ROWS);
-                            let height = HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT;
+                            let height =
+                                LAUNCHER_HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT;
                             rows.set(rows_value);
                             actions.set(actions_value);
                             selected.set(0);
@@ -200,7 +203,7 @@ pub fn StewardLauncher() -> impl IntoElement {
 
     view()
         .size_full()
-        .p(px(4.0))
+        .py(px(LAUNCHER_MARGIN))
         .window_drag(true)
         .bg(rgb(steward_ui_components::palette::BACKGROUND).opacity(scrim_alpha.get()))
         .child(
@@ -208,17 +211,18 @@ pub fn StewardLauncher() -> impl IntoElement {
                 .size_full()
                 .flex_col()
                 .overflow_hidden()
-                .window_drag(false)
                 .child(
                     view()
-                        .h(px(HEADER_HEIGHT))
-                        .px_3()
+                        .h(px(LAUNCHER_HEADER_HEIGHT))
+                        .px(px(LAUNCHER_INPUT_INSET))
                         .flex_row()
                         .items_center()
+                        .window_drag(true)
                         .child(
                             input()
                                 .element_ref(&input_ref)
                                 .flex_1()
+                                .h(px(LAUNCHER_INPUT_HEIGHT))
                                 .bg(rgba(0x00000000))
                                 .value(move || query.get())
                                 .placeholder(move || {
@@ -246,7 +250,7 @@ pub fn StewardLauncher() -> impl IntoElement {
                 .when(has_rows(), |this| {
                     this.child(view().w_full().h(px(1.0)).bg(rgb(0xffffff).opacity(0.04)))
                 })
-                .child(view().flex_1().child(result_list(
+                .child(view().flex_1().window_drag(false).child(result_list(
                     rows,
                     selected,
                     &list_ref,

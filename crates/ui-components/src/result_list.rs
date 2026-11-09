@@ -42,6 +42,7 @@ pub fn result_list(
         let activate = on_activate.clone();
 
         let mut result = view()
+            .w_full()
             .h(px(ROW_HEIGHT))
             .px_3()
             .gap_3()

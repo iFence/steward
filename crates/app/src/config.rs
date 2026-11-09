@@ -10,7 +10,13 @@ actions!(steward, [HideWindow]);
 /// display GPUI renders them at 2× physical pixels, like any other app.
 pub const LAUNCHER_WIDTH: f32 = 760.0;
 pub const LAUNCHER_HEIGHT: f32 = 60.0;
-/// Width of the non-interactive margin around the input box. This margin is
+/// Height of the launcher header containing the search input.
+pub const LAUNCHER_HEADER_HEIGHT: f32 = 60.0;
+/// Height and horizontal inset of the search input. The surrounding header
+/// area is the launcher's window drag region.
+pub const LAUNCHER_INPUT_HEIGHT: f32 = 28.0;
+pub const LAUNCHER_INPUT_INSET: f32 = 12.0;
+/// Vertical inset around the launcher content. The header's non-input area is
 /// the window's drag handle; the input box itself is not draggable.
 pub const LAUNCHER_MARGIN: f32 = 4.0;
 /// Width of a detached plugin-view widget window (logical px). A floating

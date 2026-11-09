@@ -21,24 +21,33 @@ mod windows {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::time::Duration;
     use windows_sys::Win32::{
-        Foundation::{HWND, POINT},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         Graphics::Gdi::{
             BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
             GetMonitorInfoW, GetPixel, MonitorFromPoint, MonitorFromWindow, ReleaseDC,
-            SelectObject, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
+            ScreenToClient, SelectObject, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
         },
         System::LibraryLoader::{GetProcAddress, LoadLibraryA},
         System::Threading::{AttachThreadInput, GetCurrentThreadId},
         UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
+        UI::Shell::{DefSubclassProc, SetWindowSubclass},
         UI::WindowsAndMessaging::{
             GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
             GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
-            SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WS_THICKFRAME,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE, HTCAPTION, HWND_TOPMOST,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+            SW_SHOW, WM_NCHITTEST, WS_THICKFRAME,
         },
     };
 
+    use crate::config::{
+        LAUNCHER_HEADER_HEIGHT, LAUNCHER_HEIGHT, LAUNCHER_INPUT_HEIGHT, LAUNCHER_INPUT_INSET,
+        LAUNCHER_MARGIN,
+    };
+
     use super::Rect;
+
+    const LAUNCHER_DRAG_SUBCLASS_ID: usize = 0x5354_4557;
 
     /// Declare PerMonitorV2 DPI awareness (Windows 10 1703+). Without this the
     /// OS virtualizes the process at 96 DPI and upscales the window, which
@@ -156,6 +165,56 @@ mod windows {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             );
         }
+    }
+
+    /// Mark the launcher header outside the search input as a native title-bar
+    /// drag area. NSH's `window_drag` prop currently reaches Windows as
+    /// `HTCLIENT`, so handle the hit test at Steward's window boundary.
+    pub fn install_launcher_drag(window: &Window) {
+        let Some(hwnd) = hwnd(window) else {
+            return;
+        };
+        unsafe {
+            SetWindowSubclass(hwnd, Some(launcher_drag_proc), LAUNCHER_DRAG_SUBCLASS_ID, 0);
+        }
+    }
+
+    unsafe extern "system" fn launcher_drag_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _subclass_id: usize,
+        _reference_data: usize,
+    ) -> LRESULT {
+        if message == WM_NCHITTEST {
+            let mut point = POINT {
+                x: (lparam as i32 & 0xffff) as i16 as i32,
+                y: ((lparam as i32 >> 16) & 0xffff) as i16 as i32,
+            };
+            let mut client = std::mem::zeroed();
+            if ScreenToClient(hwnd, &mut point) != 0 && GetClientRect(hwnd, &mut client) != 0 {
+                let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
+                if launcher_drag_at(
+                    point.x as f32 / scale,
+                    point.y as f32 / scale,
+                    client.right as f32 / scale,
+                ) {
+                    return HTCAPTION as LRESULT;
+                }
+            }
+        }
+        DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+
+    fn launcher_drag_at(x: f32, y: f32, width: f32) -> bool {
+        let header_bottom = LAUNCHER_MARGIN + LAUNCHER_HEADER_HEIGHT;
+        let input_top = LAUNCHER_MARGIN + (LAUNCHER_HEIGHT - LAUNCHER_INPUT_HEIGHT) / 2.0;
+        let input_bottom = input_top + LAUNCHER_INPUT_HEIGHT;
+        let in_header = (0.0..header_bottom).contains(&y);
+        let in_input = (LAUNCHER_INPUT_INSET..width - LAUNCHER_INPUT_INSET).contains(&x)
+            && (input_top..input_bottom).contains(&y);
+        in_header && !in_input
     }
 
     /// HWND-based visibility check, safe to call from the event-poll thread
@@ -586,6 +645,23 @@ mod windows {
         #[test]
         fn placement_stays_centered_in_the_upper_third() {
             assert_eq!(place(work(), 760, 60), (580, 326));
+        }
+
+        #[test]
+        fn launcher_header_drag_area_excludes_the_search_input() {
+            let width = 760.0;
+
+            assert!(launcher_drag_at(4.0, 4.0, width));
+            assert!(launcher_drag_at(4.0, 30.0, width));
+            assert!(launcher_drag_at(380.0, 19.0, width));
+            assert!(launcher_drag_at(380.0, 48.0, width));
+            assert!(launcher_drag_at(748.0, 30.0, width));
+
+            assert!(!launcher_drag_at(12.0, 30.0, width));
+            assert!(!launcher_drag_at(380.0, 20.0, width));
+            assert!(!launcher_drag_at(380.0, 47.0, width));
+            assert!(!launcher_drag_at(747.0, 30.0, width));
+            assert!(!launcher_drag_at(380.0, 64.0, width));
         }
     }
 }

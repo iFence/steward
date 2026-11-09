@@ -55,6 +55,8 @@ pub(crate) fn open_launcher_window(
         },
         move |window, cx| {
             window.set_window_title("Steward");
+            #[cfg(target_os = "windows")]
+            platform::install_launcher_drag(window);
             let activation_services = services.clone();
             cx.new(|cx| {
                 let was_active = std::rc::Rc::new(Cell::new(false));
