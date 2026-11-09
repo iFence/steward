@@ -31,3 +31,6 @@ settings-launch-at-startup = 로그인 시 실행
 settings-accent-color = 강조 색상
 settings-summon-steward = Steward 호출
 settings-hotkey-invalid = 유효한 키 조합을 입력하세요. 예: control+alt+Space.
+launcher-navigate = 탐색
+launcher-open = 열기
+launcher-close = 닫기

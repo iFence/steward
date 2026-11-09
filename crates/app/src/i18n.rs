@@ -20,6 +20,9 @@ pub struct UiStrings {
     pub plugin: String,
     pub calculator: String,
     pub open_url: String,
+    pub launcher_navigate: String,
+    pub launcher_open: String,
+    pub launcher_close: String,
 }
 
 /// Compiled Fluent resources bound to the `main` domain (see `main.ftl`).
@@ -101,6 +104,9 @@ impl Localization {
             plugin: self.translate("plugin"),
             calculator: self.translate("calculator"),
             open_url: self.translate("open-url"),
+            launcher_navigate: self.translate("launcher-navigate"),
+            launcher_open: self.translate("launcher-open"),
+            launcher_close: self.translate("launcher-close"),
         }
     }
 }
@@ -115,9 +121,11 @@ mod tests {
         assert_eq!(localization.translate("app-autostart"), "Launch at Startup");
         assert_eq!(localization.translate("open-in-browser"), "Open in Browser");
         assert_eq!(localization.translate("command"), "Command");
+        assert_eq!(localization.ui_strings().launcher_navigate, "Navigate");
 
         // Switching at runtime affects every shared handle immediately.
         localization.select_language("zh");
+        assert_ne!(localization.ui_strings().launcher_navigate, "Navigate");
         assert_eq!(localization.translate("app-autostart"), "开机自启");
         assert_eq!(localization.translate("open-in-browser"), "用浏览器打开");
         assert_eq!(localization.translate("command"), "命令");
@@ -126,6 +134,15 @@ mod tests {
             localization.ui_strings().search_placeholder,
             "Search apps or type a command..."
         );
+
+        for language in ["de", "fr", "ja", "ko", "ru"] {
+            localization.select_language(language);
+            assert_ne!(
+                localization.translate("launcher-navigate"),
+                "launcher-navigate",
+                "missing launcher status translations for {language}"
+            );
+        }
 
         localization.select_language("ko");
         assert_eq!(localization.translate("app-autostart"), "로그인 시 실행");

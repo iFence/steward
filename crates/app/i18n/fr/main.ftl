@@ -31,3 +31,6 @@ settings-launch-at-startup = Lancer au démarrage
 settings-accent-color = Couleur d’accentuation
 settings-summon-steward = Afficher Steward
 settings-hotkey-invalid = Saisissez un raccourci valide, par exemple control+alt+Space.
+launcher-navigate = Naviguer
+launcher-open = Ouvrir
+launcher-close = Fermer

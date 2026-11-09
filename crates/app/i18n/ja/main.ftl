@@ -31,3 +31,6 @@ settings-launch-at-startup = ログイン時に起動
 settings-accent-color = アクセントカラー
 settings-summon-steward = Steward を呼び出す
 settings-hotkey-invalid = 有効なキーの組み合わせを入力してください。例: control+alt+Space。
+launcher-navigate = 移動
+launcher-open = 開く
+launcher-close = 閉じる

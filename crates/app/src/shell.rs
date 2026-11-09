@@ -10,6 +10,7 @@ use steward_ui_components::{result_list, LauncherRow};
 
 use crate::config::{
     LAUNCHER_HEADER_HEIGHT, LAUNCHER_INPUT_HEIGHT, LAUNCHER_INPUT_INSET, LAUNCHER_MARGIN,
+    LAUNCHER_STATUS_BAR_HEIGHT,
 };
 use crate::services::{services, LauncherServices, RowAction, WindowCommand};
 
@@ -61,9 +62,7 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 );
                                 actions_value.insert(0, RowAction::DismissNotice);
                             }
-                            let visible_rows = rows_value.len().min(MAX_VISIBLE_ROWS);
-                            let height =
-                                LAUNCHER_HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT;
+                            let height = launcher_height(rows_value.len().min(MAX_VISIBLE_ROWS));
                             rows.set(rows_value);
                             actions.set(actions_value);
                             selected.set(0);
@@ -225,9 +224,12 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 .h(px(LAUNCHER_INPUT_HEIGHT))
                                 .bg(rgba(0x00000000))
                                 .value(move || query.get())
-                                .placeholder(move || {
-                                    let _ = observed_locale.get();
-                                    app.search_placeholder()
+                                .placeholder({
+                                    let app = app.clone();
+                                    move || {
+                                        let _ = observed_locale.get();
+                                        app.search_placeholder()
+                                    }
                                 })
                                 .on_change({
                                     let filter = filter.clone();
@@ -259,8 +261,91 @@ pub fn StewardLauncher() -> impl IntoElement {
                         let activate = activate.clone();
                         move |index| activate(index)
                     },
-                ))),
+                )))
+                .child(
+                    view()
+                        .h(px(LAUNCHER_STATUS_BAR_HEIGHT))
+                        .w_full()
+                        .px(px(LAUNCHER_INPUT_INSET))
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .border_t(px(1.0))
+                        .border_color(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.06))
+                        .window_drag(false)
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap_3()
+                                .child(status_hint("↑↓", {
+                                    let app = app.clone();
+                                    move || {
+                                        let _ = observed_locale.get();
+                                        app.ui_strings().launcher_navigate
+                                    }
+                                }))
+                                .child(status_hint("↵", {
+                                    let app = app.clone();
+                                    move || {
+                                        let _ = observed_locale.get();
+                                        app.ui_strings().launcher_open
+                                    }
+                                }))
+                                .child(status_hint("Esc", {
+                                    let app = app.clone();
+                                    move || {
+                                        let _ = observed_locale.get();
+                                        app.ui_strings().launcher_close
+                                    }
+                                })),
+                        )
+                        .child(
+                            text(move || result_position(selected.get(), rows.with(Vec::len)))
+                                .text_size(px(11.0))
+                                .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND)),
+                        ),
+                ),
         )
+}
+
+fn launcher_height(visible_rows: usize) -> f32 {
+    LAUNCHER_HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT + LAUNCHER_STATUS_BAR_HEIGHT
+}
+
+fn status_hint(key: &'static str, label: impl Fn() -> String + 'static) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .child(
+            view()
+                .h(px(18.0))
+                .min_w(px(22.0))
+                .px(px(5.0))
+                .rounded(px(5.0))
+                .bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.08))
+                .items_center()
+                .justify_center()
+                .child(
+                    text(key)
+                        .text_size(px(10.0))
+                        .text_color(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.72)),
+                ),
+        )
+        .child(
+            text(label)
+                .text_size(px(11.0))
+                .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND)),
+        )
+}
+
+fn result_position(selected: usize, len: usize) -> String {
+    if len == 0 {
+        "0 / 0".into()
+    } else {
+        format!("{} / {len}", selected.min(len - 1) + 1)
+    }
 }
 
 fn bind_launcher_key(key: &'static str, repeat: bool, handler: Rc<dyn Fn(&str)>) {
@@ -317,7 +402,9 @@ mod tests {
     use nsh_engine::EngineConfig;
     use nsh_testing::Headless;
 
-    use super::{next_selection, submission_action, StewardLauncher};
+    use super::{
+        launcher_height, next_selection, result_position, submission_action, StewardLauncher,
+    };
     use crate::{
         i18n::UiStrings,
         services::{AppServices, RowAction, UiSettings},
@@ -332,6 +419,20 @@ mod tests {
         assert_eq!(next_selection(9, 3, 1), None);
         assert_eq!(next_selection(9, 3, -1), Some(1));
         assert_eq!(next_selection(0, 0, 1), None);
+    }
+
+    #[test]
+    fn launcher_height_includes_the_status_bar() {
+        assert_eq!(launcher_height(0), 96.0);
+        assert_eq!(launcher_height(8), 432.0);
+    }
+
+    #[test]
+    fn status_bar_reports_the_clamped_result_position() {
+        assert_eq!(result_position(0, 0), "0 / 0");
+        assert_eq!(result_position(0, 3), "1 / 3");
+        assert_eq!(result_position(2, 3), "3 / 3");
+        assert_eq!(result_position(9, 3), "3 / 3");
     }
 
     #[test]
@@ -377,6 +478,9 @@ mod tests {
                     plugin: "Plugin".into(),
                     calculator: "Calculator".into(),
                     open_url: "Open URL".into(),
+                    launcher_navigate: "Navigate".into(),
+                    launcher_open: "Open".into(),
+                    launcher_close: "Close".into(),
                 },
                 "#863bff".into(),
                 false,
@@ -390,6 +494,7 @@ mod tests {
         };
         let mut app = Headless::start(config).unwrap();
         app.wait_for(&format!("text:{placeholder}")).unwrap();
+        app.wait_for("text:Navigate").unwrap();
         app.type_text(&format!("text:{placeholder}"), "8*8")
             .unwrap();
         app.wait_for("text:8*8").unwrap();

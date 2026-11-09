@@ -242,6 +242,23 @@ impl AppServices {
         self.query.search_revision.load(Ordering::Relaxed)
     }
 
+    pub fn ui_strings(&self) -> UiStrings {
+        self.settings
+            .settings
+            .read()
+            .map(|settings| settings.strings.clone())
+            .unwrap_or_else(|_| UiStrings {
+                search_placeholder: "Search apps or type a command...".into(),
+                application: "Application".into(),
+                plugin: "Plugin".into(),
+                calculator: "Calculator".into(),
+                open_url: "Open URL".into(),
+                launcher_navigate: "Navigate".into(),
+                launcher_open: "Open".into(),
+                launcher_close: "Close".into(),
+            })
+    }
+
     pub fn locale_revision(&self) -> u64 {
         self.query.locale_revision.load(Ordering::Relaxed)
     }
@@ -332,6 +349,23 @@ impl LauncherServices {
 
     pub fn search_revision(&self) -> u64 {
         self.query.search_revision.load(Ordering::Relaxed)
+    }
+
+    pub fn ui_strings(&self) -> UiStrings {
+        self.settings
+            .settings
+            .read()
+            .map(|settings| settings.strings.clone())
+            .unwrap_or_else(|_| UiStrings {
+                search_placeholder: "Search apps or type a command...".into(),
+                application: "Application".into(),
+                plugin: "Plugin".into(),
+                calculator: "Calculator".into(),
+                open_url: "Open URL".into(),
+                launcher_navigate: "Navigate".into(),
+                launcher_open: "Open".into(),
+                launcher_close: "Close".into(),
+            })
     }
 
     pub fn locale_revision(&self) -> u64 {
@@ -643,6 +677,9 @@ mod tests {
                     plugin: "Plugin".into(),
                     calculator: "Calculator".into(),
                     open_url: "Open URL".into(),
+                    launcher_navigate: "Navigate".into(),
+                    launcher_open: "Open".into(),
+                    launcher_close: "Close".into(),
                 },
                 "#863bff".into(),
                 false,
@@ -699,6 +736,9 @@ mod tests {
                 plugin: "Plugin".into(),
                 calculator: "Calculator".into(),
                 open_url: "Open URL".into(),
+                launcher_navigate: "Navigate".into(),
+                launcher_open: "Open".into(),
+                launcher_close: "Close".into(),
             },
         )
         .unwrap();

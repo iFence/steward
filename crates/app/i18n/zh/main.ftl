@@ -31,3 +31,6 @@ settings-launch-at-startup = 开机自启
 settings-accent-color = 强调色
 settings-summon-steward = 唤起 Steward
 settings-hotkey-invalid = 请输入有效的快捷键组合，例如 control+alt+Space。
+launcher-navigate = 导航
+launcher-open = 打开
+launcher-close = 关闭

@@ -31,3 +31,6 @@ settings-launch-at-startup = Запускать при входе
 settings-accent-color = Акцентный цвет
 settings-summon-steward = Вызвать Steward
 settings-hotkey-invalid = Введите допустимую комбинацию клавиш, например control+alt+Space.
+launcher-navigate = Навигация
+launcher-open = Открыть
+launcher-close = Закрыть

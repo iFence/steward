@@ -16,6 +16,8 @@ pub const LAUNCHER_HEADER_HEIGHT: f32 = 60.0;
 /// area is the launcher's window drag region.
 pub const LAUNCHER_INPUT_HEIGHT: f32 = 28.0;
 pub const LAUNCHER_INPUT_INSET: f32 = 12.0;
+/// Height of the launcher status bar below the result list.
+pub const LAUNCHER_STATUS_BAR_HEIGHT: f32 = 28.0;
 /// Vertical inset around the launcher content. The header's non-input area is
 /// the window's drag handle; the input box itself is not draggable.
 pub const LAUNCHER_MARGIN: f32 = 4.0;
