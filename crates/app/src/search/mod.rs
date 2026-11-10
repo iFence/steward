@@ -2,6 +2,7 @@
 
 mod applications;
 mod builtin;
+mod files;
 mod plugins;
 mod settings;
 
@@ -12,12 +13,14 @@ use tokio::sync::oneshot;
 
 pub(crate) use applications::ApplicationSource;
 pub(crate) use builtin::BuiltinSource;
+pub(crate) use files::{FileSearchCache, FileSearchSource};
 pub(crate) use plugins::PluginSource;
 pub(crate) use settings::{SettingsIndex, SettingsSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowAction {
     LaunchApp(PathBuf),
+    OpenFile(PathBuf),
     CopyText(String),
     OpenUrl(String),
     OpenSettings(String),

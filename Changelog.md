@@ -19,9 +19,11 @@ Conventions:
 - **Launcher input focus**: summoning the launcher now reasserts the search
   input focus through window activation and short startup retries, so typing
   no longer occasionally lands nowhere while the caret is visible.
-- **Launcher contrast and dismissal**: the translucent surface now darkens
-  automatically over bright backdrops so query and placeholder text stay
-  readable, and the launcher closes as soon as another application receives
+- **Launcher contrast and dismissal**: the translucent surface now stays at
+  least 75% opaque and darkens further over bright backdrops so query and
+  placeholder text stay readable, result-type labels use larger high-contrast
+  text, control-bar hints and the result counter use the same secondary-text
+  contrast, and the launcher closes as soon as another application receives
   focus.
 - **Launcher dragging**: the padded edge of the launcher is now a window drag
   handle, so the panel can be moved without affecting search or result clicks.
@@ -36,6 +38,11 @@ Conventions:
 - **Windows Settings search**: search common Windows Settings pages by name,
   localized title, alias, or pinyin and open the exact page through its
   `ms-settings:` deep link. Results use the Windows Settings system icon.
+- **Indexed file search**: queries Windows Search's `SystemIndex` through
+  `ISearchQueryHelper` across every location included in the Windows Search
+  index. Indexed queries run off the launcher thread, and an unavailable search
+  service produces a direct Windows Search settings repair action instead of
+  falling back to disk scans.
 - **Launcher readability**: the query field now uses high-contrast text and
   placeholder colors, result rows share the launcher surface with a violet
   selection fill, and the application list refreshes automatically when the
@@ -71,8 +78,8 @@ Conventions:
   dynamic triggers, detached panels, and the dock workspace are removed.
 - Existing plugins must be rewritten as NSH applications and repackaged.
 - Plugin storage and window layout are not migrated.
-- Full-disk file indexing, file search, and the privileged index helper are
-  removed.
+- Full-disk file indexing and the privileged index helper are removed. File
+  search now depends on Windows Search's indexed locations.
 
 ---
 

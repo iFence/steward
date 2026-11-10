@@ -1,4 +1,6 @@
-search-placeholder = Search apps, settings, or type a command...
+search-placeholder = Search apps, files, settings, or type a command...
+file-search-unavailable = Windows Search is unavailable
+file-search-repair = Open Windows Search settings
 app-settings = Settings
 app-autostart = Launch at Startup
 app-quit = Quit

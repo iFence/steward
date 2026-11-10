@@ -303,7 +303,9 @@ pub fn StewardLauncher() -> impl IntoElement {
                         .child(
                             text(move || result_position(selected.get(), rows.with(Vec::len)))
                                 .text_size(px(11.0))
-                                .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND)),
+                                .text_color(rgb(
+                                    steward_ui_components::palette::RESULT_LABEL_FOREGROUND,
+                                )),
                         ),
                 ),
         )
@@ -328,15 +330,16 @@ fn status_hint(key: &'static str, label: impl Fn() -> String + 'static) -> impl 
                 .items_center()
                 .justify_center()
                 .child(
-                    text(key)
-                        .text_size(px(10.0))
-                        .text_color(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.72)),
+                    text(key).text_size(px(10.0)).text_color(
+                        rgb(steward_ui_components::palette::FOREGROUND)
+                            .opacity(steward_ui_components::palette::PLACEHOLDER_OPACITY),
+                    ),
                 ),
         )
         .child(
             text(label)
                 .text_size(px(11.0))
-                .text_color(rgb(steward_ui_components::palette::MUTED_FOREGROUND)),
+                .text_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND)),
         )
 }
 
@@ -464,7 +467,7 @@ mod tests {
 
     #[test]
     fn summoning_again_clears_the_launcher_query() {
-        let placeholder = "Search apps, settings, or type a command...";
+        let placeholder = "Search apps, files, settings, or type a command...";
         let (request_tx, _request_rx) = crossbeam_channel::unbounded();
         let (command_tx, _command_rx) = crossbeam_channel::unbounded();
         let services = Arc::new(AppServices::new(
@@ -475,6 +478,8 @@ mod tests {
                 UiStrings {
                     search_placeholder: placeholder.into(),
                     application: "Application".into(),
+                    file_search_unavailable: "Windows Search is unavailable".into(),
+                    file_search_repair: "Open Windows Search settings".into(),
                     settings: "Windows Settings".into(),
                     plugin: "Plugin".into(),
                     calculator: "Calculator".into(),

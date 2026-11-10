@@ -1,4 +1,6 @@
-search-placeholder = 搜索应用、设置或输入命令...
+search-placeholder = 搜索应用、文件、设置或输入命令...
+file-search-unavailable = Windows 搜索不可用
+file-search-repair = 打开 Windows 搜索设置
 app-settings = 设置
 app-autostart = 开机自启
 app-quit = 退出

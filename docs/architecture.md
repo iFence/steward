@@ -11,7 +11,8 @@
 Steward is a Windows-first launcher and plugin platform. It starts silently in
 the system tray, summons a focused launcher with a global hotkey, searches
 installed applications, Windows Settings pages, built-in actions, and installed
-plugin routes, and opens each plugin as a full NSH application window.
+plugin routes, and opens each plugin as a full NSH application window. On
+Windows, it also searches files indexed by the system Windows Search service.
 
 The product's performance target is:
 
@@ -19,6 +20,13 @@ The product's performance target is:
 - no plugin VM until a plugin window opens;
 - one VM per open plugin, destroyed with its window;
 - explicit memory, stack, call, load, and UI-node limits.
+
+## Launcher Surface
+
+The launcher uses a dark, blurred Acrylic/vibrancy surface. Its scrim is at
+least 75% opaque so panel text stays legible while some backdrop blur remains,
+and it adapts up to 90% opacity when the sampled backdrop is bright. The
+settings window remains fully opaque.
 
 ## Process and Runtime Model
 
@@ -30,6 +38,7 @@ steward-app.exe
         +-- Steward launcher window
         |     +-- NSH Rust root
         |     +-- application search services
+        |     +-- Windows Search SystemIndex client
         |     +-- Windows Settings page catalog
         |     +-- plugin route catalog
         |
@@ -51,7 +60,7 @@ inside `crates/app/src/plugin_window.rs` when a verified package opens.
 
 | Crate | Responsibility |
 |---|---|
-| `steward-app` | GPUI Fast application, windows, tray, hotkey, search events, plugin windows |
+| `steward-app` | GPUI Fast application, windows, tray, hotkey, search events, Windows Search file queries, plugin windows |
 | `steward-core-engine` | application matching, calculator, URL detection |
 | `steward-search` | shared pinyin haystacks and fuzzy-search vocabulary |
 | `steward-plugin-contract` | versioned launch, notice, error, and session DTOs |
@@ -60,34 +69,42 @@ inside `crates/app/src/plugin_window.rs` when a verified package opens.
 | `steward-storage` | SQLite settings, usage, app cache, and clipboard rows |
 | `steward-ui-components` | NSH Rust launcher rows and palette |
 
-The application splits launcher search into built-in, application, Windows
-Settings, and plugin sources. A narrow launcher service exposes only the query,
-command, settings, and notice ports needed by the NSH shell; settings and plugin
-windows continue to share the application-service composition root.
+The application splits launcher search into built-in, application, indexed
+file, Windows Settings, and plugin sources. A narrow launcher service exposes
+only the query, command, settings, and notice ports needed by the NSH shell;
+settings and plugin windows continue to share the application-service
+composition root.
 
 There is no plugin-runtime executable and no custom IPC protocol crate.
 
 ## Search and Launch Flow
 
-Steward does not build or query a full-disk file index. Search is limited to
-installed applications, a prebuilt Windows Settings page catalog, built-in
-actions, and plugin routes. The storage migration removes file-index snapshots
-left by earlier releases.
+Steward does not build a full-disk file index. Windows file search queries the
+system `SystemIndex` through `ISearchQueryHelper` and OLE DB across every
+location included in the Windows Search index. The query runs on a dedicated
+worker thread and coalesces pending keystrokes to the latest text. If Windows
+Search is unavailable, the launcher offers a Windows Search settings repair
+action and does not fall back to directory walking. The storage migration
+removes private file-index snapshots left by earlier releases.
 
 1. At startup, the route catalog is loaded from the SQLite plugin metadata
    cache. A background rescan updates the cache without starting a VM.
-2. Launcher searches fan out to the cached application index, the in-memory
-   Settings and plugin route indexes, and built-in commands.
-3. The Settings index reuses the shared `nucleo` matcher and pinyin haystacks;
+2. Launcher searches fan out to the cached application index, the Windows
+   Search worker, the in-memory Settings and plugin route indexes, and built-in
+   commands.
+3. Local results return immediately. A matching Windows Search result advances
+   the search revision so the NSH shell re-queries and adds indexed files; stale
+   file replies are discarded.
+4. The Settings index reuses the shared `nucleo` matcher and pinyin haystacks;
    selecting a page launches its `ms-settings:` URI through ShellExecute.
-4. The root results contain applications, Windows Settings pages, calculators,
-   URL actions, and plugin routes.
-5. Selecting a plugin route sends a launch request to the app event loop.
-6. `PluginHost::prepare_launch` reads the package, verifies its signature,
+5. The root results contain applications, indexed files, Windows Settings
+   pages, calculators, URL actions, and plugin routes.
+6. Selecting a plugin route sends a launch request to the app event loop.
+7. `PluginHost::prepare_launch` reads the package, verifies its signature,
    certificate, revocation, and rollback state, checks package
    ID/version against `plugin.json`, applies the release capability policy, and
    returns an NSH `LoadedPackage`.
-7. The app opens or focuses the single window for that plugin ID. A repeat
+8. The app opens or focuses the single window for that plugin ID. A repeat
    command focuses the window and emits `steward.command`.
 
 ## Plugin Contract

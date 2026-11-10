@@ -42,6 +42,7 @@ steward-plugin-host = { path = "../plugin-host" }
 steward-plugin-contract = { path = "../plugin-contract" }
 serde_json.workspace = true
 serde.workspace = true
+url.workspace = true
 tokio.workspace = true
 arboard.workspace = true
 base64.workspace = true
@@ -60,6 +61,10 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Search",
+    "Win32_System_Variant",
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
 ] }

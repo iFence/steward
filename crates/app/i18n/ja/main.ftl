@@ -1,4 +1,6 @@
-search-placeholder = アプリや設定を検索、またはコマンドを入力...
+search-placeholder = アプリ、ファイル、設定を検索、またはコマンドを入力...
+file-search-unavailable = Windows 検索を利用できません
+file-search-repair = Windows 検索の設定を開く
 app-settings = 設定
 app-autostart = サインイン時に起動
 app-quit = 終了

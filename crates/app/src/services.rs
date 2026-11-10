@@ -18,7 +18,8 @@ use tokio::sync::oneshot;
 
 use crate::i18n::UiStrings;
 use crate::search::{
-    ApplicationSource, BuiltinSource, PluginSource, SearchSource, SettingsIndex, SettingsSource,
+    ApplicationSource, BuiltinSource, FileSearchCache, FileSearchSource, PluginSource,
+    SearchSource, SettingsIndex, SettingsSource,
 };
 pub use crate::search::{RowAction, SearchReply, SearchRequest};
 
@@ -187,7 +188,7 @@ impl AppServices {
             .settings
             .read()
             .map(|settings| settings.strings.search_placeholder.clone())
-            .unwrap_or_else(|_| "Search apps, settings, or type a command...".into())
+            .unwrap_or_else(|_| "Search apps, files, settings, or type a command...".into())
     }
 
     pub fn accent(&self) -> String {
@@ -250,8 +251,10 @@ impl AppServices {
             .read()
             .map(|settings| settings.strings.clone())
             .unwrap_or_else(|_| UiStrings {
-                search_placeholder: "Search apps, settings, or type a command...".into(),
+                search_placeholder: "Search apps, files, settings, or type a command...".into(),
                 application: "Application".into(),
+                file_search_unavailable: "Windows Search is unavailable".into(),
+                file_search_repair: "Open Windows Search settings".into(),
                 settings: "Windows Settings".into(),
                 plugin: "Plugin".into(),
                 calculator: "Calculator".into(),
@@ -347,7 +350,7 @@ impl LauncherServices {
             .settings
             .read()
             .map(|settings| settings.strings.search_placeholder.clone())
-            .unwrap_or_else(|_| "Search apps, settings, or type a command...".into())
+            .unwrap_or_else(|_| "Search apps, files, settings, or type a command...".into())
     }
 
     pub fn search_revision(&self) -> u64 {
@@ -360,8 +363,10 @@ impl LauncherServices {
             .read()
             .map(|settings| settings.strings.clone())
             .unwrap_or_else(|_| UiStrings {
-                search_placeholder: "Search apps, settings, or type a command...".into(),
+                search_placeholder: "Search apps, files, settings, or type a command...".into(),
                 application: "Application".into(),
+                file_search_unavailable: "Windows Search is unavailable".into(),
+                file_search_repair: "Open Windows Search settings".into(),
                 settings: "Windows Settings".into(),
                 plugin: "Plugin".into(),
                 calculator: "Calculator".into(),
@@ -415,6 +420,7 @@ pub struct SearchState {
     strings: UiStrings,
     locale: String,
     settings: SettingsIndex,
+    file_search: FileSearchCache,
     storage: std::rc::Rc<std::cell::RefCell<Storage>>,
     icon_cache: HashMap<PathBuf, Option<String>>,
     plugin_host: PluginHost,
@@ -452,6 +458,7 @@ impl SearchState {
             strings,
             locale,
             settings: SettingsIndex::new(),
+            file_search: FileSearchCache::new(),
             storage,
             icon_cache: HashMap::new(),
             plugin_host,
@@ -542,6 +549,7 @@ impl SearchState {
     }
 
     pub fn handle(&mut self, request: SearchRequest) {
+        self.file_search.set_query(request.query.trim());
         let (rows, actions) = self.local_rows(&request.query);
         let _ = request.reply.send(SearchReply {
             generation: request.generation,
@@ -551,6 +559,9 @@ impl SearchState {
     }
 
     pub fn poll(&mut self) {
+        if self.file_search.poll() {
+            self.search_revision.fetch_add(1, Ordering::Relaxed);
+        }
         let app_scan = self.app_scan.clone();
         if let Some(rx) = app_scan {
             while let Ok(apps) = rx.try_recv() {
@@ -592,6 +603,16 @@ impl SearchState {
             icon_cache: &mut self.icon_cache,
             label: &self.strings.application,
         };
+        let mut first_sources: [&mut dyn SearchSource; 2] = [&mut builtin, &mut applications];
+        let mut contribution = crate::search::collect(&mut first_sources, trimmed);
+
+        let mut files = FileSearchSource {
+            query: trimmed,
+            cache: &self.file_search,
+            icon_cache: &mut self.icon_cache,
+            unavailable_title: &self.strings.file_search_unavailable,
+            unavailable_subtitle: &self.strings.file_search_repair,
+        };
         let mut plugins = PluginSource {
             host: &self.plugin_host,
             label: &self.strings.plugin,
@@ -601,9 +622,11 @@ impl SearchState {
             label: &self.strings.settings,
             locale: &self.locale,
         };
-        let mut sources: [&mut dyn SearchSource; 4] =
-            [&mut builtin, &mut applications, &mut settings, &mut plugins];
-        let contribution = crate::search::collect(&mut sources, trimmed);
+        let mut remaining_sources: [&mut dyn SearchSource; 3] =
+            [&mut files, &mut settings, &mut plugins];
+        let mut remaining = crate::search::collect(&mut remaining_sources, trimmed);
+        contribution.rows.append(&mut remaining.rows);
+        contribution.actions.append(&mut remaining.actions);
         (contribution.rows, contribution.actions)
     }
 
@@ -682,6 +705,8 @@ mod tests {
         UiStrings {
             search_placeholder: "Search".into(),
             application: "Application".into(),
+            file_search_unavailable: "Windows Search is unavailable".into(),
+            file_search_repair: "Open Windows Search settings".into(),
             settings: "Windows Settings".into(),
             plugin: "Plugin".into(),
             calculator: "Calculator".into(),

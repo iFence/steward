@@ -41,6 +41,18 @@ pub(crate) fn launch(path: &std::path::Path) -> Result<()> {
     }
 }
 
+/// Open `path` with its registered default program through the Windows shell.
+#[cfg(target_os = "windows")]
+pub(crate) fn open_file(path: &std::path::Path) -> Result<()> {
+    shell_open(path)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn open_file(path: &std::path::Path) -> Result<()> {
+    let _ = path;
+    anyhow::bail!("opening files is not yet implemented on this platform")
+}
+
 /// Launch `path` through the Windows shell (`open` verb), which resolves
 /// `.lnk` shortcuts, `shell:` namespace items and file associations the way
 /// Explorer does. Returns an error when the shell reports a launch failure.

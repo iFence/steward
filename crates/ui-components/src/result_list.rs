@@ -6,7 +6,7 @@ use crate::palette;
 
 const ROW_HEIGHT: f32 = 42.0;
 const ICON_SIZE: f32 = 24.0;
-const DETAIL_WIDTH: f32 = 240.0;
+const TITLE_MAX_WIDTH: f32 = 280.0;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LauncherRow {
@@ -70,19 +70,22 @@ pub fn result_list(
         }));
         result
             .child(
-                view().flex_1().min_w(px(0.0)).child(
-                    text(move || row.with(|row| row.title.clone()))
-                        .text_size(px(15.0))
-                        .text_color(rgb(palette::FOREGROUND))
-                        .number_of_lines(1),
-                ),
+                view()
+                    .min_w(px(0.0))
+                    .max_w(px(TITLE_MAX_WIDTH))
+                    .flex_shrink(1.0)
+                    .child(
+                        text(move || row.with(|row| row.title.clone()))
+                            .text_size(px(15.0))
+                            .text_color(rgb(palette::FOREGROUND))
+                            .number_of_lines(1),
+                    ),
             )
             .child(
-                view().w(px(DETAIL_WIDTH)).flex_shrink_0().child(
+                view().flex_1().min_w(px(0.0)).child(
                     text(move || row.with(|row| row.subtitle.clone()))
-                        .text_size(px(11.0))
-                        .text_color(rgb(palette::MUTED_FOREGROUND))
-                        .text_right()
+                        .text_size(px(12.0))
+                        .text_color(rgb(palette::RESULT_LABEL_FOREGROUND))
                         .number_of_lines(1),
                 ),
             )

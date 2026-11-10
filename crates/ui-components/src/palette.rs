@@ -17,11 +17,10 @@
 /// opaque windows.
 pub const BACKGROUND: u32 = 0x202024;
 /// Opacity at which translucent launcher surfaces paint [`BACKGROUND`] over
-/// the window's blurred backdrop. Tuned so the Acrylic/vibrancy blur reads
-/// clearly while the white ink keeps contrast; raise toward 1.0 for a more
-/// opaque, uniform surface. This is the floor for the adaptive scrim (see
-/// [`SCRIM_ALPHA_MAX`]).
-pub const SCRIM_ALPHA: f32 = 0.55;
+/// the window's blurred backdrop. The 0.75 floor keeps text comfortably
+/// readable while retaining a visible Acrylic/vibrancy blur. This is the floor
+/// for the adaptive scrim (see [`SCRIM_ALPHA_MAX`]).
+pub const SCRIM_ALPHA: f32 = 0.75;
 /// Ceiling for the adaptive scrim. Over a bright backdrop the launcher raises
 /// its scrim toward this value (see `adaptive_scrim_alpha` in the app); past
 /// it the backdrop contributes so little that the bar reads as a solid panel
@@ -55,6 +54,12 @@ pub const FOREGROUND: u32 = 0xffffff;
 /// Secondary / placeholder text and trailing kind labels. Tinycast's
 /// `textTertiary` (white 0.40) blended onto [`BACKGROUND`].
 pub const MUTED_FOREGROUND: u32 = 0x79797c;
+/// Secondary launcher text such as result metadata, control-bar labels, and
+/// result position. This needs more contrast than [`MUTED_FOREGROUND`] because
+/// the adaptive launcher surface can rise to `#363638` over a pure-white
+/// backdrop; this value keeps the 11-12 px labels above the WCAG AA text
+/// threshold there.
+pub const RESULT_LABEL_FOREGROUND: u32 = 0xb8b8bb;
 /// Opacity for input placeholders over the adaptive launcher surface. The
 /// placeholder uses the primary foreground at this opacity so it remains
 /// readable even when the scrim is at [`SCRIM_ALPHA_MAX`], while staying
@@ -69,3 +74,44 @@ pub const HOVER: u32 = 0xffffff;
 /// Default accent for the launcher and settings, tinting selection, caret,
 /// focus rings and primary controls.
 pub const ACCENT: u32 = 0x863bff;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relative_luminance(color: u32) -> f32 {
+        let channel = |value: u32| {
+            let value = value as f32 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(color >> 16)
+            + 0.7152 * channel(color >> 8 & 0xff)
+            + 0.0722 * channel(color & 0xff)
+    }
+
+    fn contrast_ratio(first: u32, second: u32) -> f32 {
+        let first = relative_luminance(first);
+        let second = relative_luminance(second);
+        let (lighter, darker) = if first > second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn result_labels_stay_readable_on_bright_backdrops() {
+        // Worst case: the maximum scrim over a pure-white window.
+        let surface = 0x363638;
+        assert!(contrast_ratio(RESULT_LABEL_FOREGROUND, surface) >= 4.5);
+        assert!(
+            contrast_ratio(RESULT_LABEL_FOREGROUND, surface)
+                > contrast_ratio(MUTED_FOREGROUND, surface)
+        );
+    }
+}

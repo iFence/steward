@@ -18,9 +18,9 @@ pub(crate) fn relative_luminance(color: u32) -> f32 {
 /// Pick the launcher scrim opacity for the luminance behind the window.
 ///
 /// The lowest opacity that keeps the composited surface dark enough is used,
-/// bounded by the frosted-glass floor and the readability ceiling. `None`
-/// means the platform could not sample the backdrop, so the normal floor is
-/// retained.
+/// bounded by the readable translucent floor and the readability ceiling.
+/// `None` means the platform could not sample the backdrop, so the normal floor
+/// is retained.
 pub(crate) fn adaptive_scrim_alpha(backdrop_luminance: Option<f32>) -> f32 {
     let Some(backdrop) = backdrop_luminance.filter(|value| value.is_finite()) else {
         return palette::SCRIM_ALPHA;

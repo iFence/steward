@@ -1,4 +1,6 @@
-search-placeholder = Поиск приложений и параметров или ввод команды...
+search-placeholder = Поиск приложений, файлов и параметров или ввод команды...
+file-search-unavailable = Поиск Windows недоступен
+file-search-repair = Открыть параметры поиска Windows
 app-settings = Настройки
 app-autostart = Запуск при входе в систему
 app-quit = Выйти

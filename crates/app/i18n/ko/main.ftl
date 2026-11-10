@@ -1,4 +1,6 @@
-search-placeholder = 앱이나 설정 검색 또는 명령 입력...
+search-placeholder = 앱, 파일, 설정 검색 또는 명령 입력...
+file-search-unavailable = Windows 검색을 사용할 수 없습니다
+file-search-repair = Windows 검색 설정 열기
 app-settings = 설정
 app-autostart = 로그인 시 실행
 app-quit = 종료
