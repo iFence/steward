@@ -80,6 +80,48 @@ The app starts silently in the system tray. Summon it with `Ctrl+Alt+Space`.
 Set `STEWARD_SHOW_ON_START=1` for development if the launcher should be visible
 immediately.
 
+## Installing existing plugins
+
+Download the required `steward-plugin-<name>-<version>.zip` asset from
+[GitHub Releases](https://github.com/iFence/steward/releases). Each archive
+contains the plugin directory, `plugin.json`, and the signed `plugin.nshpkg`:
+
+```text
+calendar/
+  plugin.json
+  plugin.nshpkg
+```
+
+Extract the archive into `%APPDATA%\Steward\plugins`:
+
+```powershell
+$plugins = Join-Path $env:APPDATA "Steward\plugins"
+New-Item -ItemType Directory -Force -Path $plugins | Out-Null
+Expand-Archive -LiteralPath .\steward-plugin-calendar-0.2.0.zip `
+  -DestinationPath $plugins -Force
+```
+
+The resulting layout should be:
+
+```text
+%APPDATA%\Steward\plugins\
+  calendar\
+    plugin.json
+    plugin.nshpkg
+```
+
+Steward scans this directory at startup and every 30 seconds while running.
+Open the launcher and type one of the plugin commands:
+
+- Calendar: `calendar`
+- Clipboard History: `clipboard-history`
+- UI Showcase: `uishowcase`
+
+There is currently no in-app plugin marketplace or installer. Installation is
+the extraction above; do not copy only `plugin.nshpkg` or flatten the plugin
+files into the `plugins` root. Only a signed package whose manifest and package
+ID/version match can be opened.
+
 ## Plugin development
 
 Each official plugin has:

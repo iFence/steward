@@ -77,6 +77,46 @@ cargo run -p steward-app
 应用启动后驻留系统托盘，默认不显示窗口。使用 `Ctrl+Alt+Space` 呼出。开发时可
 设置 `STEWARD_SHOW_ON_START=1` 让启动器立即显示。
 
+## 安装现有插件
+
+从 [GitHub Releases](https://github.com/iFence/steward/releases) 下载所需的
+`steward-plugin-<name>-<version>.zip`。每个 zip 内包含插件目录、`plugin.json`
+和已签名的 `plugin.nshpkg`：
+
+```text
+calendar/
+  plugin.json
+  plugin.nshpkg
+```
+
+把 zip 解压到 `%APPDATA%\Steward\plugins`：
+
+```powershell
+$plugins = Join-Path $env:APPDATA "Steward\plugins"
+New-Item -ItemType Directory -Force -Path $plugins | Out-Null
+Expand-Archive -LiteralPath .\steward-plugin-calendar-0.2.0.zip `
+  -DestinationPath $plugins -Force
+```
+
+安装后的目录结构应为：
+
+```text
+%APPDATA%\Steward\plugins\
+  calendar\
+    plugin.json
+    plugin.nshpkg
+```
+
+Steward 会在启动时以及运行期间每 30 秒扫描一次该目录。打开启动器并输入对应命令：
+
+- Calendar：`calendar`
+- Clipboard History：`clipboard-history`
+- UI Showcase：`uishowcase`
+
+目前没有应用内插件市场或安装器，安装就是上述解压操作。不要只复制
+`plugin.nshpkg`，也不要把插件文件直接平铺到 `plugins` 根目录。只有 manifest
+与包内 ID/版本一致且签名有效的插件才能打开。
+
 ## 插件开发
 
 每个官方插件包含：
