@@ -20,6 +20,10 @@ mod windows {
     use gpui::Window;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use std::time::Duration;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, GetFocus, GetKeyState, GetKeyboardState, SetActiveWindow, SetFocus,
+        SetKeyboardState, VK_LMENU, VK_MENU, VK_RMENU,
+    };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         Graphics::Gdi::{
@@ -32,11 +36,12 @@ mod windows {
         UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
         UI::Shell::{DefSubclassProc, SetWindowSubclass},
         UI::WindowsAndMessaging::{
-            GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
-            GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
-            SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_STYLE, HTCAPTION, HWND_TOPMOST,
-            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
-            SW_SHOW, WM_NCHITTEST, WS_THICKFRAME,
+            DefWindowProcW, GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow,
+            GetGUIThreadInfo, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
+            IsWindowVisible, PostMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+            ShowWindow, GUITHREADINFO, GWL_STYLE, HTCAPTION, HWND_TOPMOST, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_CHAR,
+            WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_SYSCHAR, WS_THICKFRAME,
         },
     };
 
@@ -47,7 +52,7 @@ mod windows {
 
     use super::Rect;
 
-    const LAUNCHER_DRAG_SUBCLASS_ID: usize = 0x5354_4557;
+    const LAUNCHER_SUBCLASS_ID: usize = 0x5354_4557;
 
     /// Declare PerMonitorV2 DPI awareness (Windows 10 1703+). Without this the
     /// OS virtualizes the process at 96 DPI and upscales the window, which
@@ -175,11 +180,13 @@ mod windows {
             return;
         };
         unsafe {
-            SetWindowSubclass(hwnd, Some(launcher_drag_proc), LAUNCHER_DRAG_SUBCLASS_ID, 0);
+            if SetWindowSubclass(hwnd, Some(launcher_subclass_proc), LAUNCHER_SUBCLASS_ID, 0) == 0 {
+                tracing::warn!("failed to install launcher window subclass");
+            }
         }
     }
 
-    unsafe extern "system" fn launcher_drag_proc(
+    unsafe extern "system" fn launcher_subclass_proc(
         hwnd: HWND,
         message: u32,
         wparam: WPARAM,
@@ -204,7 +211,40 @@ mod windows {
                 }
             }
         }
+        if message == WM_NCLBUTTONDOWN && wparam as u32 == HTCAPTION {
+            // GPUI routes the non-client press through NSH's pointer handlers
+            // before DefWindowProc sees it. NSH's drag layer consumes that
+            // event, so the native modal move loop never starts even though
+            // the preceding hit test returned HTCAPTION. Bypass the framework
+            // dispatcher for this one message and let Windows begin SC_MOVE.
+            tracing::debug!("starting launcher native move loop");
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        if message == WM_SYSCHAR && has_stale_alt_state() {
+            // Showing the launcher while Alt is still physically down can
+            // leave this thread's keyboard state believing Alt is held after
+            // the release went to the previous foreground window. Windows
+            // then turns ordinary typing into WM_SYSCHAR, which
+            // DefWindowProc answers with the system beep.
+            clear_alt_keyboard_state();
+            PostMessageW(hwnd, WM_CHAR, wparam, lparam);
+            return 0;
+        }
         DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+
+    unsafe fn has_stale_alt_state() -> bool {
+        GetKeyState(VK_MENU as i32) < 0 && GetAsyncKeyState(VK_MENU as i32) >= 0
+    }
+
+    unsafe fn clear_alt_keyboard_state() {
+        let mut keyboard_state = [0_u8; 256];
+        if GetKeyboardState(keyboard_state.as_mut_ptr()) != 0 {
+            keyboard_state[VK_MENU as usize] = 0;
+            keyboard_state[VK_LMENU as usize] = 0;
+            keyboard_state[VK_RMENU as usize] = 0;
+            SetKeyboardState(keyboard_state.as_ptr());
+        }
     }
 
     fn launcher_drag_at(x: f32, y: f32, width: f32) -> bool {
@@ -307,9 +347,25 @@ mod windows {
             // on-design on this monitor.
             apply_exact(hwnd, width, height);
             dbg_dpi("after", hwnd, target_dpi, cross, 0, 0, 0, 0);
-            force_foreground(hwnd);
+            focus_for_keyboard(hwnd);
             backdrop
         }
+    }
+
+    /// Restore keyboard input to the launcher after showing it. This checks
+    /// the foreground, active and focused HWNDs independently because Windows
+    /// can make a popup visible without completing all three transitions.
+    pub fn focus(window: &Window) -> bool {
+        let Some(hwnd) = hwnd(window) else {
+            return false;
+        };
+        let focused = unsafe { focus_for_keyboard(hwnd) };
+        if !focused {
+            // GPUI's own activation path is the last fallback. It also clears
+            // its stale modifier state when the resulting WM_ACTIVATE arrives.
+            window.activate_window();
+        }
+        focused
     }
 
     /// Average relative luminance (Rec. 709, 0..1) of the desktop region within
@@ -603,29 +659,59 @@ mod windows {
         }
     }
 
-    /// Windows restricts `SetForegroundWindow`; attaching the input queues of
-    /// the involved threads is the standard workaround for launcher-style apps.
-    unsafe fn force_foreground(hwnd: HWND) {
+    /// Windows restricts `SetForegroundWindow`. Try the direct call first and
+    /// only attach the previous foreground thread's input queue as a fallback.
+    /// SetActiveWindow and SetFocus complete the Win32 side of keyboard focus;
+    /// changing NSH's FocusHandle alone cannot recover a missing HWND focus.
+    unsafe fn focus_for_keyboard(hwnd: HWND) -> bool {
+        if focus_attempt(hwnd) {
+            return true;
+        }
+
         let current_thread = GetCurrentThreadId();
         let target_thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
         let foreground = GetForegroundWindow();
         let foreground_thread = GetWindowThreadProcessId(foreground, std::ptr::null_mut());
 
-        if current_thread != target_thread {
-            AttachThreadInput(current_thread, target_thread, 1);
-        }
-        if current_thread != foreground_thread && foreground_thread != 0 {
-            AttachThreadInput(current_thread, foreground_thread, 1);
-        }
+        let attached_target = current_thread != target_thread
+            && target_thread != 0
+            && AttachThreadInput(current_thread, target_thread, 1) != 0;
+        let attached_foreground = current_thread != foreground_thread
+            && foreground_thread != target_thread
+            && foreground_thread != 0
+            && AttachThreadInput(current_thread, foreground_thread, 1) != 0;
 
-        SetForegroundWindow(hwnd);
+        let focused = focus_attempt(hwnd);
 
-        if current_thread != target_thread {
-            AttachThreadInput(current_thread, target_thread, 0);
-        }
-        if current_thread != foreground_thread && foreground_thread != 0 {
+        if attached_foreground {
             AttachThreadInput(current_thread, foreground_thread, 0);
         }
+        if attached_target {
+            AttachThreadInput(current_thread, target_thread, 0);
+        }
+        focused && keyboard_focus_is(hwnd)
+    }
+
+    unsafe fn focus_attempt(hwnd: HWND) -> bool {
+        SetForegroundWindow(hwnd);
+        SetActiveWindow(hwnd);
+        SetFocus(hwnd);
+        keyboard_focus_is(hwnd)
+    }
+
+    unsafe fn keyboard_focus_is(hwnd: HWND) -> bool {
+        if GetForegroundWindow() != hwnd {
+            return false;
+        }
+        let thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(thread, &mut info) == 0 {
+            return GetFocus() == hwnd;
+        }
+        info.hwndActive == hwnd && info.hwndFocus == hwnd
     }
 
     #[cfg(test)]
@@ -700,6 +786,10 @@ mod stub {
 
     /// Other platforms apply `is_resizable: true` natively; no style patch.
     pub fn make_resizable(_window: &Window) {}
+
+    pub fn focus(_window: &Window) -> bool {
+        false
+    }
 
     pub fn caret_blink_period() -> Duration {
         Duration::from_millis(1060)

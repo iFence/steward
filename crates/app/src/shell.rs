@@ -58,6 +58,7 @@ pub fn StewardLauncher() -> impl IntoElement {
                                         title: notice.title,
                                         subtitle: notice.message,
                                         icon: None,
+                                        subtitle_placement: Default::default(),
                                     },
                                 );
                                 actions_value.insert(0, RowAction::DismissNotice);
@@ -122,10 +123,12 @@ pub fn StewardLauncher() -> impl IntoElement {
                 scrim_alpha.set(launcher_scrim_alpha);
             }
             if reset_changed || focus_changed {
+                app.send_window_command(WindowCommand::FocusLauncher);
                 input_ref.focus();
                 focus_retries.set(FOCUS_RETRIES);
             } else if focus_retries.get_untracked() > 0 {
                 focus_retries.update(|remaining| *remaining -= 1);
+                app.send_window_command(WindowCommand::FocusLauncher);
                 input_ref.focus();
             }
         }

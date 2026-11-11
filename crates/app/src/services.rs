@@ -401,6 +401,7 @@ impl LauncherServices {
 #[derive(Debug, Clone)]
 pub enum WindowCommand {
     Hide,
+    FocusLauncher,
     OpenSettings,
     Resize { height: f32 },
     Activate(RowAction),

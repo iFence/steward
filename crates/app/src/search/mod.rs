@@ -87,6 +87,7 @@ pub(crate) fn row(
         title: title.into(),
         subtitle: subtitle.into(),
         icon,
+        subtitle_placement: Default::default(),
     }
 }
 

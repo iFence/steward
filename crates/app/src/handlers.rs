@@ -28,6 +28,15 @@ pub(crate) fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                         handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
                 }
             }
+            WindowCommand::FocusLauncher => {
+                if let Some(handle) = state.borrow().window {
+                    let _ = handle.update(cx, |_, window, _| {
+                        if crate::platform::is_visible(window) {
+                            crate::platform::focus(window);
+                        }
+                    });
+                }
+            }
             WindowCommand::OpenSettings => open_settings(cx, state),
             WindowCommand::Resize { height } => {
                 state.borrow_mut().launcher_height = height;

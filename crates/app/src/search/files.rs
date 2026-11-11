@@ -132,7 +132,8 @@ impl SearchSource for FileSearchSource<'_> {
                     hit.name.clone(),
                     subtitle,
                     file_icon(self.icon_cache, &hit.path),
-                ),
+                )
+                .with_subtitle_after_title(),
                 RowAction::OpenFile(hit.path.clone()),
             );
         }
@@ -498,6 +499,10 @@ mod tests {
         let contribution = source.contribute("report");
         assert_eq!(contribution.rows[0].title, "report.pdf");
         assert_eq!(contribution.rows[0].subtitle, r"C:\Users\test\Documents");
+        assert_eq!(
+            contribution.rows[0].subtitle_placement,
+            steward_ui_components::SubtitlePlacement::AfterTitle
+        );
         assert!(matches!(
             &contribution.actions[0],
             RowAction::OpenFile(path)

@@ -16,17 +16,19 @@ Conventions:
   failures now appear as dismissible launcher notices.
 - **Support logs**: Steward writes daily rolling logs under its data directory
   and retains seven days for troubleshooting.
-- **Launcher input focus**: summoning the launcher now reasserts the search
-  input focus through window activation and short startup retries, so typing
-  no longer occasionally lands nowhere while the caret is visible.
+- **Launcher input focus**: summoning the launcher now restores the native
+  Win32 foreground, active and focused HWNDs alongside short startup retries,
+  and repairs a stale Alt/menu state that could make every keystroke beep
+  instead of reaching the query.
 - **Launcher contrast and dismissal**: the translucent surface now stays at
   least 75% opaque and darkens further over bright backdrops so query and
   placeholder text stay readable, result-type labels use larger high-contrast
   text, control-bar hints and the result counter use the same secondary-text
   contrast, and the launcher closes as soon as another application receives
   focus.
-- **Launcher dragging**: the padded edge of the launcher is now a window drag
-  handle, so the panel can be moved without affecting search or result clicks.
+- **Launcher dragging**: the launcher header outside the search input now
+  starts the native Windows move loop, so the panel can be dragged without
+  affecting search or result clicks.
 
 ### New Plugin Platform
 
@@ -56,8 +58,8 @@ Conventions:
   virtualized list reuses cells, preventing one app from briefly showing
   another app's icon.
 - **Launcher visuals**: the panel is edge-to-edge and translucent again,
-  application rows show their shell icons, and type labels are aligned on the
-  right.
+  application rows show their shell icons, type labels are aligned on the
+  right, and file paths stay immediately after file names.
 - **Full plugin applications**: plugin commands open a signed TSX application
   in a complete NSH window instead of returning JSON views to the launcher.
 - **Signed packages**: Release installs require verified `.nshpkg` files with

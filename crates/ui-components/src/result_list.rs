@@ -14,6 +14,21 @@ pub struct LauncherRow {
     pub title: String,
     pub subtitle: String,
     pub icon: Option<String>,
+    pub subtitle_placement: SubtitlePlacement,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SubtitlePlacement {
+    #[default]
+    Trailing,
+    AfterTitle,
+}
+
+impl LauncherRow {
+    pub fn with_subtitle_after_title(mut self) -> Self {
+        self.subtitle_placement = SubtitlePlacement::AfterTitle;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +54,8 @@ pub fn result_list(
         });
         let has_icon = move || row.with(|row| row.icon.is_some());
         let icon_src = move || row.with(|row| row.icon.clone().unwrap_or_default());
+        let subtitle_is_trailing =
+            move || row.with(|row| row.subtitle_placement == SubtitlePlacement::Trailing);
         let activate = on_activate.clone();
 
         let mut result = view()
@@ -82,12 +99,17 @@ pub fn result_list(
                     ),
             )
             .child(
-                view().flex_1().min_w(px(0.0)).child(
-                    text(move || row.with(|row| row.subtitle.clone()))
-                        .text_size(px(12.0))
-                        .text_color(rgb(palette::RESULT_LABEL_FOREGROUND))
-                        .number_of_lines(1),
-                ),
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex_row()
+                    .style_when(subtitle_is_trailing, |style| style.justify_end())
+                    .child(
+                        text(move || row.with(|row| row.subtitle.clone()))
+                            .text_size(px(12.0))
+                            .text_color(rgb(palette::RESULT_LABEL_FOREGROUND))
+                            .number_of_lines(1),
+                    ),
             )
     })
     .keys(move || rows.with(|rows| rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>()))
@@ -141,6 +163,7 @@ mod tests {
                 title: "first".into(),
                 subtitle: "64".into(),
                 icon: None,
+                subtitle_placement: Default::default(),
             }]);
         });
         set_timeout(Duration::from_millis(100), move || rows.set(Vec::new()));
@@ -150,6 +173,7 @@ mod tests {
                 title: "restored".into(),
                 subtitle: "64".into(),
                 icon: None,
+                subtitle_placement: Default::default(),
             }]);
         });
 
