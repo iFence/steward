@@ -32,7 +32,7 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
         dark: true,
         input: "calendar 2024-02",
         locale: "zh-CN",
-        pluginId: "com.example.calendar",
+        pluginId: "it.aspirin.calendar",
       },
     },
   });

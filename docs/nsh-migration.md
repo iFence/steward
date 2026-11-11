@@ -105,7 +105,7 @@ Schema v2 manifest:
 ```json
 {
   "schemaVersion": 2,
-  "id": "com.example.calendar",
+  "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
   "icon": "<svg ...>",
@@ -139,7 +139,7 @@ Launch parameters:
 
 ```json
 {
-  "pluginId": "com.example.calendar",
+  "pluginId": "it.aspirin.calendar",
   "command": "calendar",
   "input": "calendar",
   "locale": "en",

@@ -1,6 +1,6 @@
 {
   "name": "Calendar",
-  "id": "com.example.calendar",
+  "id": "it.aspirin.calendar",
   "version": "0.2.0",
   "build": 1,
   "capabilities": {

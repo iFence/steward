@@ -200,7 +200,7 @@ mod tests {
     fn manifest() -> PluginManifest {
         PluginManifest {
             schema_version: SCHEMA_VERSION,
-            id: "com.example.calendar".into(),
+            id: "it.aspirin.calendar".into(),
             name: "Calendar".into(),
             version: "0.3.0".into(),
             icon: None,

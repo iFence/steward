@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "com.example.ui-showcase",
+  "id": "it.aspirin.ui-showcase",
   "name": "UI Showcase",
   "version": "1.0.0",
   "package": "plugin.nshpkg",

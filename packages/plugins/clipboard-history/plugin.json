@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "id": "com.example.clipboard-history",
+  "id": "it.aspirin.clipboard-history",
   "name": "Clipboard History",
   "version": "0.1.1",
   "package": "plugin.nshpkg",

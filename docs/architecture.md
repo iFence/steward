@@ -122,7 +122,7 @@ The installed layout is:
 ```json
 {
   "schemaVersion": 2,
-  "id": "com.example.calendar",
+  "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
   "package": "plugin.nshpkg",

@@ -1,6 +1,6 @@
 {
   "name": "Clipboard History",
-  "id": "com.example.clipboard-history",
+  "id": "it.aspirin.clipboard-history",
   "version": "0.1.1",
   "build": 1,
   "capabilities": {

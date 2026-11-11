@@ -50,6 +50,9 @@
 - **能力沙箱**：每个插件使用 64 MiB VM、时间与节点配额及最小权限；默认禁止
   network、process、webview 和图片选择能力。
 - **官方插件重写**：Calendar、Clipboard History 与 UI Showcase 已迁移到 TSX。
+- **官方插件 ID**：官方插件包统一改用 `it.aspirin.calendar`、
+  `it.aspirin.clipboard-history` 与 `it.aspirin.ui-showcase`，并修复日历和剪贴板的
+  中文搜索关键词。
 - **日历农历视图**：官方日历现在同时显示公历、农历与传统节日，支持闰月、
   生肖年份、月份导航和选中日期详情。
 

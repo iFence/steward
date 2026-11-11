@@ -70,6 +70,9 @@ Conventions:
   are denied by default.
 - **Official plugins rewritten**: Calendar, Clipboard History, and UI Showcase
   are NSH TSX applications.
+- **Official plugin IDs**: official packages now use the `it.aspirin.calendar`,
+  `it.aspirin.clipboard-history`, and `it.aspirin.ui-showcase` IDs. Calendar
+  and Clipboard History also have their Chinese search keywords restored.
 - **Calendar lunar view**: the official calendar now shows lunar dates and
   festivals alongside Gregorian dates, including leap months, zodiac years,
   month navigation, and a selected-date detail card.
