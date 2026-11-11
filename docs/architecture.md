@@ -170,11 +170,12 @@ VM limits:
 
 ## Trust and Packaging
 
-Production roots are configured in `assets/nsh/trust-roots.json`. The file is
-intentionally empty in the repository until the production root key ceremony
-is complete, so release launches fail closed. CI supplies the release signing
-key and certificate through `STEWARD_NSH_RELEASE_KEY` and
-`STEWARD_NSH_RELEASE_CERT`.
+Production roots are configured in `assets/nsh/trust-roots.json`. The
+production Ed25519 root public key is committed there, while its secret is
+kept offline. CI supplies the certified release signing key through
+`STEWARD_NSH_RELEASE_KEY` and its certificate through
+`STEWARD_NSH_RELEASE_CERT`. Release package launch still fails closed if no
+trusted root accepts the package certificate.
 
 `scripts/package-plugins.ps1` creates one zip per official plugin. Each zip
 contains only the top-level plugin directory, `plugin.json`, and the verified

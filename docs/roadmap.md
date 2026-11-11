@@ -47,13 +47,13 @@ Steward
 
 Required before v0.3.0 is considered release-complete:
 
-- complete the production Ed25519 root-key ceremony;
-- provision the CI release key and certificate;
-- replace the empty development trust-root file;
-- measure release cold start, RSS, summon latency, plugin first frame, plugin
+- [x] complete the production Ed25519 root-key ceremony;
+- [x] provision the CI release key and certificate;
+- [x] replace the empty development trust-root file;
+- [ ] measure release cold start, RSS, summon latency, plugin first frame, plugin
   focus, and hidden VM count;
-- install the MSI on a clean Windows machine;
-- install and launch all official plugins through the production trust root.
+- [ ] install the MSI on a clean Windows machine;
+- [ ] install and launch all official plugins through the production trust root.
 
 ## M4 - Windows Support Polish
 

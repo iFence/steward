@@ -315,11 +315,15 @@ Completed acceptance:
   `target/wix/steward-app-0.3.0-x86_64.msi` (16.0 MB). The split notices
   components fixed WiX `LGHT0367`; decompilation showed the app and license
   files, with no plugin runtime or file-index helper executable.
+- The production Ed25519 root and release certificate are configured, the
+  release secrets are provisioned, and `assets/nsh/trust-roots.json` contains
+  the production root public key.
+- Manual `Build and Release` run 42953960819 completed successfully. Its MSI
+  and plugin archives matched their published SHA-256 checksums, and all three
+  packaged plugins verified against the production root.
 
 Pending release gates:
 
-- Provision the production Ed25519 root public key and CI release
-  key/certificate, then replace the intentionally empty trust-root file.
 - Record release cold start, RSS, summon p95, plugin first-frame p95, existing
   plugin focus p95, and hidden-VM count.
 - Install the generated release MSI on a clean Windows machine.
@@ -382,8 +386,6 @@ release measurements. NSH-4 remains open until the gates above are measured.
   `HostChannel` and `EngineContext`.
 - Plugin VMs are in-process NSH engines, not separate OS processes. Signed
   packages, capability grants, and hard engine quotas mitigate the risk.
-- The release trust-root file is empty until the production key ceremony is
-  complete; release package launch fails closed in that state.
 - `STEWARD_SHOW_ON_START`, `STEWARD_SHOW_SETTINGS`, `STEWARD_SMOKE_PLUGIN`,
   `STEWARD_SMOKE_COMMAND`, and `STEWARD_SMOKE_TITLE` are developer-only smoke
   hooks. `STEWARD_DATA_DIR` consistently redirects app data, plugin data, and
