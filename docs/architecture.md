@@ -56,6 +56,12 @@ steward-app.exe
 The shell is Rust and contains no JavaScript VM. A plugin VM is created only
 inside `crates/app/src/plugin_window.rs` when a verified package opens.
 
+GUI startup is guarded by a session-scoped Windows named mutex before storage,
+search workers, tray, or windows are initialized. A secondary launch signals a
+named activation event, causing the existing process to reveal or focus its
+launcher, and then exits. Installer and headless utility modes run outside this
+GUI ownership gate.
+
 ## Rust Modules
 
 | Crate | Responsibility |

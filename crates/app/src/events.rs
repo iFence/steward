@@ -32,6 +32,15 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
         handlers::drain_requests(&state);
         handlers::drain_commands(cx, &state);
 
+        let activation_requested = state
+            .borrow()
+            ._instance
+            .as_ref()
+            .is_some_and(crate::instance::InstanceGuard::take_activation_request);
+        if activation_requested {
+            handlers::show_launcher(cx, &state);
+        }
+
         while let Ok(event) = hotkey_events.try_recv() {
             if event.state == HotKeyState::Pressed
                 && state

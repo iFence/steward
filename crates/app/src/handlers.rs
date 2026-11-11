@@ -119,12 +119,10 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
     while let Ok(event) = receiver.try_recv() {
         match event {
             PluginRuntimeEvent::Healthy { plugin_id, receipt } => {
-                if let Err(error) = state
-                    .borrow_mut()
-                    .search
-                    .borrow_mut()
-                    .accept_receipt(&receipt)
-                {
+                // RefCell borrows in an `if let` scrutinee live through both
+                // arms. Finish the nested borrow before reading services.
+                let accepted = state.borrow().search.borrow_mut().accept_receipt(&receipt);
+                if let Err(error) = accepted {
                     error!(
                         plugin_id = %plugin_id,
                         error = %format!("{error:#}"),
@@ -155,20 +153,46 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
 }
 
 pub(crate) fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
-    if let Some(handle) = state.borrow().window {
-        let (height, services) = {
-            let state = state.borrow();
-            (state.launcher_height, state.services.clone())
+    let (launcher, height, services) = {
+        let state = state.borrow();
+        (state.window, state.launcher_height, state.services.clone())
+    };
+    if let Some(handle) = launcher {
+        let target = handle
+            .update(cx, |_, window, _| crate::platform::capture(window))
+            .ok()
+            .flatten();
+        let Some(target) = target else {
+            return;
         };
-        let _ = handle.update(cx, |_, window, cx| {
-            if crate::platform::is_visible(window) {
-                crate::window::hide_window(window, cx);
-            } else {
-                services.request_launcher_reset();
-                crate::window::show_launcher(window, height, &services);
-                cx.activate(true);
-            }
-        });
+
+        // Windows sends WM_MOVE synchronously from SetWindowPos. Moving a
+        // launcher that is hidden on another monitor therefore re-enters
+        // GPUI's display-change callback. Keep the native move outside the
+        // window update borrow so that callback can safely update the app.
+        if crate::platform::is_target_visible(target) {
+            crate::platform::hide_target(target);
+        } else {
+            reveal_launcher(cx, state, target, height, &services);
+        }
+        return;
+    }
+    show_launcher(cx, state);
+}
+
+pub(crate) fn show_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
+    let (launcher, height, services) = {
+        let state = state.borrow();
+        (state.window, state.launcher_height, state.services.clone())
+    };
+    if let Some(handle) = launcher {
+        let target = handle
+            .update(cx, |_, window, _| crate::platform::capture(window))
+            .ok()
+            .flatten();
+        if let Some(target) = target {
+            reveal_launcher(cx, state, target, height, &services);
+        }
         return;
     }
     let (services, data_dir) = {
@@ -180,12 +204,33 @@ pub(crate) fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) 
     });
     services.request_launcher_reset();
     state.borrow_mut().window = Some(handle);
-    if let Some(handle) = state.borrow().window {
-        let _ = handle.update(cx, |_, window, cx| {
-            crate::window::show_launcher(window, crate::config::LAUNCHER_HEIGHT, &services);
-            cx.activate(true);
-        });
+    let target = handle
+        .update(cx, |_, window, _| crate::platform::capture(window))
+        .ok()
+        .flatten();
+    if let Some(target) = target {
+        reveal_launcher(cx, state, target, crate::config::LAUNCHER_HEIGHT, &services);
     }
+}
+
+fn reveal_launcher(
+    cx: &mut AsyncApp,
+    state: &Rc<RefCell<AppState>>,
+    target: crate::platform::WindowTarget,
+    height: f32,
+    services: &crate::services::AppServices,
+) {
+    if crate::platform::is_target_visible(target) {
+        if let Some(handle) = state.borrow().window {
+            let _ = handle.update(cx, |_, window, _| {
+                crate::platform::focus(window);
+            });
+        }
+    } else {
+        services.request_launcher_reset();
+        crate::window::show_launcher_target(target, height, services);
+    }
+    cx.update(|cx| cx.activate(true));
 }
 
 pub(crate) fn open_settings(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {

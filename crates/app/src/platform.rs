@@ -149,6 +149,28 @@ mod windows {
         hwnd(window).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd) != 0 })
     }
 
+    /// An owned native window target that can be used after the GPUI window
+    /// borrow has ended. Cross-monitor moves must not run inside
+    /// `AnyWindowHandle::update`: Windows dispatches `WM_MOVE` synchronously,
+    /// and GPUI's display-change callback re-enters `AsyncApp::update` while
+    /// the outer update still holds the `AppCell` borrow.
+    #[derive(Clone, Copy, Debug)]
+    pub struct WindowTarget(HWND);
+
+    pub fn capture(window: &Window) -> Option<WindowTarget> {
+        hwnd(window).map(WindowTarget)
+    }
+
+    pub fn is_target_visible(target: WindowTarget) -> bool {
+        unsafe { IsWindowVisible(target.0) != 0 }
+    }
+
+    pub fn hide_target(target: WindowTarget) {
+        unsafe {
+            ShowWindow(target.0, SW_HIDE);
+        }
+    }
+
     /// Make a borderless PopUp window user-resizable. GPUI's `WindowKind::PopUp`
     /// branch does not add `WS_THICKFRAME` even when `WindowOptions::is_resizable`
     /// is set, so the OS never opens a resize loop; add the style after creation
@@ -269,10 +291,8 @@ mod windows {
     }
 
     pub fn hide(window: &Window) {
-        if let Some(hwnd) = hwnd(window) {
-            unsafe {
-                ShowWindow(hwnd, SW_HIDE);
-            }
+        if let Some(target) = capture(window) {
+            hide_target(target);
         }
     }
 
@@ -284,7 +304,14 @@ mod windows {
     /// read are the backdrop, never the launcher itself), at the rect where
     /// the bar will sit.
     pub fn show(window: &Window, width: f32, height: f32) -> Option<f32> {
-        let hwnd = hwnd(window)?;
+        show_target(capture(window)?, width, height)
+    }
+
+    /// Show and position a captured native window. Call this after leaving
+    /// the GPUI window update so synchronous `WM_MOVE` and `WM_DPICHANGED`
+    /// callbacks can safely acquire the application context.
+    pub fn show_target(target: WindowTarget, width: f32, height: f32) -> Option<f32> {
+        let hwnd = target.0;
         unsafe {
             // Where the bar will sit: on the monitor under the cursor. The
             // window is created hidden on the primary display, so
@@ -560,8 +587,10 @@ mod windows {
             GetDpiForWindow(hwnd)
         }
         .max(96);
-        let (width, height_px) = client_to_window_px(hwnd, width, height, dpi);
-        let (x, y) = place(work_area(monitor), width, height_px);
+        let work = work_area(monitor);
+        let (width, height_px) =
+            fit_to_work_area(work, client_to_window_px(hwnd, width, height, dpi));
+        let (x, y) = place(work, width, height_px);
         (x, y, width, height_px, dpi)
     }
 
@@ -587,6 +616,16 @@ mod windows {
         )
     }
 
+    /// Keep the native launcher inside the target work area even when its
+    /// logical width at the target scale is wider or taller than a small or
+    /// unusually scaled display.
+    fn fit_to_work_area(work: Rect, (width, height): (i32, i32)) -> (i32, i32) {
+        (
+            width.min(work.right - work.left).max(1),
+            height.min(work.bottom - work.top).max(1),
+        )
+    }
+
     /// Re-apply the launcher's exact geometry on the monitor it currently sits
     /// on, using the window's own DPI. Called after `ShowWindow`, when
     /// `GetDpiForWindow` is truthful: it self-heals any position drift or size
@@ -596,7 +635,9 @@ mod windows {
         let (width, height_px) = client_to_window_px(hwnd, width, height, dpi);
 
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let (x, y) = place(work_area(monitor), width, height_px);
+        let work = work_area(monitor);
+        let (width, height_px) = fit_to_work_area(work, (width, height_px));
+        let (x, y) = place(work, width, height_px);
 
         SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height_px, SWP_NOACTIVATE);
     }
@@ -734,6 +775,19 @@ mod windows {
         }
 
         #[test]
+        fn oversized_launcher_is_fitted_to_the_monitor_work_area() {
+            let small = Rect {
+                left: -800,
+                top: 100,
+                right: -200,
+                bottom: 500,
+            };
+
+            assert_eq!(fit_to_work_area(small, (900, 600)), (600, 400));
+            assert_eq!(place(small, 600, 400), (-800, 100));
+        }
+
+        #[test]
         fn launcher_header_drag_area_excludes_the_search_input() {
             let width = 760.0;
 
@@ -764,7 +818,18 @@ mod stub {
 
     static WINDOW_VISIBLE: AtomicBool = AtomicBool::new(true);
 
+    #[derive(Clone, Copy, Debug)]
+    pub struct WindowTarget;
+
+    pub fn capture(_window: &Window) -> Option<WindowTarget> {
+        Some(WindowTarget)
+    }
+
     pub fn is_visible(_window: &Window) -> bool {
+        WINDOW_VISIBLE.load(Ordering::Relaxed)
+    }
+
+    pub fn is_target_visible(_target: WindowTarget) -> bool {
         WINDOW_VISIBLE.load(Ordering::Relaxed)
     }
 
@@ -772,7 +837,15 @@ mod stub {
         WINDOW_VISIBLE.store(false, Ordering::Relaxed);
     }
 
-    pub fn show(_window: &Window, _width: f32, _height: f32) -> Option<f32> {
+    pub fn hide_target(_target: WindowTarget) {
+        WINDOW_VISIBLE.store(false, Ordering::Relaxed);
+    }
+
+    pub fn show(window: &Window, width: f32, height: f32) -> Option<f32> {
+        show_target(capture(window)?, width, height)
+    }
+
+    pub fn show_target(_target: WindowTarget, _width: f32, _height: f32) -> Option<f32> {
         WINDOW_VISIBLE.store(true, Ordering::Relaxed);
         None
     }

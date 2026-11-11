@@ -11,6 +11,7 @@ mod events;
 mod handlers;
 mod hotkeys;
 mod i18n;
+mod instance;
 mod launch;
 mod logging;
 mod nsh_surface;
@@ -49,6 +50,22 @@ fn main() {
         autostart::unregister_autostart();
         return;
     }
+
+    // A secondary GUI launch only asks the existing process to summon the
+    // launcher. Utility modes above remain independent for installer and
+    // headless tooling.
+    let instance = if std::env::args().any(|arg| arg == "--print-summon-hotkey") {
+        None
+    } else {
+        match instance::claim() {
+            Ok(instance::InstanceClaim::Primary(guard)) => Some(guard),
+            Ok(instance::InstanceClaim::Secondary) => return,
+            Err(error) => {
+                eprintln!("failed to claim the Steward single-instance lock: {error}");
+                return;
+            }
+        }
+    };
 
     let data_dir = std::env::var_os("STEWARD_DATA_DIR")
         .map(PathBuf::from)
@@ -139,6 +156,7 @@ fn main() {
         plugin_events_rx: plugin_event_rx,
         _clipboard_watcher: clipboard_watcher,
         _log_guard: log_guard,
+        _instance: instance,
     }));
 
     application().with_assets(gpui_kit::assets::Assets).run({

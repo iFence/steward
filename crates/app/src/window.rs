@@ -141,7 +141,17 @@ pub(crate) fn hide_window(window: &mut Window, _cx: &mut App) {
 }
 
 pub(crate) fn show_launcher(window: &Window, height: f32, services: &AppServices) {
-    let backdrop = platform::show(window, LAUNCHER_WIDTH, height);
+    if let Some(target) = platform::capture(window) {
+        show_launcher_target(target, height, services);
+    }
+}
+
+pub(crate) fn show_launcher_target(
+    target: platform::WindowTarget,
+    height: f32,
+    services: &AppServices,
+) {
+    let backdrop = platform::show_target(target, LAUNCHER_WIDTH, height);
     services.set_launcher_scrim_alpha(theme::adaptive_scrim_alpha(backdrop));
 }
 

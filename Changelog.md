@@ -29,6 +29,14 @@ Conventions:
 - **Launcher dragging**: the launcher header outside the search input now
   starts the native Windows move loop, so the panel can be dragged without
   affecting search or result clicks.
+- **Mixed-monitor summoning**: reopening the launcher on a different monitor
+  no longer re-enters GPUI while Windows reports the display change. The
+  cross-monitor move now retains target-DPI sizing while avoiding a launcher
+  hang or process exit, and oversized layouts are fitted to the target work
+  area.
+- **Single-instance startup**: launching Steward again now reveals the running
+  launcher instead of starting a duplicate process, tray icon, hotkey manager,
+  and search service.
 
 ### New Plugin Platform
 
