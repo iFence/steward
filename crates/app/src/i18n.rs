@@ -26,6 +26,22 @@ pub struct UiStrings {
     pub launcher_navigate: String,
     pub launcher_open: String,
     pub launcher_close: String,
+    pub launcher_actions: String,
+    pub launcher_copy: String,
+    pub launcher_open_application: String,
+    pub launcher_open_file: String,
+    pub launcher_open_settings: String,
+    pub launcher_open_plugin: String,
+    pub launcher_open_location: String,
+    pub launcher_copy_path: String,
+    pub launcher_properties: String,
+    pub launcher_action_application_window: String,
+    pub launcher_action_recent_files: String,
+    pub launcher_action_run_as_administrator: String,
+    pub launcher_action_run_as_different_user: String,
+    pub launcher_action_show_in_file_explorer: String,
+    pub launcher_action_search: String,
+    pub launcher_action_no_results: String,
 }
 
 /// Compiled Fluent resources bound to the `main` domain (see `main.ftl`).
@@ -113,6 +129,26 @@ impl Localization {
             launcher_navigate: self.translate("launcher-navigate"),
             launcher_open: self.translate("launcher-open"),
             launcher_close: self.translate("launcher-close"),
+            launcher_actions: self.translate("launcher-actions"),
+            launcher_copy: self.translate("launcher-copy"),
+            launcher_open_application: self.translate("launcher-open-application"),
+            launcher_open_file: self.translate("launcher-open-file"),
+            launcher_open_settings: self.translate("launcher-open-settings"),
+            launcher_open_plugin: self.translate("launcher-open-plugin"),
+            launcher_open_location: self.translate("launcher-open-location"),
+            launcher_copy_path: self.translate("launcher-copy-path"),
+            launcher_properties: self.translate("launcher-properties"),
+            launcher_action_application_window: self
+                .translate("launcher-action-application-window"),
+            launcher_action_recent_files: self.translate("launcher-action-recent-files"),
+            launcher_action_run_as_administrator: self
+                .translate("launcher-action-run-as-administrator"),
+            launcher_action_run_as_different_user: self
+                .translate("launcher-action-run-as-different-user"),
+            launcher_action_show_in_file_explorer: self
+                .translate("launcher-action-show-in-file-explorer"),
+            launcher_action_search: self.translate("launcher-action-search"),
+            launcher_action_no_results: self.translate("launcher-action-no-results"),
         }
     }
 }
@@ -141,13 +177,25 @@ mod tests {
             "Search apps, files, settings, or type a command..."
         );
 
-        for language in ["de", "fr", "ja", "ko", "ru"] {
+        for language in ["en", "zh", "de", "fr", "ja", "ko", "ru"] {
             localization.select_language(language);
-            assert_ne!(
-                localization.translate("launcher-navigate"),
+            for message_id in [
                 "launcher-navigate",
-                "missing launcher status translations for {language}"
-            );
+                "launcher-actions",
+                "launcher-action-application-window",
+                "launcher-action-recent-files",
+                "launcher-action-run-as-administrator",
+                "launcher-action-run-as-different-user",
+                "launcher-action-show-in-file-explorer",
+                "launcher-action-search",
+                "launcher-action-no-results",
+            ] {
+                assert_ne!(
+                    localization.translate(message_id),
+                    message_id,
+                    "missing {message_id} translation for {language}"
+                );
+            }
         }
 
         localization.select_language("ko");

@@ -21,6 +21,8 @@ pub(crate) use settings::{SettingsIndex, SettingsSource};
 pub enum RowAction {
     LaunchApp(PathBuf),
     OpenFile(PathBuf),
+    RevealInExplorer(PathBuf),
+    ShowProperties(PathBuf),
     CopyText(String),
     OpenUrl(String),
     OpenSettings(String),

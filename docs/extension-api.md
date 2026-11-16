@@ -12,9 +12,8 @@ canonical TypeScript surface is
 ## Imports
 
 ```tsx
-import { Input, mount, signal, Text, View } from "nsh";
-import { Switch } from "nsh/base";
-import { Clipboard } from "nsh/clipboard";
+import { Clipboard, mount, signal, Text, View } from "nsh";
+import { Input, Switch } from "nsh/base";
 import {
   clipboardHistory,
   closeWindow,

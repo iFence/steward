@@ -1,4 +1,4 @@
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 export interface StewardLaunchParams {
   pluginId: string;
@@ -27,17 +27,15 @@ export function launchParams(): StewardLaunchParams {
   };
 }
 
-export function onCommand(listener: (command: { command: string; input: string }) => void): {
-  remove(): void;
-} {
+export function onCommand(
+  listener: (command: { command: string; input: string }) => void,
+): () => void {
   return host.on("steward.command", (value) => {
     listener(value as { command: string; input: string });
   });
 }
 
-export function onTheme(listener: (theme: { accent: string; dark: boolean }) => void): {
-  remove(): void;
-} {
+export function onTheme(listener: (theme: { accent: string; dark: boolean }) => void): () => void {
   return host.on("steward.theme", (value) => {
     listener(value as { accent: string; dark: boolean });
   });

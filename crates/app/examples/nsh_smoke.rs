@@ -8,7 +8,7 @@
 fn main() {
     use gpui::{size, AppContext, Bounds, WindowBounds, WindowOptions};
     use gpui_platform::application;
-    use nsh_core::ui::prelude::*;
+    use nsh_core::prelude::*;
     use nsh_platform_gpui::{App, AppOptions, AppView, Root};
 
     #[component]

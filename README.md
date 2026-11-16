@@ -60,11 +60,10 @@ Prerequisites:
 - pnpm 11
 - The pinned NSH CLI for plugin development
 
-Install the reviewed NSH CLI revision:
+Install the matching NSH CLI:
 
 ```powershell
-cargo install --locked --git https://github.com/longbridge/nsh `
-  --rev 5359c07ff7b5728e67957c24322373309c90666b nsh-cli
+cargo install --locked --version 0.5.1 nsh-cli
 ```
 
 Build and run:

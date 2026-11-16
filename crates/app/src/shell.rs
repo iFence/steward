@@ -4,8 +4,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nsh_base::{menu, menu_item, MenuEvent};
+use nsh_core::canvas::{LineCap, LineJoin};
+use nsh_core::element::{input, StyleRefinement};
 use nsh_core::keymap::When;
-use nsh_core::ui::{prelude::*, px, rgb};
+use nsh_core::prelude::*;
 use steward_ui_components::{result_list, LauncherRow};
 
 use crate::config::{
@@ -17,6 +20,8 @@ use crate::services::{services, LauncherServices, RowAction, WindowCommand};
 const MAX_VISIBLE_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 42.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(40);
+const ACTION_MENU_MIN_HEIGHT: f32 = 380.0;
+const STATUS_MUTED: u32 = 0xa5a5a6;
 /// Keep reasserting the field across the activation/IME hand-off instead of
 /// relying on one focus command landing on the right frame.
 const FOCUS_RETRIES: u8 = 5;
@@ -30,7 +35,11 @@ pub fn StewardLauncher() -> impl IntoElement {
     let selected = signal(0_usize);
     let first_visible = signal(0_usize);
     let generation = signal(0_u64);
+    let actions_open = signal(false);
+    let action_search = signal(String::new());
+    let action_selected = signal(None::<ActionMenuItemKind>);
     let input_ref = element_ref();
+    let action_input_ref = element_ref();
     let list_ref = element_ref();
 
     let filter: Rc<dyn Fn(&str)> = {
@@ -64,6 +73,9 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 actions_value.insert(0, RowAction::DismissNotice);
                             }
                             let height = launcher_height(rows_value.len().min(MAX_VISIBLE_ROWS));
+                            actions_open.set(false);
+                            action_search.set(String::new());
+                            action_selected.set(None);
                             rows.set(rows_value);
                             actions.set(actions_value);
                             selected.set(0);
@@ -154,6 +166,40 @@ pub fn StewardLauncher() -> impl IntoElement {
             }
         })
     };
+    let activate_selected_action: Rc<dyn Fn() -> bool> = {
+        let app = app.clone();
+        Rc::new(move || {
+            let selected_index = selected.get_untracked();
+            let action = actions.with_untracked(|actions| actions.get(selected_index).cloned());
+            let items = action_menu_items(&app.ui_strings(), action.as_ref());
+            let selected = action_selected.get_untracked();
+            let Some(item) = items
+                .iter()
+                .find(|item| Some(item.kind) == selected && item.enabled)
+            else {
+                return false;
+            };
+            let command = match item.kind {
+                ActionMenuItemKind::Primary => action.map(WindowCommand::Activate),
+                ActionMenuItemKind::ShowInFileExplorer => action
+                    .as_ref()
+                    .and_then(row_path)
+                    .cloned()
+                    .map(RowAction::RevealInExplorer)
+                    .map(WindowCommand::Activate),
+                ActionMenuItemKind::ApplicationWindow
+                | ActionMenuItemKind::RecentFiles
+                | ActionMenuItemKind::RunAsAdministrator
+                | ActionMenuItemKind::RunAsDifferentUser => None,
+            };
+            if let Some(command) = command {
+                app.send_window_command(command);
+                true
+            } else {
+                false
+            }
+        })
+    };
     let select_relative: Rc<dyn Fn(isize)> = {
         Rc::new(move |delta: isize| {
             let len = rows.with_untracked(Vec::len);
@@ -179,18 +225,86 @@ pub fn StewardLauncher() -> impl IntoElement {
             }
         })
     };
+    let set_actions_open: Rc<dyn Fn(bool)> = {
+        let app = app.clone();
+        Rc::new(move |open: bool| {
+            actions_open.set(open);
+            if open {
+                action_search.set(String::new());
+                action_selected.set(Some(ActionMenuItemKind::Primary));
+                let action_input_ref = action_input_ref;
+                set_timeout(Duration::from_millis(10), move || {
+                    action_input_ref.focus();
+                });
+            } else {
+                let input_ref = input_ref;
+                set_timeout(Duration::from_millis(10), move || {
+                    input_ref.focus();
+                });
+            }
+            let visible_rows = rows.with_untracked(Vec::len).min(MAX_VISIBLE_ROWS);
+            let height = if open {
+                launcher_height_with_actions(visible_rows)
+            } else {
+                launcher_height(visible_rows)
+            };
+            app.send_window_command(WindowCommand::Resize { height });
+        })
+    };
+    let select_action_relative: Rc<dyn Fn(isize)> = {
+        let app = app.clone();
+        Rc::new(move |delta: isize| {
+            let selected_index = selected.get_untracked();
+            let action = actions.with_untracked(|actions| actions.get(selected_index).cloned());
+            let items = action_menu_items(&app.ui_strings(), action.as_ref());
+            let matches = filtered_action_indices(&items, &action_search.get_untracked());
+            if let Some(next) =
+                next_action_selection(&items, &matches, action_selected.get_untracked(), delta)
+            {
+                action_selected.set(Some(next));
+            }
+        })
+    };
     let key_handler: Rc<dyn Fn(&str)> = {
         let app = app.clone();
         let select_relative = select_relative.clone();
+        let select_action_relative = select_action_relative.clone();
+        let activate_selected_action = activate_selected_action.clone();
+        let submit = submit.clone();
+        let set_actions_open = set_actions_open.clone();
         Rc::new(move |key: &str| match key {
             "up" | "ArrowUp" => {
-                select_relative(-1);
+                if actions_open.get_untracked() {
+                    select_action_relative(-1);
+                } else {
+                    select_relative(-1);
+                }
             }
             "down" | "ArrowDown" => {
-                select_relative(1);
+                if actions_open.get_untracked() {
+                    select_action_relative(1);
+                } else {
+                    select_relative(1);
+                }
             }
             "escape" | "Escape" => {
-                app.send_window_command(WindowCommand::Hide);
+                if actions_open.get_untracked() {
+                    set_actions_open(false);
+                } else {
+                    app.send_window_command(WindowCommand::Hide);
+                }
+            }
+            "enter" | "Enter" => {
+                if actions_open.get_untracked() {
+                    if activate_selected_action() {
+                        set_actions_open(false);
+                    }
+                } else {
+                    submit(&query.get_untracked());
+                }
+            }
+            "ctrl+k" | "control+k" if actions.with_untracked(Vec::len) > 0 => {
+                set_actions_open(!actions_open.get_untracked());
             }
             _ => {}
         })
@@ -198,10 +312,25 @@ pub fn StewardLauncher() -> impl IntoElement {
 
     bind_launcher_key("up", true, key_handler.clone());
     bind_launcher_key("down", true, key_handler.clone());
+    bind_launcher_key("enter", false, key_handler.clone());
+    bind_launcher_key("ctrl+k", false, key_handler.clone());
     bind_launcher_key("escape", false, key_handler);
 
     add_input_focus(&input_ref);
     let has_rows = move || rows.with(|rows| !rows.is_empty());
+    let current_action: Rc<dyn Fn() -> Option<RowAction>> =
+        Rc::new(move || actions.with(|actions| actions.get(selected.get()).cloned()));
+    let current_row: Rc<dyn Fn() -> LauncherRow> = {
+        Rc::new(move || rows.with(|rows| rows.get(selected.get()).cloned().unwrap_or_default()))
+    };
+    let primary_action_label: Rc<dyn Fn() -> String> = {
+        let app = app.clone();
+        let current_action = current_action.clone();
+        Rc::new(move || {
+            let _ = observed_locale.get();
+            primary_action_label(current_action().as_ref(), &app.ui_strings())
+        })
+    };
 
     view()
         .size_full()
@@ -273,42 +402,66 @@ pub fn StewardLauncher() -> impl IntoElement {
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .border_t(px(1.0))
-                        .border_color(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.06))
+                        .bg(rgb(0x1e1e1f))
                         .window_drag(false)
+                        .child(selection_status_icon(rows, selected))
                         .child(
                             view()
                                 .flex_row()
                                 .items_center()
                                 .gap_3()
-                                .child(status_hint("↑↓", {
+                                .translate_y(px(1.0))
+                                .child(primary_action_status_hint(
+                                    {
+                                        let primary_action_label = primary_action_label.clone();
+                                        move || primary_action_label()
+                                    },
+                                    {
+                                        let activate = activate.clone();
+                                        move || {
+                                            activate(selected.with_untracked(|selected| *selected));
+                                        }
+                                    },
+                                ))
+                                .child({
                                     let app = app.clone();
-                                    move || {
-                                        let _ = observed_locale.get();
-                                        app.ui_strings().launcher_navigate
-                                    }
-                                }))
-                                .child(status_hint("↵", {
-                                    let app = app.clone();
-                                    move || {
-                                        let _ = observed_locale.get();
-                                        app.ui_strings().launcher_open
-                                    }
-                                }))
-                                .child(status_hint("Esc", {
-                                    let app = app.clone();
-                                    move || {
-                                        let _ = observed_locale.get();
-                                        app.ui_strings().launcher_close
-                                    }
-                                })),
-                        )
-                        .child(
-                            text(move || result_position(selected.get(), rows.with(Vec::len)))
-                                .text_size(px(11.0))
-                                .text_color(rgb(
-                                    steward_ui_components::palette::RESULT_LABEL_FOREGROUND,
-                                )),
+                                    let set_actions_open = set_actions_open.clone();
+                                    let current_action = current_action.clone();
+                                    let current_row = current_row.clone();
+                                    let on_open_change = set_actions_open.clone();
+                                    menu()
+                                        .open(move || Some(actions_open.get()))
+                                        .placement(Placement::Top)
+                                        .align(Align::End)
+                                        .popup_style(actions_popup_style)
+                                        .on_open_change(move |event: &MenuEvent| {
+                                            if let MenuEvent::OpenChange(open, _) = event {
+                                                if *open && actions.with_untracked(Vec::len) == 0 {
+                                                    return;
+                                                }
+                                                on_open_change(*open);
+                                            }
+                                        })
+                                        .trigger(action_status_hint({
+                                            let app = app.clone();
+                                            move || {
+                                                let _ = observed_locale.get();
+                                                app.ui_strings().launcher_actions
+                                            }
+                                        }))
+                                        .child(action_menu_content(
+                                            app,
+                                            current_action,
+                                            current_row,
+                                            ActionMenuState {
+                                                search: action_search,
+                                                selected: action_selected,
+                                                input_ref: action_input_ref,
+                                                activate_selected: activate_selected_action,
+                                                set_open: set_actions_open,
+                                            },
+                                        ))
+                                }),
                         ),
                 ),
         )
@@ -318,39 +471,701 @@ fn launcher_height(visible_rows: usize) -> f32 {
     LAUNCHER_HEADER_HEIGHT + 8.0 + visible_rows as f32 * ROW_HEIGHT + LAUNCHER_STATUS_BAR_HEIGHT
 }
 
-fn status_hint(key: &'static str, label: impl Fn() -> String + 'static) -> impl IntoElement {
+fn launcher_height_with_actions(visible_rows: usize) -> f32 {
+    launcher_height(visible_rows).max(ACTION_MENU_MIN_HEIGHT)
+}
+
+fn selection_status_icon(
+    rows: Signal<Vec<LauncherRow>>,
+    selected: Signal<usize>,
+) -> impl IntoElement {
+    let icon = move || {
+        rows.with(|rows| {
+            rows.get(selected.get())
+                .and_then(|row| row.icon.clone())
+                .unwrap_or_default()
+        })
+    };
+    let has_icon =
+        move || rows.with(|rows| rows.get(selected.get()).is_some_and(|r| r.icon.is_some()));
+    view()
+        .w(px(18.0))
+        .h(px(18.0))
+        .items_center()
+        .justify_center()
+        .when(has_icon(), move |status| {
+            status.child(image(icon).w(px(18.0)).h(px(18.0)).flex_shrink_0())
+        })
+        .when(!has_icon(), |status| status.child(generic_status_icon()))
+}
+
+fn generic_status_icon() -> impl IntoElement {
+    let color = rgb(STATUS_MUTED);
+    view()
+        .w(px(16.0))
+        .h(px(16.0))
+        .flex_col()
+        .justify_center()
+        .gap_1()
+        .child(view().w(px(14.0)).h(px(2.0)).rounded(px(1.0)).bg(color))
+        .child(view().w(px(10.0)).h(px(2.0)).rounded(px(1.0)).bg(color))
+}
+
+fn actions_popup_style(style: StyleRefinement) -> StyleRefinement {
+    style
+        .w(px(350.0))
+        .p(px(0.0))
+        .rounded(px(10.0))
+        .bg(rgb(0x363636))
+        .border_1()
+        .border_color(rgb(0x5e5e5e))
+        .overflow_hidden()
+        .shadow_lg()
+}
+
+fn primary_action_status_hint(
+    label: impl Fn() -> String + 'static,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
         .gap_1()
-        .child(
-            view()
-                .h(px(18.0))
-                .min_w(px(22.0))
-                .px(px(5.0))
-                .rounded(px(5.0))
-                .bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.08))
-                .items_center()
-                .justify_center()
-                .child(
-                    text(key).text_size(px(10.0)).text_color(
-                        rgb(steward_ui_components::palette::FOREGROUND)
-                            .opacity(steward_ui_components::palette::PLACEHOLDER_OPACITY),
-                    ),
-                ),
-        )
+        .h(px(22.0))
+        .px(px(6.0))
+        .rounded(px(6.0))
+        .hover(|style| style.bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.06)))
+        .on_press(on_press)
         .child(
             text(label)
                 .text_size(px(11.0))
-                .text_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND)),
+                .line_height(px(22.0))
+                .text_color(rgb(steward_ui_components::palette::FOREGROUND))
+                .number_of_lines(1),
+        )
+        .child(enter_status_key())
+}
+
+fn action_status_hint(label: impl Fn() -> String + 'static) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .h(px(22.0))
+        .px(px(6.0))
+        .rounded(px(6.0))
+        .hover(|style| style.bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.06)))
+        .child(
+            text(label)
+                .text_size(px(11.0))
+                .line_height(px(22.0))
+                .text_color(rgb(STATUS_MUTED)),
+        )
+        .child(status_key("Ctrl"))
+        .child(status_key("K"))
+}
+
+fn primary_action_label(action: Option<&RowAction>, strings: &crate::i18n::UiStrings) -> String {
+    match action {
+        Some(RowAction::LaunchApp(_)) => strings.launcher_open_application.clone(),
+        Some(RowAction::OpenFile(_)) => strings.launcher_open_file.clone(),
+        Some(RowAction::CopyText(_)) => strings.launcher_copy.clone(),
+        Some(RowAction::OpenUrl(_)) => strings.open_url.clone(),
+        Some(RowAction::OpenSettings(_)) => strings.launcher_open_settings.clone(),
+        Some(RowAction::DismissNotice) => strings.launcher_close.clone(),
+        Some(RowAction::OpenPlugin { .. }) => strings.launcher_open_plugin.clone(),
+        Some(RowAction::RevealInExplorer(_) | RowAction::ShowProperties(_)) | None => {
+            strings.launcher_open.clone()
+        }
+    }
+}
+
+fn status_key(key: &'static str) -> impl IntoElement {
+    status_keycap(
+        text(key)
+            .text_size(px(10.0))
+            .line_height(px(18.0))
+            .text_color(rgb(STATUS_MUTED)),
+    )
+}
+
+fn enter_status_key() -> impl IntoElement {
+    status_keycap(
+        view().w(px(12.0)).h(px(12.0)).child(
+            canvas(move || {
+                Painter::new()
+                    .stroke_color(rgb(STATUS_MUTED))
+                    .line_width(1.35)
+                    .line_cap(LineCap::Round)
+                    .line_join(LineJoin::Round)
+                    .stroke_svg("M9 3.5 L9 7.5 L3.5 7.5 M5.5 5.5 L3.5 7.5 L5.5 9.5")
+            })
+            .size_full(),
+        ),
+    )
+}
+
+fn status_keycap(content: impl IntoElement) -> impl IntoElement {
+    view()
+        .h(px(18.0))
+        .min_w(px(22.0))
+        .px(px(5.0))
+        .rounded(px(5.0))
+        .bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.08))
+        .items_center()
+        .justify_center()
+        .child(content)
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum ActionMenuItemKind {
+    Primary,
+    ApplicationWindow,
+    RecentFiles,
+    RunAsAdministrator,
+    RunAsDifferentUser,
+    ShowInFileExplorer,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ActionMenuItem {
+    kind: ActionMenuItemKind,
+    label: String,
+    icon: ActionPanelIcon,
+    keys: &'static [&'static str],
+    enter: bool,
+    enabled: bool,
+}
+
+struct ActionMenuState {
+    search: Signal<String>,
+    selected: Signal<Option<ActionMenuItemKind>>,
+    input_ref: nsh_core::element::ElementRef,
+    activate_selected: Rc<dyn Fn() -> bool>,
+    set_open: Rc<dyn Fn(bool)>,
+}
+
+struct ActionPanelRowOptions {
+    keys: &'static [&'static str],
+    enabled: bool,
+    enter: bool,
+    close_on_select: bool,
+}
+
+fn primary_action_icon(action: Option<&RowAction>) -> ActionPanelIcon {
+    match action {
+        Some(RowAction::LaunchApp(_)) => ActionPanelIcon::Play,
+        Some(RowAction::OpenFile(_)) => ActionPanelIcon::File,
+        Some(RowAction::CopyText(_)) => ActionPanelIcon::Copy,
+        Some(RowAction::OpenUrl(_)) => ActionPanelIcon::Globe,
+        Some(RowAction::OpenSettings(_)) => ActionPanelIcon::Settings,
+        Some(RowAction::DismissNotice) => ActionPanelIcon::Close,
+        Some(RowAction::OpenPlugin { .. }) => ActionPanelIcon::Package,
+        Some(RowAction::RevealInExplorer(_)) => ActionPanelIcon::FolderOpen,
+        Some(RowAction::ShowProperties(_)) | None => ActionPanelIcon::Application,
+    }
+}
+
+fn action_menu_items(
+    strings: &crate::i18n::UiStrings,
+    action: Option<&RowAction>,
+) -> Vec<ActionMenuItem> {
+    let has_path = action.and_then(row_path).is_some();
+    vec![
+        ActionMenuItem {
+            kind: ActionMenuItemKind::Primary,
+            label: primary_action_label(action, strings),
+            icon: primary_action_icon(action),
+            keys: &[],
+            enter: true,
+            enabled: action.is_some(),
+        },
+        ActionMenuItem {
+            kind: ActionMenuItemKind::ApplicationWindow,
+            label: strings.launcher_action_application_window.clone(),
+            icon: ActionPanelIcon::ApplicationWindow,
+            keys: &["Ctrl", "N"],
+            enter: false,
+            enabled: false,
+        },
+        ActionMenuItem {
+            kind: ActionMenuItemKind::RecentFiles,
+            label: strings.launcher_action_recent_files.clone(),
+            icon: ActionPanelIcon::History,
+            keys: &["Ctrl", "O"],
+            enter: false,
+            enabled: false,
+        },
+        ActionMenuItem {
+            kind: ActionMenuItemKind::RunAsAdministrator,
+            label: strings.launcher_action_run_as_administrator.clone(),
+            icon: ActionPanelIcon::Shield,
+            keys: &["Ctrl", "Shift"],
+            enter: true,
+            enabled: false,
+        },
+        ActionMenuItem {
+            kind: ActionMenuItemKind::RunAsDifferentUser,
+            label: strings.launcher_action_run_as_different_user.clone(),
+            icon: ActionPanelIcon::Users,
+            keys: &["Alt", "Shift"],
+            enter: true,
+            enabled: false,
+        },
+        ActionMenuItem {
+            kind: ActionMenuItemKind::ShowInFileExplorer,
+            label: strings.launcher_action_show_in_file_explorer.clone(),
+            icon: ActionPanelIcon::FolderOpen,
+            keys: &[],
+            enter: false,
+            enabled: has_path,
+        },
+    ]
+}
+
+fn filtered_action_indices(items: &[ActionMenuItem], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            (query.is_empty() || item.label.to_lowercase().contains(&query)).then_some(index)
+        })
+        .collect()
+}
+
+fn next_action_selection(
+    items: &[ActionMenuItem],
+    matches: &[usize],
+    current: Option<ActionMenuItemKind>,
+    delta: isize,
+) -> Option<ActionMenuItemKind> {
+    let enabled: Vec<_> = matches
+        .iter()
+        .copied()
+        .filter(|&index| items.get(index).is_some_and(|item| item.enabled))
+        .collect();
+    if enabled.is_empty() {
+        return None;
+    }
+    let index = enabled
+        .iter()
+        .position(|&candidate| Some(items[candidate].kind) == current)
+        .map_or_else(
+            || {
+                if delta < 0 {
+                    enabled.len() - 1
+                } else {
+                    0
+                }
+            },
+            |position| (position as isize + delta).rem_euclid(enabled.len() as isize) as usize,
+        );
+    Some(items[enabled[index]].kind)
+}
+
+fn action_menu_item_handler(
+    kind: ActionMenuItemKind,
+    app: Arc<LauncherServices>,
+    current_action: Rc<dyn Fn() -> Option<RowAction>>,
+    path_action: Rc<dyn Fn() -> Option<std::path::PathBuf>>,
+) -> impl Fn() + 'static {
+    move || {
+        activate_action_menu_item(kind, &app, &current_action, &path_action);
+    }
+}
+
+fn activate_action_menu_item(
+    kind: ActionMenuItemKind,
+    app: &LauncherServices,
+    current_action: &Rc<dyn Fn() -> Option<RowAction>>,
+    path_action: &Rc<dyn Fn() -> Option<std::path::PathBuf>>,
+) -> bool {
+    let action = match kind {
+        ActionMenuItemKind::Primary => current_action().map(WindowCommand::Activate),
+        ActionMenuItemKind::ShowInFileExplorer => path_action()
+            .map(RowAction::RevealInExplorer)
+            .map(WindowCommand::Activate),
+        ActionMenuItemKind::ApplicationWindow
+        | ActionMenuItemKind::RecentFiles
+        | ActionMenuItemKind::RunAsAdministrator
+        | ActionMenuItemKind::RunAsDifferentUser => None,
+    };
+    if let Some(command) = action {
+        app.send_window_command(command);
+        true
+    } else {
+        false
+    }
+}
+
+fn action_menu_content(
+    app: Arc<LauncherServices>,
+    current_action: Rc<dyn Fn() -> Option<RowAction>>,
+    current_row: Rc<dyn Fn() -> LauncherRow>,
+    state: ActionMenuState,
+) -> impl IntoElement {
+    let ActionMenuState {
+        search: action_search,
+        selected: action_selected,
+        input_ref: action_input_ref,
+        activate_selected: activate_selected_action,
+        set_open: set_actions_open,
+    } = state;
+    let strings = app.ui_strings();
+    let search_placeholder = strings.launcher_action_search.clone();
+    let no_results = strings.launcher_action_no_results.clone();
+    let path_action: Rc<dyn Fn() -> Option<std::path::PathBuf>> = {
+        let current_action = current_action.clone();
+        Rc::new(move || current_action().as_ref().and_then(row_path).cloned())
+    };
+    let actions = view()
+        .flex_1()
+        .flex_col()
+        .px(px(8.0))
+        .pt(px(8.0))
+        .child({
+            let current_action_for_items = current_action.clone();
+            let strings = strings.clone();
+            each(
+                move || {
+                    let action = current_action_for_items();
+                    let items = action_menu_items(&strings, action.as_ref());
+                    filtered_action_indices(&items, &action_search.get())
+                        .into_iter()
+                        .map(|index| items[index].clone())
+                        .collect::<Vec<ActionMenuItem>>()
+                },
+                |item| item.kind,
+                {
+                    let app = app.clone();
+                    let current_action = current_action.clone();
+                    let path_action = path_action.clone();
+                    move |item: nsh_core::element::ReadSignal<ActionMenuItem>,
+                          _: nsh_core::element::ReadSignal<usize>| {
+                        let item = item.get_untracked();
+                        let kind = item.kind;
+                        action_panel_row(
+                            item.label,
+                            action_panel_icon(item.icon),
+                            ActionPanelRowOptions {
+                                keys: item.keys,
+                                enabled: item.enabled,
+                                enter: item.enter,
+                                close_on_select: item.enabled,
+                            },
+                            move || action_selected.get() == Some(kind),
+                            action_menu_item_handler(
+                                kind,
+                                app.clone(),
+                                current_action.clone(),
+                                path_action.clone(),
+                            ),
+                        )
+                    }
+                },
+            )
+        })
+        .child({
+            let current_action = current_action.clone();
+            let strings = strings.clone();
+            when(
+                move || {
+                    let action = current_action();
+                    let items = action_menu_items(&strings, action.as_ref());
+                    filtered_action_indices(&items, &action_search.get()).is_empty()
+                },
+                move || {
+                    view()
+                        .w_full()
+                        .h(px(40.0))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text(no_results.clone())
+                                .text_size(px(12.0))
+                                .text_color(rgb(STATUS_MUTED)),
+                        )
+                },
+            )
+        });
+
+    view()
+        .w_full()
+        .h(px(280.0))
+        .flex_col()
+        .bg(rgb(0x363636))
+        .child(action_menu_header(current_row, strings.application.clone()))
+        .child(actions)
+        .child(
+            view()
+                .h(px(39.0))
+                .w_full()
+                .px(px(16.0))
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .border_t(px(1.0))
+                .border_color(rgb(0x4a4a4a))
+                .child(action_panel_icon(ActionPanelIcon::Search))
+                .child(
+                    input()
+                        .test_id("action-search")
+                        .element_ref(&action_input_ref)
+                        .flex_1()
+                        .h(px(30.0))
+                        .bg(rgba(0x00000000))
+                        .value(move || action_search.get())
+                        .placeholder(move || search_placeholder.clone())
+                        .on_change({
+                            let current_action = current_action.clone();
+                            let strings = strings.clone();
+                            move |text: &str| {
+                                action_search.set(text.to_owned());
+                                let action = current_action();
+                                let items = action_menu_items(&strings, action.as_ref());
+                                let matches = filtered_action_indices(&items, text);
+                                action_selected
+                                    .set(next_action_selection(&items, &matches, None, 1));
+                            }
+                        })
+                        .on_submit({
+                            let activate_selected_action = activate_selected_action.clone();
+                            let set_actions_open = set_actions_open.clone();
+                            move |_text: &str| {
+                                if activate_selected_action() {
+                                    set_actions_open(false);
+                                }
+                            }
+                        })
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xffffff))
+                        .placeholder_color(rgb(STATUS_MUTED))
+                        .selection_color(rgb(steward_ui_components::palette::ACCENT)),
+                ),
         )
 }
 
-fn result_position(selected: usize, len: usize) -> String {
-    if len == 0 {
-        "0 / 0".into()
-    } else {
-        format!("{} / {len}", selected.min(len - 1) + 1)
+fn action_panel_row(
+    label: impl Into<String>,
+    icon: impl IntoElement,
+    options: ActionPanelRowOptions,
+    selected: impl Fn() -> bool + 'static,
+    on_select: impl Fn() + 'static,
+) -> impl IntoElement {
+    menu_item()
+        .disabled(!options.enabled)
+        .on_select(on_select)
+        .close_on_select(options.close_on_select)
+        .w_full()
+        .h(px(32.0))
+        .px(px(8.0))
+        .rounded(px(8.0))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .bg(move || {
+            if selected() {
+                rgb(0x4a4a4a)
+            } else {
+                rgba(0x00000000)
+            }
+        })
+        .hover(|style| style.bg(rgb(0x4a4a4a)))
+        .child(icon)
+        .child(
+            view().flex_1().min_w(px(0.0)).child(
+                text(label.into())
+                    .text_size(px(13.0))
+                    .line_height(px(20.0))
+                    .text_color(rgb(0xffffff))
+                    .number_of_lines(1),
+            ),
+        )
+        .child(action_shortcut_hint(options.keys, options.enter))
+}
+
+fn action_shortcut_hint(keys: &'static [&'static str], enter: bool) -> impl IntoElement {
+    let mut hint = view().flex_row().items_center().gap_1();
+    for key in keys {
+        hint = hint.child(action_shortcut_key(key));
+    }
+    if enter {
+        hint = hint.child(action_shortcut_enter());
+    }
+    hint
+}
+
+fn action_shortcut_key(key: &'static str) -> impl IntoElement {
+    action_shortcut_keycap(
+        text(key)
+            .text_size(px(10.0))
+            .line_height(px(18.0))
+            .text_color(rgb(STATUS_MUTED)),
+    )
+}
+
+fn action_shortcut_enter() -> impl IntoElement {
+    action_shortcut_keycap(
+        view().w(px(12.0)).h(px(12.0)).child(
+            canvas(move || {
+                Painter::new()
+                    .stroke_color(rgb(STATUS_MUTED))
+                    .line_width(1.35)
+                    .line_cap(LineCap::Round)
+                    .line_join(LineJoin::Round)
+                    .stroke_svg("M9 3.5 L9 7.5 L3.5 7.5 M5.5 5.5 L3.5 7.5 L5.5 9.5")
+            })
+            .size_full(),
+        ),
+    )
+}
+
+fn action_shortcut_keycap(content: impl IntoElement) -> impl IntoElement {
+    view()
+        .h(px(18.0))
+        .min_w(px(22.0))
+        .px(px(5.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(rgb(0x5e5e5e))
+        .items_center()
+        .justify_center()
+        .child(content)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionPanelIcon {
+    Application,
+    ApplicationWindow,
+    Play,
+    File,
+    Copy,
+    Globe,
+    Settings,
+    Close,
+    Package,
+    History,
+    Shield,
+    Users,
+    FolderOpen,
+    Search,
+}
+
+fn action_menu_header(
+    current_row: Rc<dyn Fn() -> LauncherRow>,
+    fallback_title: String,
+) -> impl IntoElement {
+    let has_icon_row = current_row.clone();
+    let icon_row = current_row.clone();
+    let title_row = current_row;
+    let has_icon = move || has_icon_row().icon.is_some();
+    let icon_source: Rc<dyn Fn() -> String> = Rc::new(move || icon_row().icon.unwrap_or_default());
+    view()
+        .h(px(40.0))
+        .w_full()
+        .px(px(16.0))
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .border_b(px(1.0))
+        .border_color(rgb(0x4a4a4a))
+        .child(
+            view()
+                .w(px(18.0))
+                .h(px(18.0))
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .child(
+                    when(has_icon, move || {
+                        let icon_source = icon_source.clone();
+                        image(move || icon_source()).w(px(18.0)).h(px(18.0))
+                    })
+                    .otherwise(|| action_panel_icon_sized(ActionPanelIcon::Application, 18.0)),
+                ),
+        )
+        .child(
+            view().flex_1().min_w(px(0.0)).child(
+                text(move || {
+                    let row = title_row();
+                    if row.title.is_empty() {
+                        fallback_title.clone()
+                    } else {
+                        row.title
+                    }
+                })
+                .text_size(px(14.0))
+                .line_height(px(20.0))
+                .text_color(rgb(0xffffff))
+                .number_of_lines(1),
+            ),
+        )
+}
+
+fn action_panel_icon(kind: ActionPanelIcon) -> impl IntoElement {
+    action_panel_icon_sized(kind, 14.0)
+}
+
+fn action_panel_icon_sized(kind: ActionPanelIcon, size: f32) -> impl IntoElement {
+    view().w(px(size)).h(px(size)).child(
+        canvas(move || {
+            // Lucide icons (ISC), kept at their 24-unit viewBox and scaled to the row size.
+            Painter::new()
+                .scale(size / 24.0, size / 24.0)
+                .stroke_color(rgb(0xd0d0d0))
+                .line_width(2.0)
+                .line_cap(LineCap::Round)
+                .line_join(LineJoin::Round)
+                .stroke_svg(match kind {
+                    ActionPanelIcon::Application => {
+                        "M4 4 H20 A2 2 0 0 1 22 6 V18 A2 2 0 0 1 20 20 H4 A2 2 0 0 1 2 18 V6 A2 2 0 0 1 4 4 Z M10 4 V8 M2 8 H22 M6 4 V8"
+                    }
+                    ActionPanelIcon::ApplicationWindow => {
+                        "M5 3 H19 A2 2 0 0 1 21 5 V19 A2 2 0 0 1 19 21 H5 A2 2 0 0 1 3 19 V5 A2 2 0 0 1 5 3 Z M3 9 H21"
+                    }
+                    ActionPanelIcon::Play => "M6 3 L20 12 L6 21 Z",
+                    ActionPanelIcon::File => {
+                        "M15 2 H6 A2 2 0 0 0 4 4 V20 A2 2 0 0 0 6 22 H18 A2 2 0 0 0 20 20 V7 Z M14 2 V6 A2 2 0 0 0 16 8 H20"
+                    }
+                    ActionPanelIcon::Copy => {
+                        "M8 8 H18 A2 2 0 0 1 20 10 V20 A2 2 0 0 1 18 22 H8 A2 2 0 0 1 6 20 V10 A2 2 0 0 1 8 8 Z M4 16 C2.9 16 2 15.1 2 14 V4 C2 2.9 2.9 2 4 2 H14 C15.1 2 16 2.9 16 4"
+                    }
+                    ActionPanelIcon::Globe => {
+                        "M12 2 A10 10 0 1 0 12 22 A10 10 0 1 0 12 2 Z M12 2 A14.5 14.5 0 0 0 12 22 M12 2 A14.5 14.5 0 0 1 12 22 M2 12 H22"
+                    }
+                    ActionPanelIcon::Settings => {
+                        "M21 4 H14 M10 4 H3 M21 12 H12 M8 12 H3 M21 20 H16 M12 20 H3 M14 2 V6 M8 10 V14 M16 18 V22"
+                    }
+                    ActionPanelIcon::Close => "M18 6 L6 18 M6 6 L18 18",
+                    ActionPanelIcon::Package => {
+                        "M21 8 A2 2 0 0 0 20 6.27 L13 2.27 A2 2 0 0 0 11 2.27 L4 6.27 A2 2 0 0 0 3 8 V16 A2 2 0 0 0 4 17.73 L11 21.73 A2 2 0 0 0 13 21.73 L20 17.73 A2 2 0 0 0 21 16 Z M3.3 7 L12 12 L20.7 7 M12 22 V12"
+                    }
+                    ActionPanelIcon::History => {
+                        "M3 12 A9 9 0 1 0 12 3 A9.75 9.75 0 0 0 5.26 5.74 L3 8 M3 3 V8 H8 M12 7 V12 L16 14"
+                    }
+                    ActionPanelIcon::Shield => {
+                        "M20 13 C20 18 16.5 20.5 12.34 21.95 A1 1 0 0 1 11.67 21.94 C7.5 20.5 4 18 4 13 V6 A1 1 0 0 1 5 5 C7 5 9.5 3.8 11.24 2.28 A1.17 1.17 0 0 1 12.76 2.28 C14.51 3.81 17 5 19 5 A1 1 0 0 1 20 6 Z M9 12 L11 14 L15 10"
+                    }
+                    ActionPanelIcon::Users => {
+                        "M18 21 A8 8 0 0 0 2 21 M10 3 A5 5 0 1 0 10 13 A5 5 0 1 0 10 3 Z M22 20 C22 16.63 20 13.5 18 12 A5 5 0 0 0 17.55 3.7"
+                    }
+                    ActionPanelIcon::FolderOpen => {
+                        "M6 14 L7.5 11.1 A2 2 0 0 1 9.24 10 H20 A2 2 0 0 1 21.94 12.5 L20.4 18.5 A2 2 0 0 1 18.45 20 H4 A2 2 0 0 1 2 18 V5 A2 2 0 0 1 4 3 H7.9 A2 2 0 0 1 9.59 3.9 L10.4 5.1 A2 2 0 0 0 12.07 6 H18 A2 2 0 0 1 20 8 V10"
+                    }
+                    ActionPanelIcon::Search => {
+                        "M11 3 A8 8 0 1 0 11 19 A8 8 0 1 0 11 3 Z M21 21 L16.7 16.7"
+                    }
+                })
+        })
+        .size_full(),
+    )
+}
+
+fn row_path(action: &RowAction) -> Option<&std::path::PathBuf> {
+    match action {
+        RowAction::LaunchApp(path) | RowAction::OpenFile(path) => Some(path),
+        _ => None,
     }
 }
 
@@ -360,6 +1175,7 @@ fn bind_launcher_key(key: &'static str, repeat: bool, handler: Rc<dyn Fn(&str)>)
         KeyOptions {
             when: When::Always,
             repeat,
+            pass_through: false,
         },
         move |key| handler(key),
     );
@@ -392,7 +1208,7 @@ fn submission_action(actions: &[RowAction], selected: usize, text: &str) -> Opti
     actions.get(selected).cloned()
 }
 
-fn add_input_focus(input: &nsh_core::ui::ElementRef) {
+fn add_input_focus(input: &nsh_core::element::ElementRef) {
     set_timeout(Duration::from_millis(10), {
         let input = *input;
         move || input.focus()
@@ -401,20 +1217,57 @@ fn add_input_focus(input: &nsh_core::ui::ElementRef) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::{atomic::AtomicU64, Arc};
     use std::time::Duration;
 
-    use nsh_core::ui::{EngineContext, Root};
+    use nsh_core::element::EngineContext;
     use nsh_engine::EngineConfig;
+    use nsh_engine::Root;
     use nsh_testing::Headless;
+    use steward_ui_components::LauncherRow;
 
     use super::{
-        launcher_height, next_selection, result_position, submission_action, StewardLauncher,
+        action_menu_items, filtered_action_indices, launcher_height, launcher_height_with_actions,
+        next_action_selection, next_selection, primary_action_label, row_path, submission_action,
+        ActionMenuItemKind, StewardLauncher,
     };
     use crate::{
         i18n::UiStrings,
-        services::{AppServices, RowAction, UiSettings},
+        services::{AppServices, RowAction, SearchReply, SearchRequest, UiSettings, WindowCommand},
     };
+
+    fn ui_strings(placeholder: &str) -> UiStrings {
+        UiStrings {
+            search_placeholder: placeholder.into(),
+            application: "Application".into(),
+            file_search_unavailable: "Windows Search is unavailable".into(),
+            file_search_repair: "Open Windows Search settings".into(),
+            settings: "Windows Settings".into(),
+            plugin: "Plugin".into(),
+            calculator: "Calculator".into(),
+            open_url: "Open URL".into(),
+            launcher_navigate: "Navigate".into(),
+            launcher_open: "Open".into(),
+            launcher_close: "Close".into(),
+            launcher_actions: "Actions".into(),
+            launcher_copy: "Copy".into(),
+            launcher_open_application: "Open Application".into(),
+            launcher_open_file: "Open File".into(),
+            launcher_open_settings: "Open Settings".into(),
+            launcher_open_plugin: "Open Plugin".into(),
+            launcher_open_location: "Open file location".into(),
+            launcher_copy_path: "Copy path".into(),
+            launcher_properties: "Properties".into(),
+            launcher_action_application_window: "Application Window".into(),
+            launcher_action_recent_files: "Open Files... / Recent".into(),
+            launcher_action_run_as_administrator: "Run as Administrator".into(),
+            launcher_action_run_as_different_user: "Run as Different User".into(),
+            launcher_action_show_in_file_explorer: "Show in File Explorer".into(),
+            launcher_action_search: "Search for actions...".into(),
+            launcher_action_no_results: "No matching actions".into(),
+        }
+    }
 
     #[test]
     fn selection_stops_at_the_result_bounds() {
@@ -431,14 +1284,222 @@ mod tests {
     fn launcher_height_includes_the_status_bar() {
         assert_eq!(launcher_height(0), 96.0);
         assert_eq!(launcher_height(8), 432.0);
+        assert_eq!(launcher_height_with_actions(0), 380.0);
+        assert_eq!(launcher_height_with_actions(8), 432.0);
     }
 
     #[test]
-    fn status_bar_reports_the_clamped_result_position() {
-        assert_eq!(result_position(0, 0), "0 / 0");
-        assert_eq!(result_position(0, 3), "1 / 3");
-        assert_eq!(result_position(2, 3), "3 / 3");
-        assert_eq!(result_position(9, 3), "3 / 3");
+    fn file_result_actions_expose_the_path_for_context_commands() {
+        let path = PathBuf::from(r"C:\Windows\notepad.exe");
+        assert_eq!(row_path(&RowAction::LaunchApp(path.clone())), Some(&path));
+        assert_eq!(row_path(&RowAction::OpenFile(path.clone())), Some(&path));
+        assert_eq!(row_path(&RowAction::CopyText("text".into())), None);
+    }
+
+    #[test]
+    fn application_results_show_the_open_application_status_action() {
+        let strings = ui_strings("Search");
+        let action = RowAction::LaunchApp(PathBuf::from(r"C:\Windows\notepad.exe"));
+        assert_eq!(
+            primary_action_label(Some(&action), &strings),
+            "Open Application"
+        );
+    }
+
+    #[test]
+    fn action_menu_search_filters_labels_without_case_sensitivity() {
+        let strings = ui_strings("Search");
+        let action = RowAction::LaunchApp(PathBuf::from(r"C:\Windows\notepad.exe"));
+        let items = action_menu_items(&strings, Some(&action));
+
+        let matches = filtered_action_indices(&items, "ADMINISTRATOR");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            items[matches[0]].kind,
+            ActionMenuItemKind::RunAsAdministrator
+        );
+
+        let matches = filtered_action_indices(&items, "file explorer");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            items[matches[0]].kind,
+            ActionMenuItemKind::ShowInFileExplorer
+        );
+        assert!(filtered_action_indices(&items, "missing action").is_empty());
+    }
+
+    #[test]
+    fn action_menu_keyboard_navigation_skips_unavailable_actions() {
+        let strings = ui_strings("Search");
+        let action = RowAction::LaunchApp(PathBuf::from(r"C:\Windows\notepad.exe"));
+        let items = action_menu_items(&strings, Some(&action));
+        let all = filtered_action_indices(&items, "");
+
+        assert_eq!(
+            next_action_selection(&items, &all, Some(ActionMenuItemKind::Primary), 1),
+            Some(ActionMenuItemKind::ShowInFileExplorer)
+        );
+        assert_eq!(
+            next_action_selection(
+                &items,
+                &all,
+                Some(ActionMenuItemKind::ShowInFileExplorer),
+                1
+            ),
+            Some(ActionMenuItemKind::Primary)
+        );
+
+        let administrator = filtered_action_indices(&items, "administrator");
+        assert_eq!(next_action_selection(&items, &administrator, None, 1), None);
+    }
+
+    #[test]
+    fn action_menu_search_is_editable_and_keyboard_selection_executes() {
+        let placeholder = "Search apps, files, settings, or type a command...";
+        let app_path = PathBuf::from(r"C:\Windows\notepad.exe");
+        let reply_path = app_path.clone();
+        let (request_tx, request_rx) = crossbeam_channel::unbounded::<SearchRequest>();
+        std::thread::spawn(move || {
+            while let Ok(request) = request_rx.recv() {
+                let _ = request.reply.send(SearchReply {
+                    generation: request.generation,
+                    rows: vec![LauncherRow {
+                        id: "app:notepad".into(),
+                        title: "Notepad".into(),
+                        subtitle: "Application".into(),
+                        icon: None,
+                        subtitle_placement: Default::default(),
+                    }],
+                    actions: vec![RowAction::LaunchApp(reply_path.clone())],
+                });
+            }
+        });
+        let (command_tx, command_rx) = crossbeam_channel::unbounded();
+        let services = Arc::new(AppServices::new(
+            request_tx,
+            command_tx,
+            UiSettings::new(
+                "en".into(),
+                ui_strings(placeholder),
+                "#863bff".into(),
+                false,
+                "control+alt+Space".into(),
+            ),
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let config = EngineConfig {
+            context: EngineContext::default().with(std::sync::Arc::new(services.launcher())),
+            ..EngineConfig::new(Root::of::<StewardLauncher>())
+        };
+        let mut app = Headless::start(config).unwrap();
+
+        app.wait_for("text:Notepad").unwrap();
+        app.press("text:Actions").unwrap();
+        app.wait_for("text:Search for actions...").unwrap();
+        app.wait_for("text:Application Window").unwrap();
+
+        app.type_text("id:action-search", "administrator").unwrap();
+        app.wait_for("text:administrator").unwrap();
+        app.wait_for("text:Run as Administrator").unwrap();
+        app.wait_for_gone("text:Application Window", Duration::from_millis(500))
+            .unwrap();
+
+        app.type_text("id:action-search", "zzzz").unwrap();
+        app.wait_for("text:No matching actions").unwrap();
+        app.wait_for_gone("text:Run as Administrator", Duration::from_millis(500))
+            .unwrap();
+
+        app.press_key("escape").unwrap();
+        app.press("text:Actions").unwrap();
+        app.wait_for("id:action-search").unwrap();
+        app.press_key("down").unwrap();
+        app.press_key("enter").unwrap();
+
+        let commands = command_rx.try_iter().collect::<Vec<_>>();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                WindowCommand::Activate(RowAction::RevealInExplorer(path)) if path == &app_path
+            )),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn action_menu_header_and_actions_follow_the_selected_result() {
+        let placeholder = "Search apps, files, settings, or type a command...";
+        let notepad_path = PathBuf::from(r"C:\Windows\notepad.exe");
+        let zed_path = PathBuf::from(r"C:\Program Files\Zed\zed.exe");
+        let reply_notepad = notepad_path.clone();
+        let reply_zed = zed_path.clone();
+        let (request_tx, request_rx) = crossbeam_channel::unbounded::<SearchRequest>();
+        std::thread::spawn(move || {
+            while let Ok(request) = request_rx.recv() {
+                let _ = request.reply.send(SearchReply {
+                    generation: request.generation,
+                    rows: vec![
+                        LauncherRow {
+                            id: "app:notepad".into(),
+                            title: "Notepad".into(),
+                            subtitle: "Application".into(),
+                            icon: None,
+                            subtitle_placement: Default::default(),
+                        },
+                        LauncherRow {
+                            id: "app:zed".into(),
+                            title: "Zed".into(),
+                            subtitle: "Application".into(),
+                            icon: None,
+                            subtitle_placement: Default::default(),
+                        },
+                    ],
+                    actions: vec![
+                        RowAction::LaunchApp(reply_notepad.clone()),
+                        RowAction::LaunchApp(reply_zed.clone()),
+                    ],
+                });
+            }
+        });
+        let (command_tx, command_rx) = crossbeam_channel::unbounded();
+        let services = Arc::new(AppServices::new(
+            request_tx,
+            command_tx,
+            UiSettings::new(
+                "en".into(),
+                ui_strings(placeholder),
+                "#863bff".into(),
+                false,
+                "control+alt+Space".into(),
+            ),
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let config = EngineConfig {
+            context: EngineContext::default().with(std::sync::Arc::new(services.launcher())),
+            ..EngineConfig::new(Root::of::<StewardLauncher>())
+        };
+        let mut app = Headless::start(config).unwrap();
+
+        app.wait_for("text:Zed").unwrap();
+        app.press_key("down").unwrap();
+        app.press("text:Actions").unwrap();
+        app.wait_for("id:action-search").unwrap();
+
+        assert!(
+            app.screen()
+                .texts()
+                .iter()
+                .filter(|text| **text == "Zed")
+                .count()
+                >= 2,
+            "the popup header should repeat the selected result name: {:?}",
+            app.screen().texts()
+        );
+
+        app.press_key("enter").unwrap();
+        assert!(command_rx.try_iter().any(|command| matches!(
+            command,
+            WindowCommand::Activate(RowAction::LaunchApp(path)) if path == zed_path
+        )));
     }
 
     #[test]
@@ -478,19 +1539,7 @@ mod tests {
             command_tx,
             UiSettings::new(
                 "en".into(),
-                UiStrings {
-                    search_placeholder: placeholder.into(),
-                    application: "Application".into(),
-                    file_search_unavailable: "Windows Search is unavailable".into(),
-                    file_search_repair: "Open Windows Search settings".into(),
-                    settings: "Windows Settings".into(),
-                    plugin: "Plugin".into(),
-                    calculator: "Calculator".into(),
-                    open_url: "Open URL".into(),
-                    launcher_navigate: "Navigate".into(),
-                    launcher_open: "Open".into(),
-                    launcher_close: "Close".into(),
-                },
+                ui_strings(placeholder),
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
@@ -503,7 +1552,7 @@ mod tests {
         };
         let mut app = Headless::start(config).unwrap();
         app.wait_for(&format!("text:{placeholder}")).unwrap();
-        app.wait_for("text:Navigate").unwrap();
+        app.wait_for("text:Actions").unwrap();
         app.type_text(&format!("text:{placeholder}"), "8*8")
             .unwrap();
         app.wait_for("text:8*8").unwrap();

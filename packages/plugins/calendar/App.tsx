@@ -1,5 +1,4 @@
-import { Clipboard } from "nsh/clipboard";
-import { mount, Scroll, signal, Text, View } from "nsh";
+import { Clipboard, mount, Scroll, signal, Text, View } from "nsh";
 import { launchParams, onCommand, onTheme } from "@steward/extension-api";
 import {
   festivalFor,
@@ -428,11 +427,11 @@ function App() {
                             </Text>
                           </View>
                           <Text
-                            numberOfLines={1}
                             style={{
                               color: festival ? colors.accent : colors.muted,
                               fontSize: 10,
                               marginTop: 2,
+                              numberOfLines: 1,
                               textAlign: "center",
                             }}
                           >

@@ -70,10 +70,11 @@ Steward app process
   `[workspace.dependencies]`.
 - Use `nucleo` for fuzzy matching, `rusqlite` for SQLite, `serde` for JSON,
   and NSH crates for UI/runtime behavior.
-- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.9`.
-- Pin NSH to the reviewed git revision until a published release includes
-  `HostChannel` and `EngineContext`. Update `docs/nsh-migration.md` before
-  moving the revision.
+- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.16`, and `gpui-kit` to
+  `=0.10.0`.
+- Pin the published NSH crates to `=0.5.1`. Keep the compatibility patch in
+  `vendor/nsh-platform-gpui` until a published NSH release supports GPUI Fast
+  0.1.16 directly. Update `docs/nsh-migration.md` before changing these pins.
 - Keep the runtime footprint small. Do not add a second matcher, database
   abstraction, JSON implementation, or JavaScript runtime.
 

@@ -46,14 +46,14 @@ application runtime:
 1. Steward's launcher is an NSH Rust root rendered by `nsh-platform-gpui`;
    the settings window is a GPUI Kit view with `Root` and `Settings`.
 2. The product uses GPUI Fast directly and pins:
-   - `gpui-fast = =0.1.9`
-   - `gpui-fast-platform = =0.1.9`
-   - `gpui-kit = =0.7.3` with its `gpui-fast` feature, so NSH and the
+   - `gpui-fast = =0.1.16`
+   - `gpui-fast-platform = =0.1.16`
+   - `gpui-kit = =0.10.0` with its `gpui-fast` feature, so NSH and the
      settings components share one GPUI backend.
-3. NSH is pinned to git revision
-   `5359c07ff7b5728e67957c24322373309c90666b` rather than crates.io `0.2.0`.
-   The published `0.2.0` predates `HostChannel` and `EngineContext`, which the
-   embedding requires.
+3. NSH crates are pinned to published version `0.5.1`. The
+   `nsh-platform-gpui` crate is patched locally because its published
+   `0.5.1` source duplicates two `IntoElement` implementations that GPUI Fast
+   0.1.16 now supplies through its `Element` blanket implementation.
 4. Each plugin command opens one full NSH application window. A second command
    for the same plugin ID focuses the existing window and emits
    `steward.command`.
@@ -209,6 +209,15 @@ Evidence:
 - `cargo check --offline -p steward-app`: passed.
 - The launcher and three signed plugins opened as NSH surfaces in local smoke
   runs on Windows.
+- Dependency refresh (2026-11-16): GPUI Fast and its platform crate moved from
+  0.1.9 to 0.1.16, GPUI Kit moved from 0.7.3 to 0.10.0, and NSH moved from the
+  git revision to published 0.5.1. `cargo check -p steward-app`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed.
+- Official plugins migrated to NSH 0.5.1's root module exports and typed
+  change events. `nsh test` passed for all three plugins, and
+  `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build` passed
+  with the isolated NSH CLI 0.5.1.
 
 ### NSH-2: Steward shell
 
@@ -359,12 +368,10 @@ Packaging:
 ./scripts/package-msi.ps1
 ```
 
-On this development machine the Cargo mirror must be selected explicitly when
-offline:
-
-```text
---offline --config "source.crates-io.replace-with='rsproxy'" --config "source.rsproxy.registry='sparse+https://rsproxy.cn/index/'"
-```
+The repository-level `.cargo/config.toml` selects the `rsproxy` registry so
+plain Cargo commands can resolve dependency versions that the local global
+mirror has not synchronized yet. Pass Cargo's `--config` options to override
+the mirror when needed.
 
 ## Performance Gates
 
@@ -382,8 +389,10 @@ release measurements. NSH-4 remains open until the gates above are measured.
 
 ## Accepted Deviations
 
-- NSH git revision is used instead of crates.io `0.2.0` because `0.2.0` lacks
-  `HostChannel` and `EngineContext`.
+- `nsh-platform-gpui` 0.5.1 is vendored with a two-impl compatibility patch
+  because the published crate conflicts with GPUI Fast 0.1.16's blanket
+  `IntoElement` implementation. Remove the patch when NSH publishes the same
+  fix.
 - Plugin VMs are in-process NSH engines, not separate OS processes. Signed
   packages, capability grants, and hard engine quotas mitigate the risk.
 - `STEWARD_SHOW_ON_START`, `STEWARD_SHOW_SETTINGS`, `STEWARD_SMOKE_PLUGIN`,

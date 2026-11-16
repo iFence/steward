@@ -53,16 +53,50 @@ pub(crate) fn open_file(path: &std::path::Path) -> Result<()> {
     anyhow::bail!("opening files is not yet implemented on this platform")
 }
 
+/// Open Explorer with `path` selected.
+#[cfg(target_os = "windows")]
+pub(crate) fn reveal_in_explorer(path: &std::path::Path) -> Result<()> {
+    use std::process::Command;
+
+    Command::new("explorer.exe")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn reveal_in_explorer(path: &std::path::Path) -> Result<()> {
+    let _ = path;
+    anyhow::bail!("revealing files is not yet implemented on this platform")
+}
+
+/// Open the Windows shell's Properties dialog for `path`.
+#[cfg(target_os = "windows")]
+pub(crate) fn show_properties(path: &std::path::Path) -> Result<()> {
+    shell_execute(path, "properties")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn show_properties(path: &std::path::Path) -> Result<()> {
+    let _ = path;
+    anyhow::bail!("showing file properties is not yet implemented on this platform")
+}
+
 /// Launch `path` through the Windows shell (`open` verb), which resolves
 /// `.lnk` shortcuts, `shell:` namespace items and file associations the way
 /// Explorer does. Returns an error when the shell reports a launch failure.
 #[cfg(target_os = "windows")]
 fn shell_open(path: &std::path::Path) -> Result<()> {
+    shell_execute(path, "open")
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute(path: &std::path::Path, verb: &str) -> Result<()> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let text = path.to_string_lossy();
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let verb: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -74,7 +108,7 @@ fn shell_open(path: &std::path::Path) -> Result<()> {
         )
     };
     if result as isize <= 32 {
-        anyhow::bail!("shell launch failed for {}", text);
+        anyhow::bail!("shell command failed for {}", text);
     }
     Ok(())
 }

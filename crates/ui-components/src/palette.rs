@@ -54,11 +54,10 @@ pub const FOREGROUND: u32 = 0xffffff;
 /// Secondary / placeholder text and trailing kind labels. Tinycast's
 /// `textTertiary` (white 0.40) blended onto [`BACKGROUND`].
 pub const MUTED_FOREGROUND: u32 = 0x79797c;
-/// Secondary launcher text such as result metadata, control-bar labels, and
-/// result position. This needs more contrast than [`MUTED_FOREGROUND`] because
-/// the adaptive launcher surface can rise to `#363638` over a pure-white
-/// backdrop; this value keeps the 11-12 px labels above the WCAG AA text
-/// threshold there.
+/// Secondary launcher text such as result metadata and control-bar labels.
+/// This needs more contrast than [`MUTED_FOREGROUND`] because the adaptive
+/// launcher surface can rise to `#363638` over a pure-white backdrop; this
+/// value keeps the 11-12 px labels above the WCAG AA text threshold there.
 pub const RESULT_LABEL_FOREGROUND: u32 = 0xb8b8bb;
 /// Opacity for input placeholders over the adaptive launcher surface. The
 /// placeholder uses the primary foreground at this opacity so it remains

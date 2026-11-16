@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use nsh_core::element::EngineContext;
 use nsh_core::js::Limits;
-use nsh_core::ui::EngineContext;
 use nsh_platform_gpui::{AppOptions, AppView};
 
 use crate::services::AppServices;

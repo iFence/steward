@@ -7,7 +7,7 @@ use std::sync::{
     Arc, RwLock,
 };
 
-use nsh_core::ui::engine_context;
+use nsh_core::element::engine_context;
 use steward_core_engine::{AppEntry, Engine};
 use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginNotice};
 use steward_plugin_host::PluginHost;
@@ -262,6 +262,22 @@ impl AppServices {
                 launcher_navigate: "Navigate".into(),
                 launcher_open: "Open".into(),
                 launcher_close: "Close".into(),
+                launcher_actions: "Actions".into(),
+                launcher_copy: "Copy".into(),
+                launcher_open_application: "Open Application".into(),
+                launcher_open_file: "Open File".into(),
+                launcher_open_settings: "Open Settings".into(),
+                launcher_open_plugin: "Open Plugin".into(),
+                launcher_open_location: "Open file location".into(),
+                launcher_copy_path: "Copy path".into(),
+                launcher_properties: "Properties".into(),
+                launcher_action_application_window: "Application Window".into(),
+                launcher_action_recent_files: "Open Files... / Recent".into(),
+                launcher_action_run_as_administrator: "Run as Administrator".into(),
+                launcher_action_run_as_different_user: "Run as Different User".into(),
+                launcher_action_show_in_file_explorer: "Show in File Explorer".into(),
+                launcher_action_search: "Search for actions...".into(),
+                launcher_action_no_results: "No matching actions".into(),
             })
     }
 
@@ -374,6 +390,22 @@ impl LauncherServices {
                 launcher_navigate: "Navigate".into(),
                 launcher_open: "Open".into(),
                 launcher_close: "Close".into(),
+                launcher_actions: "Actions".into(),
+                launcher_copy: "Copy".into(),
+                launcher_open_application: "Open Application".into(),
+                launcher_open_file: "Open File".into(),
+                launcher_open_settings: "Open Settings".into(),
+                launcher_open_plugin: "Open Plugin".into(),
+                launcher_open_location: "Open file location".into(),
+                launcher_copy_path: "Copy path".into(),
+                launcher_properties: "Properties".into(),
+                launcher_action_application_window: "Application Window".into(),
+                launcher_action_recent_files: "Open Files... / Recent".into(),
+                launcher_action_run_as_administrator: "Run as Administrator".into(),
+                launcher_action_run_as_different_user: "Run as Different User".into(),
+                launcher_action_show_in_file_explorer: "Show in File Explorer".into(),
+                launcher_action_search: "Search for actions...".into(),
+                launcher_action_no_results: "No matching actions".into(),
             })
     }
 
@@ -715,6 +747,22 @@ mod tests {
             launcher_navigate: "Navigate".into(),
             launcher_open: "Open".into(),
             launcher_close: "Close".into(),
+            launcher_actions: "Actions".into(),
+            launcher_copy: "Copy".into(),
+            launcher_open_application: "Open Application".into(),
+            launcher_open_file: "Open File".into(),
+            launcher_open_settings: "Open Settings".into(),
+            launcher_open_plugin: "Open Plugin".into(),
+            launcher_open_location: "Open file location".into(),
+            launcher_copy_path: "Copy path".into(),
+            launcher_properties: "Properties".into(),
+            launcher_action_application_window: "Application Window".into(),
+            launcher_action_recent_files: "Open Files... / Recent".into(),
+            launcher_action_run_as_administrator: "Run as Administrator".into(),
+            launcher_action_run_as_different_user: "Run as Different User".into(),
+            launcher_action_show_in_file_explorer: "Show in File Explorer".into(),
+            launcher_action_search: "Search for actions...".into(),
+            launcher_action_no_results: "No matching actions".into(),
         }
     }
 

@@ -21,15 +21,15 @@ license = "MIT"
 # NSH migration stack. Keep these exact until the migration evidence in
 # docs/nsh-migration.md is updated. GPUI Fast and NSH are compiled together and
 # must be upgraded as one reviewed change.
-gpui = { package = "gpui-fast", version = "=0.1.9", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui_platform = { package = "gpui-fast-platform", version = "=0.1.9", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui-kit = { version = "=0.7.3", features = ["gpui-fast"] }
-nsh-core = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
-nsh-base = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false }
-nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
-nsh-package = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b" }
-nsh-platform-gpui = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false, features = ["js"] }
-nsh-testing = { git = "https://github.com/longbridge/nsh", rev = "5359c07ff7b5728e67957c24322373309c90666b", default-features = false }
+gpui = { package = "gpui-fast", version = "=0.1.16", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.16", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui-kit = { version = "=0.10.0", features = ["gpui-fast"] }
+nsh-core = "=0.5.1"
+nsh-base = { version = "=0.5.1", default-features = false }
+nsh-engine = "=0.5.1"
+nsh-package = "=0.5.1"
+nsh-platform-gpui = { version = "=0.5.1", default-features = false, features = ["js"] }
+nsh-testing = { version = "=0.5.1", default-features = false }
 thiserror = "2"
 global-hotkey = "0.8"
 tray-icon = "0.24"
@@ -63,3 +63,9 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+# NSH 0.5.1 duplicates IntoElement for two GPUI elements that now receive it
+# from gpui-fast 0.1.16's Element blanket implementation. Remove this patch
+# once a published NSH release carries the same compatibility change.
+nsh-platform-gpui = { path = "vendor/nsh-platform-gpui" }

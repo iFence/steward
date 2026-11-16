@@ -58,11 +58,10 @@ steward/
 - pnpm 11
 - 开发插件所需的固定版本 NSH CLI
 
-安装经过审查的 NSH CLI 提交：
+安装匹配版本的 NSH CLI：
 
 ```powershell
-cargo install --locked --git https://github.com/longbridge/nsh `
-  --rev 5359c07ff7b5728e67957c24322373309c90666b nsh-cli
+cargo install --locked --version 0.5.1 nsh-cli
 ```
 
 构建与运行：

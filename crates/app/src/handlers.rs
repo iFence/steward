@@ -318,6 +318,22 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
             }
         }
+        RowAction::RevealInExplorer(path) => {
+            if let Err(error) = crate::launch::reveal_in_explorer(&path) {
+                error!(path = %path.display(), error = %format!("{error:#}"), "reveal file in Explorer");
+            }
+            if let Some(handle) = state.borrow().window {
+                let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
+            }
+        }
+        RowAction::ShowProperties(path) => {
+            if let Err(error) = crate::launch::show_properties(&path) {
+                error!(path = %path.display(), error = %format!("{error:#}"), "show file properties");
+            }
+            if let Some(handle) = state.borrow().window {
+                let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
+            }
+        }
         RowAction::CopyText(text) => {
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 let _ = clipboard.set_text(text);
