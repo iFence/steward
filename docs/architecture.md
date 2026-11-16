@@ -44,7 +44,7 @@ steward-app.exe
         |
         +-- Steward settings window
         |     +-- GPUI Kit Root + Settings
-        |     +-- language, accent, autostart, summon hotkey
+        |     +-- language, accent, autostart, hotkeys, update status
         |
         +-- plugin window (one per plugin ID)
               +-- nsh-platform-gpui AppView
@@ -61,6 +61,22 @@ search workers, tray, or windows are initialized. A secondary launch signals a
 named activation event, causing the existing process to reveal or focus its
 launcher, and then exits. Installer and headless utility modes run outside this
 GUI ownership gate.
+
+## Application Updates
+
+Steward checks `iFence/steward` GitHub Releases on startup by default. The
+preference is persisted in SQLite and can be changed under **Settings >
+General**; **Settings > About** always offers a manual check and displays the
+latest release notes and download progress.
+
+Only a non-draft, non-prerelease tag newer than `CARGO_PKG_VERSION` is eligible.
+The selected asset must be the `steward-app-<version>-<arch>.msi` matching the
+running Windows architecture and a URL under that exact GitHub Release. Before
+launching the installer through ShellExecute, Steward downloads and verifies it
+against the release's `SHA256SUMS-msi.txt`. The updater then quits so the MSI's
+existing major-upgrade flow can replace the running executable and preserve
+autostart state. This host-only network path does not grant network capability
+to plugins.
 
 ## Rust Modules
 

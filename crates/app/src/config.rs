@@ -17,7 +17,7 @@ pub const LAUNCHER_HEADER_HEIGHT: f32 = 60.0;
 pub const LAUNCHER_INPUT_HEIGHT: f32 = 28.0;
 pub const LAUNCHER_INPUT_INSET: f32 = 12.0;
 /// Height of the launcher status bar below the result list.
-pub const LAUNCHER_STATUS_BAR_HEIGHT: f32 = 28.0;
+pub const LAUNCHER_STATUS_BAR_HEIGHT: f32 = 34.0;
 /// Vertical inset around the launcher content. The header's non-input area is
 /// the window's drag handle; the input box itself is not draggable.
 pub const LAUNCHER_MARGIN: f32 = 4.0;
@@ -65,3 +65,5 @@ pub const LANGUAGE_SETTING: &str = "language";
 pub const SUMMON_HOTKEY_SETTING: &str = "summon_hotkey";
 /// Storage key for the persisted settings-window hotkey (e.g. `control+comma`).
 pub const SETTINGS_HOTKEY_SETTING: &str = "settings_hotkey";
+/// Storage key for checking GitHub Releases when Steward starts.
+pub const CHECK_UPDATES_SETTING: &str = "check_updates_on_startup";

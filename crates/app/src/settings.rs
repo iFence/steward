@@ -9,8 +9,12 @@ use gpui::{
 use gpui_kit::{
     assets::IconName,
     component::{
+        button::{Button, ButtonVariants as _},
+        h_flex,
+        scroll::ScrollableElement as _,
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
-        v_flex, ActiveTheme, Icon, Theme, ThemeMode,
+        text::TextView,
+        v_flex, ActiveTheme, Disableable as _, Icon, Theme, ThemeMode,
     },
     prelude::FluentBuilder,
 };
@@ -18,6 +22,7 @@ use gpui_kit::{
 use crate::{
     i18n::Localization,
     services::{AppServices, WindowCommand},
+    updates::UpdateState,
 };
 use steward_ui_components::palette;
 
@@ -46,6 +51,7 @@ pub(crate) struct StewardSettings {
     accent: String,
     autostart: bool,
     summon_hotkey: String,
+    check_updates_on_startup: bool,
     recording_hotkey: bool,
     hotkey_focus: FocusHandle,
     hotkey_status: SharedString,
@@ -63,6 +69,7 @@ impl StewardSettings {
         let accent = services.accent();
         let autostart = services.autostart();
         let hotkey = services.summon_hotkey();
+        let check_updates_on_startup = services.check_updates_on_startup();
         let hotkey_focus = cx.focus_handle();
 
         Self {
@@ -72,6 +79,7 @@ impl StewardSettings {
             accent,
             autostart,
             summon_hotkey: hotkey,
+            check_updates_on_startup,
             recording_hotkey: false,
             hotkey_focus,
             hotkey_status: SharedString::default(),
@@ -147,17 +155,14 @@ impl Render for StewardSettings {
         let autostart_value = view.clone();
         let autostart_set = view.clone();
         let autostart_services = services.clone();
+        let updates_value = view.clone();
+        let updates_set = view.clone();
+        let updates_services = services.clone();
         let accent_value = view.clone();
         let accent_set = view.clone();
         let hotkey_field = view.clone();
         let hotkey_recording_label =
             SharedString::from(self.i18n.translate("settings-hotkey-recording"));
-        let version = format!(
-            "{} {}",
-            self.i18n.translate("settings-version"),
-            env!("CARGO_PKG_VERSION")
-        );
-
         Settings::new(SharedString::from(format!(
             "steward-settings-{}",
             self.language
@@ -200,6 +205,22 @@ impl Render for StewardSettings {
                                 },
                             )
                             .default_value(false),
+                        ))
+                        .item(SettingItem::new(
+                            self.i18n.translate("settings-update-check-on-startup"),
+                            SettingField::switch(
+                                move |cx| updates_value.read(cx).check_updates_on_startup,
+                                move |enabled, cx| {
+                                    updates_services.send_window_command(
+                                        WindowCommand::SetCheckUpdatesOnStartup(enabled),
+                                    );
+                                    updates_set.update(cx, |settings, cx| {
+                                        settings.check_updates_on_startup = enabled;
+                                        cx.notify();
+                                    });
+                                },
+                            )
+                            .default_value(true),
                         )),
                 ),
             SettingPage::new(self.i18n.translate("settings-appearance"))
@@ -231,7 +252,7 @@ impl Render for StewardSettings {
                         let value = if recording {
                             hotkey_recording_label.clone()
                         } else {
-                            SharedString::from(settings.summon_hotkey.clone())
+                            SharedString::from(hotkey_display(&settings.summon_hotkey))
                         };
                         let status = settings.hotkey_status.clone();
                         let view = hotkey_field.clone();
@@ -292,28 +313,198 @@ impl Render for StewardSettings {
             SettingPage::new(self.i18n.translate("settings-about"))
                 .resettable(false)
                 .icon(Icon::new(IconName::Info))
-                .group(SettingGroup::new().item(SettingItem::render(
+                .group(SettingGroup::new().item(SettingItem::render({
+                    let services = services.clone();
+                    let i18n = self.i18n.clone();
                     move |_options, _window, cx| {
-                        v_flex()
-                            .gap_2()
-                            .w_full()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(px(22.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Steward"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(version.clone()),
-                            )
-                    },
-                ))),
+                        render_about_updates(services.clone(), i18n.clone(), cx)
+                    }
+                }))),
         ])
     }
+}
+
+fn render_about_updates(
+    services: Arc<AppServices>,
+    i18n: Rc<Localization>,
+    cx: &mut App,
+) -> impl IntoElement {
+    let state = services.update_port().state();
+    let busy = state.is_busy();
+    let has_update = state.has_update();
+    let version = format!(
+        "{} {}",
+        i18n.translate("settings-version"),
+        env!("CARGO_PKG_VERSION")
+    );
+
+    let status = match &state {
+        UpdateState::Idle => (
+            i18n.translate("settings-update-idle"),
+            cx.theme().muted_foreground,
+        ),
+        UpdateState::Checking => (
+            i18n.translate("settings-checking-for-updates"),
+            cx.theme().muted_foreground,
+        ),
+        UpdateState::Available { latest_version, .. } => (
+            format!(
+                "{} v{latest_version}",
+                i18n.translate("settings-update-available")
+            ),
+            cx.theme().primary,
+        ),
+        UpdateState::Downloading {
+            downloaded_bytes,
+            total_bytes,
+            ..
+        } => {
+            let percent = total_bytes
+                .filter(|total| *total > 0)
+                .map(|total| {
+                    ((*downloaded_bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u32
+                })
+                .unwrap_or(0);
+            (
+                format!(
+                    "{} {percent}%",
+                    i18n.translate("settings-downloading-update")
+                ),
+                cx.theme().muted_foreground,
+            )
+        }
+        UpdateState::Installing => (
+            i18n.translate("settings-installing-update"),
+            cx.theme().muted_foreground,
+        ),
+        UpdateState::UpToDate => (
+            i18n.translate("settings-up-to-date"),
+            cx.theme().muted_foreground,
+        ),
+        UpdateState::Error(message) => (
+            format!(
+                "{}: {message}",
+                i18n.translate("settings-update-check-failed")
+            ),
+            cx.theme().danger,
+        ),
+    };
+
+    let progress = if let UpdateState::Downloading {
+        downloaded_bytes,
+        total_bytes,
+        ..
+    } = &state
+    {
+        total_bytes
+            .filter(|total| *total > 0)
+            .map(|total| (*downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0))
+    } else {
+        None
+    };
+
+    let release_notes = if let UpdateState::Available { release_notes, .. } = &state {
+        (!release_notes.trim().is_empty()).then(|| release_notes.clone())
+    } else {
+        None
+    };
+
+    let check_services = services.clone();
+    let install_services = services;
+    let mut buttons = h_flex().gap_2();
+    buttons = buttons.child(
+        Button::new("settings-check-updates")
+            .label(i18n.translate("settings-check-for-updates"))
+            .outline()
+            .compact()
+            .loading(matches!(state, UpdateState::Checking))
+            .disabled(busy)
+            .on_click(move |_, _, _| {
+                check_services.update_port().check_for_updates(true);
+            }),
+    );
+    if has_update {
+        buttons = buttons.child(
+            Button::new("settings-download-update")
+                .label(i18n.translate("settings-download-and-install"))
+                .primary()
+                .compact()
+                .on_click(move |_, _, _| {
+                    install_services
+                        .update_port()
+                        .download_and_install(install_services.clone());
+                }),
+        );
+    }
+
+    v_flex()
+        .gap_3()
+        .w_full()
+        .items_center()
+        .child(
+            div()
+                .text_size(px(22.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Steward"),
+        )
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(version),
+        )
+        .child(buttons)
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(status.1)
+                .child(status.0),
+        )
+        .when_some(progress, |this, progress| {
+            this.child(
+                div()
+                    .w(px(280.0))
+                    .h(px(6.0))
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().border)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(px((progress * 280.0).max(2.0)))
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().primary),
+                    ),
+            )
+        })
+        .when_some(release_notes, |this, notes| {
+            this.child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(i18n.translate("settings-release-notes")),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .max_h(px(190.0))
+                            .overflow_y_scrollbar()
+                            .rounded(cx.theme().radius)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().muted)
+                            .p_3()
+                            .child(
+                                TextView::markdown("settings-update-release-notes", notes)
+                                    .w_full()
+                                    .selectable(true),
+                            ),
+                    ),
+            )
+        })
 }
 
 pub(crate) fn init_ui(cx: &mut App, accent: &str) {
@@ -357,6 +548,10 @@ fn normalize_accent(value: &str) -> Option<String> {
     let hex = value.trim().trim_start_matches('#');
     (hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .then(|| format!("#{}", hex.to_ascii_lowercase()))
+}
+
+fn hotkey_display(value: &str) -> String {
+    value.to_ascii_uppercase()
 }
 
 fn is_modifier_key(key: &str) -> bool {
@@ -480,5 +675,11 @@ mod tests {
         };
 
         assert_eq!(hotkey_from_keystroke(&keystroke).as_deref(), Some("F8"));
+    }
+
+    #[test]
+    fn hotkey_display_uses_uppercase_key_names() {
+        assert_eq!(hotkey_display("alt+Space"), "ALT+SPACE");
+        assert_eq!(hotkey_display("control+alt+Space"), "CONTROL+ALT+SPACE");
     }
 }

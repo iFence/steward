@@ -22,6 +22,7 @@ use crate::search::{
     SearchSource, SettingsIndex, SettingsSource,
 };
 pub use crate::search::{RowAction, SearchReply, SearchRequest};
+use crate::updates::UpdatePort;
 
 #[derive(Debug, Clone)]
 pub struct UiSettings {
@@ -30,6 +31,7 @@ pub struct UiSettings {
     accent: String,
     autostart: bool,
     summon_hotkey: String,
+    check_updates_on_startup: bool,
 }
 
 impl UiSettings {
@@ -39,6 +41,7 @@ impl UiSettings {
         accent: String,
         autostart: bool,
         summon_hotkey: String,
+        check_updates_on_startup: bool,
     ) -> Self {
         Self {
             locale,
@@ -46,6 +49,7 @@ impl UiSettings {
             accent,
             autostart,
             summon_hotkey,
+            check_updates_on_startup,
         }
     }
 }
@@ -92,6 +96,7 @@ pub struct AppServices {
     commands: WindowCommandPort,
     settings: UiSettingsPort,
     notices: NoticePort,
+    updates: UpdatePort,
 }
 
 #[derive(Clone)]
@@ -130,6 +135,7 @@ impl AppServices {
                 notice: Arc::new(RwLock::new(None)),
                 search_revision,
             },
+            updates: UpdatePort::default(),
         }
     }
 
@@ -147,6 +153,10 @@ impl AppServices {
 
     pub fn notice_port(&self) -> NoticePort {
         self.notices.clone()
+    }
+
+    pub fn update_port(&self) -> UpdatePort {
+        self.updates.clone()
     }
 
     pub fn launcher(&self) -> LauncherServices {
@@ -215,6 +225,14 @@ impl AppServices {
             .unwrap_or_else(|_| "control+alt+Space".into())
     }
 
+    pub fn check_updates_on_startup(&self) -> bool {
+        self.settings
+            .settings
+            .read()
+            .map(|settings| settings.check_updates_on_startup)
+            .unwrap_or(true)
+    }
+
     pub fn set_locale(&self, locale: impl Into<String>, strings: UiStrings) {
         if let Ok(mut settings) = self.settings.settings.write() {
             settings.locale = locale.into();
@@ -238,6 +256,12 @@ impl AppServices {
     pub fn set_summon_hotkey(&self, hotkey: impl Into<String>) {
         if let Ok(mut settings) = self.settings.settings.write() {
             settings.summon_hotkey = hotkey.into();
+        }
+    }
+
+    pub fn set_check_updates_on_startup(&self, enabled: bool) {
+        if let Ok(mut settings) = self.settings.settings.write() {
+            settings.check_updates_on_startup = enabled;
         }
     }
 
@@ -442,6 +466,8 @@ pub enum WindowCommand {
     SetAccent(String),
     SetAutostart(bool),
     SetSummonHotkey(String),
+    SetCheckUpdatesOnStartup(bool),
+    Quit,
 }
 
 pub fn services() -> Option<Arc<LauncherServices>> {
@@ -778,6 +804,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                false,
             ),
             Arc::new(AtomicU64::new(0)),
         )
@@ -798,6 +825,14 @@ mod tests {
         services.clear_notice();
         assert!(services.notice_port().notice().is_none());
         assert_eq!(services.search_revision(), 2);
+    }
+
+    #[test]
+    fn update_startup_preference_is_exposed_and_mutable() {
+        let services = services();
+        assert!(!services.check_updates_on_startup());
+        services.set_check_updates_on_startup(true);
+        assert!(services.check_updates_on_startup());
     }
 
     #[test]

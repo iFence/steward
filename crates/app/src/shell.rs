@@ -21,7 +21,7 @@ const MAX_VISIBLE_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 42.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(40);
 const ACTION_MENU_MIN_HEIGHT: f32 = 380.0;
-const STATUS_MUTED: u32 = 0xa5a5a6;
+const STATUS_HINT_HEIGHT: f32 = 26.0;
 /// Keep reasserting the field across the activation/IME hand-off instead of
 /// relying on one focus command landing on the right frame.
 const FOCUS_RETRIES: u8 = 5;
@@ -402,7 +402,8 @@ pub fn StewardLauncher() -> impl IntoElement {
                         .flex_row()
                         .items_center()
                         .justify_between()
-                        .bg(rgb(0x1e1e1f))
+                        .border_t(px(1.0))
+                        .border_color(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.04))
                         .window_drag(false)
                         .child(selection_status_icon(rows, selected))
                         .child(
@@ -410,7 +411,6 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 .flex_row()
                                 .items_center()
                                 .gap_3()
-                                .translate_y(px(1.0))
                                 .child(primary_action_status_hint(
                                     {
                                         let primary_action_label = primary_action_label.clone();
@@ -500,7 +500,7 @@ fn selection_status_icon(
 }
 
 fn generic_status_icon() -> impl IntoElement {
-    let color = rgb(STATUS_MUTED);
+    let color = rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND);
     view()
         .w(px(16.0))
         .h(px(16.0))
@@ -531,7 +531,7 @@ fn primary_action_status_hint(
         .flex_row()
         .items_center()
         .gap_1()
-        .h(px(22.0))
+        .h(px(STATUS_HINT_HEIGHT))
         .px(px(6.0))
         .rounded(px(6.0))
         .hover(|style| style.bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.06)))
@@ -551,7 +551,7 @@ fn action_status_hint(label: impl Fn() -> String + 'static) -> impl IntoElement 
         .flex_row()
         .items_center()
         .gap_1()
-        .h(px(22.0))
+        .h(px(STATUS_HINT_HEIGHT))
         .px(px(6.0))
         .rounded(px(6.0))
         .hover(|style| style.bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.06)))
@@ -559,7 +559,7 @@ fn action_status_hint(label: impl Fn() -> String + 'static) -> impl IntoElement 
             text(label)
                 .text_size(px(11.0))
                 .line_height(px(22.0))
-                .text_color(rgb(STATUS_MUTED)),
+                .text_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND)),
         )
         .child(status_key("Ctrl"))
         .child(status_key("K"))
@@ -585,7 +585,7 @@ fn status_key(key: &'static str) -> impl IntoElement {
         text(key)
             .text_size(px(10.0))
             .line_height(px(18.0))
-            .text_color(rgb(STATUS_MUTED)),
+            .text_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND)),
     )
 }
 
@@ -594,7 +594,7 @@ fn enter_status_key() -> impl IntoElement {
         view().w(px(12.0)).h(px(12.0)).child(
             canvas(move || {
                 Painter::new()
-                    .stroke_color(rgb(STATUS_MUTED))
+                    .stroke_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND))
                     .line_width(1.35)
                     .line_cap(LineCap::Round)
                     .line_join(LineJoin::Round)
@@ -881,11 +881,9 @@ fn action_menu_content(
                         .h(px(40.0))
                         .items_center()
                         .justify_center()
-                        .child(
-                            text(no_results.clone())
-                                .text_size(px(12.0))
-                                .text_color(rgb(STATUS_MUTED)),
-                        )
+                        .child(text(no_results.clone()).text_size(px(12.0)).text_color(rgb(
+                            steward_ui_components::palette::RESULT_LABEL_FOREGROUND,
+                        )))
                 },
             )
         });
@@ -940,7 +938,9 @@ fn action_menu_content(
                         })
                         .text_size(px(12.0))
                         .text_color(rgb(0xffffff))
-                        .placeholder_color(rgb(STATUS_MUTED))
+                        .placeholder_color(rgb(
+                            steward_ui_components::palette::RESULT_LABEL_FOREGROUND,
+                        ))
                         .selection_color(rgb(steward_ui_components::palette::ACCENT)),
                 ),
         )
@@ -1001,7 +1001,7 @@ fn action_shortcut_key(key: &'static str) -> impl IntoElement {
         text(key)
             .text_size(px(10.0))
             .line_height(px(18.0))
-            .text_color(rgb(STATUS_MUTED)),
+            .text_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND)),
     )
 }
 
@@ -1010,7 +1010,7 @@ fn action_shortcut_enter() -> impl IntoElement {
         view().w(px(12.0)).h(px(12.0)).child(
             canvas(move || {
                 Painter::new()
-                    .stroke_color(rgb(STATUS_MUTED))
+                    .stroke_color(rgb(steward_ui_components::palette::RESULT_LABEL_FOREGROUND))
                     .line_width(1.35)
                     .line_cap(LineCap::Round)
                     .line_join(LineJoin::Round)
@@ -1282,10 +1282,10 @@ mod tests {
 
     #[test]
     fn launcher_height_includes_the_status_bar() {
-        assert_eq!(launcher_height(0), 96.0);
-        assert_eq!(launcher_height(8), 432.0);
+        assert_eq!(launcher_height(0), 102.0);
+        assert_eq!(launcher_height(8), 438.0);
         assert_eq!(launcher_height_with_actions(0), 380.0);
-        assert_eq!(launcher_height_with_actions(8), 432.0);
+        assert_eq!(launcher_height_with_actions(8), 438.0);
     }
 
     #[test]
@@ -1384,6 +1384,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                false,
             ),
             Arc::new(AtomicU64::new(0)),
         ));
@@ -1470,6 +1471,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                false,
             ),
             Arc::new(AtomicU64::new(0)),
         ));
@@ -1543,6 +1545,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                false,
             ),
             Arc::new(AtomicU64::new(0)),
         ));

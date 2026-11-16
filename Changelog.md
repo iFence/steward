@@ -23,6 +23,9 @@ Conventions:
 - **Quick actions menu**: press `Ctrl+K` or choose **Actions** in the launcher
   to open a searchable menu for the selected result. It supports keyboard
   navigation, showing files in File Explorer, and all supported UI languages.
+- **Automatic update checks**: Steward checks GitHub Releases on startup by
+  default and can be checked manually from **Settings > About**. Matching
+  Windows installers are SHA-256 verified before the updater starts.
 
 ### Bug Fixes
 

@@ -7,7 +7,9 @@ use gpui::AsyncApp;
 use steward_plugin_contract::{LaunchRequest, PluginNotice};
 use tracing::{error, warn};
 
-use crate::config::{LANGUAGE_SETTING, SUMMON_HOTKEY_SETTING, THEME_COLOR_SETTING};
+use crate::config::{
+    CHECK_UPDATES_SETTING, LANGUAGE_SETTING, SUMMON_HOTKEY_SETTING, THEME_COLOR_SETTING,
+};
 use crate::services::{PluginLaunchOutcome, RowAction, WindowCommand};
 use crate::state::{AppState, PluginRuntimeEvent};
 
@@ -71,8 +73,34 @@ pub(crate) fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                     Err(error) => error!(error = %format!("{error:#}"), "change summon hotkey"),
                 }
             }
+            WindowCommand::SetCheckUpdatesOnStartup(enabled) => {
+                let storage = state.borrow().storage.clone();
+                if let Err(error) = storage.borrow().set_setting(
+                    CHECK_UPDATES_SETTING,
+                    if enabled { "true" } else { "false" },
+                ) {
+                    error!(error = %format!("{error:#}"), "persist update preference");
+                    continue;
+                }
+                state
+                    .borrow()
+                    .services
+                    .set_check_updates_on_startup(enabled);
+            }
+            WindowCommand::Quit => {
+                cx.update(|cx| cx.quit());
+            }
         }
     }
+}
+
+pub(crate) fn drain_update_state(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
+    let revision = state.borrow().services.update_port().revision();
+    if state.borrow().last_update_revision == revision {
+        return;
+    }
+    state.borrow_mut().last_update_revision = revision;
+    cx.update(|cx| cx.refresh_windows());
 }
 
 pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {

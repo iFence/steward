@@ -24,6 +24,7 @@ mod shell;
 mod state;
 mod theme;
 mod tray;
+mod updates;
 mod window;
 
 use std::cell::RefCell;
@@ -36,7 +37,7 @@ use gpui_platform::application;
 use steward_storage::Storage;
 use tracing::{error, info, warn};
 
-use crate::config::{DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
+use crate::config::{CHECK_UPDATES_SETTING, DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
 use crate::i18n::Localization;
 use crate::services::{AppServices, SearchState, UiSettings};
 use crate::state::AppState;
@@ -107,6 +108,11 @@ fn main() {
         .unwrap_or_else(|| format!("#{DEFAULT_ACCENT:06x}"));
     let autostart = autostart::autostart_enabled();
     let summon_hotkey = hotkeys::persisted_summon_hotkey(&storage.borrow()).to_string();
+    let check_updates_on_startup = storage
+        .borrow()
+        .get_setting(CHECK_UPDATES_SETTING)
+        .map(|value| value != "false")
+        .unwrap_or(true);
 
     let search = Rc::new(RefCell::new(
         SearchState::new(
@@ -127,9 +133,19 @@ fn main() {
     let services = Arc::new(AppServices::new(
         request_tx,
         command_tx,
-        UiSettings::new(locale, ui_strings, accent, autostart, summon_hotkey),
+        UiSettings::new(
+            locale,
+            ui_strings,
+            accent,
+            autostart,
+            summon_hotkey,
+            check_updates_on_startup,
+        ),
         search_revision,
     ));
+    if services.check_updates_on_startup() {
+        services.update_port().check_for_updates(false);
+    }
     let (clipboard_tx, clipboard_rx) = crossbeam_channel::unbounded();
     let clipboard_watcher =
         clipboard_history::ClipboardWatcher::spawn(data_dir.clone(), clipboard_tx);
@@ -154,6 +170,7 @@ fn main() {
         plugin_windows: Default::default(),
         plugin_events: plugin_event_tx,
         plugin_events_rx: plugin_event_rx,
+        last_update_revision: 0,
         _clipboard_watcher: clipboard_watcher,
         _log_guard: log_guard,
         _instance: instance,

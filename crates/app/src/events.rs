@@ -30,6 +30,7 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
         handlers::drain_plugin_events(cx, &state);
         handlers::drain_clipboard(&state);
         handlers::drain_requests(&state);
+        handlers::drain_update_state(cx, &state);
         handlers::drain_commands(cx, &state);
 
         let activation_requested = state

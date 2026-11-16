@@ -189,6 +189,17 @@ mod tests {
                 "launcher-action-show-in-file-explorer",
                 "launcher-action-search",
                 "launcher-action-no-results",
+                "settings-update-check-on-startup",
+                "settings-update-idle",
+                "settings-checking-for-updates",
+                "settings-update-available",
+                "settings-downloading-update",
+                "settings-installing-update",
+                "settings-up-to-date",
+                "settings-update-check-failed",
+                "settings-check-for-updates",
+                "settings-download-and-install",
+                "settings-release-notes",
             ] {
                 assert_ne!(
                     localization.translate(message_id),
