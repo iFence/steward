@@ -145,7 +145,7 @@ $env:STEWARD_NSH_RELEASE_CERT = "<path-or-secret>"
 
 ## 发布
 
-推送 `v0.3.0` 这类版本 tag 会触发 Windows 构建与发布流水线。tag 必须与
+推送 `v0.3.1` 这类版本 tag 会触发 Windows 构建与发布流水线。tag 必须与
 `Cargo.toml` 中 `[workspace.package].version` 一致，且 `Changelog.md` 必须包含对应的
 `## vX.Y.Z` 小节。流水线会构建 MSI、签名并打包官方插件、生成 SHA-256 校验和，然后
 把产物发布到 GitHub Release。
@@ -154,8 +154,8 @@ $env:STEWARD_NSH_RELEASE_CERT = "<path-or-secret>"
 `STEWARD_NSH_RELEASE_CERT`，值分别为签名私钥与证书的文件内容：
 
 ```powershell
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 ## 文档

@@ -8751,7 +8751,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "steward-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -8794,7 +8794,7 @@ dependencies = [
 
 [[package]]
 name = "steward-core-engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nucleo",
  "serde",
@@ -8805,7 +8805,7 @@ dependencies = [
 
 [[package]]
 name = "steward-plugin-contract"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -8813,7 +8813,7 @@ dependencies = [
 
 [[package]]
 name = "steward-plugin-host"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -8831,7 +8831,7 @@ dependencies = [
 
 [[package]]
 name = "steward-plugin-registry"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -8843,7 +8843,7 @@ dependencies = [
 
 [[package]]
 name = "steward-search"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nucleo",
  "pinyin",
@@ -8851,7 +8851,7 @@ dependencies = [
 
 [[package]]
 name = "steward-storage"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
@@ -8861,7 +8861,7 @@ dependencies = [
 
 [[package]]
 name = "steward-ui-components"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "nsh-core",
  "nsh-engine",

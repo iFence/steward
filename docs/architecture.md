@@ -1,6 +1,6 @@
 # Steward Architecture
 
-> Current architecture as of v0.3.0. The migration plan, evidence, and release
+> Current architecture as of v0.3.1. The migration plan, evidence, and release
 > gates are in [nsh-migration.md](nsh-migration.md).
 >
 > The tracked plugin-platform responsibilities and hardening work are in

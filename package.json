@@ -1,6 +1,6 @@
 {
   "name": "steward",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Steward monorepo: GPUI Fast host with NSH Rust and TSX applications.",
   "scripts": {

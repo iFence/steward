@@ -32,7 +32,7 @@ Steward app process
 
 ## Module breakdown
 
-- Workspace root `Cargo.toml` (resolver 2, edition 2021, version 0.3.0)
+- Workspace root `Cargo.toml` (resolver 2, edition 2021, version 0.3.1)
   declares shared versions in `[workspace.dependencies]`.
 - Rust crates live under `crates/`:
 

@@ -7,6 +7,35 @@ Conventions:
 - The content below the heading is what appears in the GitHub Release body and the in-app update dialog
 - End each version section with `---` or by starting the next version heading
 
+## v0.3.1
+
+### Improvements
+
+- **Clearer launcher actions**: the status bar now shows the selected result's
+  primary action and icon, making it easier to recognize what Enter will do.
+- **Plugin compatibility**: upgraded the NSH and GPUI foundation and adapted
+  the official plugins to the current interfaces.
+- **Plugin installation guide**: added step-by-step instructions for
+  downloading, extracting, and installing signed plugin packages.
+
+### ✨ New Features
+
+- **Quick actions menu**: press `Ctrl+K` or choose **Actions** in the launcher
+  to open a searchable menu for the selected result. It supports keyboard
+  navigation, showing files in File Explorer, and all supported UI languages.
+
+### Bug Fixes
+
+- **Single-instance startup**: launching Steward again now focuses the existing
+  launcher instead of creating another background process, tray icon, hotkey
+  handler, and search service.
+- **Cross-monitor activation**: revealing and focusing the launcher now works
+  reliably when the active window and launcher are on different displays.
+- **Plugin launch stability**: fixed a possible crash when a plugin package
+  failed verification.
+
+---
+
 ## v0.3.0
 
 ### Reliability
@@ -34,9 +63,6 @@ Conventions:
   cross-monitor move now retains target-DPI sizing while avoiding a launcher
   hang or process exit, and oversized layouts are fitted to the target work
   area.
-- **Single-instance startup**: launching Steward again now reveals the running
-  launcher instead of starting a duplicate process, tray icon, hotkey manager,
-  and search service.
 
 ### New Plugin Platform
 
