@@ -1,5 +1,5 @@
-import { mount, signal, Text, View } from "nsh";
-import { Input, Switch } from "nsh/base";
+import { Input, mount, signal, Text, View } from "nsh";
+import { Switch } from "nsh/base";
 
 function App() {
   const clicks = signal(0);
@@ -26,12 +26,12 @@ function App() {
         <Input
           value={query()}
           placeholder="Type here"
-          onChange={({ value }) => query.set(value)}
+          onChange={(value) => query.set(value)}
           style={{ color: "#ffffff", padding: 8, backgroundColor: "#202024", borderRadius: 6 }}
         />
       </View>
       <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
-        <Switch checked={enabled()} onChange={({ checked }) => enabled.set(checked)} />
+        <Switch checked={enabled()} onChange={(checked) => enabled.set(checked)} />
         <Text style={{ color: "#ffffff" }}>{enabled() ? "Enabled" : "Disabled"}</Text>
       </View>
       <Text style={{ color: "#ffffff" }}>Query: {query() || "(empty)"}</Text>

@@ -36,6 +36,9 @@ Conventions:
   reliably when the active window and launcher are on different displays.
 - **Plugin launch stability**: fixed a possible crash when a plugin package
   failed verification.
+- **Official plugin builds**: migrated Calendar, Clipboard History, and UI
+  Showcase to the current NSH host, clipboard, storage, input, switch, and text
+  APIs so release builds pass with the pinned NSH CLI.
 
 ---
 

@@ -1,4 +1,4 @@
-import { host } from "nsh";
+import { host } from "nsh/host";
 
 export interface StewardLaunchParams {
   pluginId: string;
@@ -16,7 +16,7 @@ export interface ClipboardEntry {
 }
 
 export function launchParams(): StewardLaunchParams {
-  const value = (host.params ?? {}) as Partial<StewardLaunchParams>;
+  const value = host.params as unknown as Partial<StewardLaunchParams>;
   return {
     pluginId: value.pluginId ?? "",
     command: value.command ?? "",
@@ -42,7 +42,7 @@ export function onTheme(listener: (theme: { accent: string; dark: boolean }) => 
 }
 
 export async function clipboardHistory(): Promise<ClipboardEntry[]> {
-  return (await host.call("steward.clipboard.history")) as ClipboardEntry[];
+  return host.call<ClipboardEntry[]>("steward.clipboard.history");
 }
 
 export function closeWindow(): void {

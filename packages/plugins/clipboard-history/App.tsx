@@ -1,4 +1,6 @@
-import { Clipboard, mount, signal, Storage, Text, View } from "nsh";
+import { mount, signal, Text, View } from "nsh";
+import { Clipboard } from "nsh/clipboard";
+import { Storage } from "nsh/storage";
 import { clipboardHistory, launchParams, type ClipboardEntry } from "@steward/extension-api";
 
 const PIN_KEY = "pinned";
@@ -63,7 +65,9 @@ function App() {
                 status.set("Copied to clipboard");
               }}
             >
-              <Text style={{ color: "#ffffff", numberOfLines: 2 }}>{entry().text}</Text>
+              <Text numberOfLines={2} style={{ color: "#ffffff" }}>
+                {entry().text}
+              </Text>
             </View>
             <View role="button" onPress={() => togglePin(entry().id)} style={{ padding: 8 }}>
               <Text style={{ color: pinned().includes(entry().id) ? "#863bff" : "#79797c" }}>
