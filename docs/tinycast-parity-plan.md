@@ -223,9 +223,9 @@ steward://plugin/<plugin-id>/<command>?input=<encoded-input>
 
 目标：先让后续功能建立在可发布、可诊断、可隔离的基础上。
 
-开发状态（2026-11-17）：代码交付已完成，release 退出标准仍需在干净
-Windows 11 23H2+ x64 VM 上执行。生产签名产物需要在 NSH 0.5.1 插件兼容修复后由
-release workflow 重新生成。
+开发状态（2026-11-17）：代码交付已完成，生产签名 MSI 和三个官方插件已由
+Build and Release run `44029877843` 重新生成并验证。release 退出标准仍需在干净
+Windows 11 23H2+ x64 VM 上执行。
 
 交付：
 

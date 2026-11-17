@@ -33,6 +33,33 @@
 版本、构建配置、插件数量和原始采样值。功能 smoke 结果不能替代 Release
 性能证据。
 
+## 当前执行记录
+
+记录时间：2026-11-17。代码提交：
+`f91f19436c6cead116b0eb3a1fd22ed5ddb64a7e`。
+
+成功运行：[Build and Release #44029877843](https://github.com/iFence/steward/actions/runs/44029877843)。
+
+| 用例 | 状态 | 证据或未执行原因 |
+|---|---|---|
+| P0-A01 | 通过 | 本地脚本和生产 workflow 均校验通过；生产根 SHA-256 为 `569e4243fc43965650ba3e3c365c62f89425c09bfc476124ee0a1079d2e99b74` |
+| P0-A02 | 通过 | workflow 使用生产信任根签名并验证三个插件；下载 artifact 后本地再次验证通过 |
+| P0-A03 | 通过 | `cargo fmt`、workspace Clippy、workspace 测试全部通过 |
+| P0-A04 | 通过 | `pnpm lint`、`format:check`、`typecheck`、`build` 全部通过 |
+| P0-A05 | 通过（开发机） | 20 次采样呼出 p95 为 46 ms；正式干净 VM 证据仍需归档 |
+| P0-A06 | 通过（开发机 smoke） | Calendar 首帧 p95 为 349.1 ms，聚焦 p95 为 5.4 ms，隐藏 VM 为 0 |
+| P0-A07 | 未执行 | 当前会话不是管理员，且不是干净验收 VM |
+| P0-A08 | 未执行 | 需要干净验收 VM 和上一版本 MSI |
+| P0-M01 至 P0-M12 | 未完成 | 需要交互式 Windows 11 桌面环境；自动 smoke 已覆盖部分启动和插件路径 |
+
+本次生产 artifact：
+
+- MSI：`steward-app-0.3.1-x86_64.msi`，26,529,792 字节，
+  SHA-256 `be7b71799a5c9a44673140a42d4c03d42ff7517f1af39771dba972f4cd53d165`。
+- Calendar：`01045e968adbac41e4fb9ec23cd797a9224c1cb8d51860c1e58fba0e265b9d20`。
+- Clipboard History：`374d9b233a5fc621cd2f12345982aced4742ebf6841a6407d9061fcb8d21c23a`。
+- UI Showcase：`3e3155671c71c8322e305f24d10df0ccd7316876dc3f6d4f297059918522546a`。
+
 ## P0 人工验收用例
 
 | 编号 | 用例 | 操作步骤 | 通过条件 |

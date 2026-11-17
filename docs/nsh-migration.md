@@ -360,6 +360,12 @@ Completed acceptance:
   over 20 close/summon samples. See `docs/benchmarks.md` for limitations.
 - The Windows acceptance matrix and automated trust, package, lifecycle, and
   performance scripts are checked in.
+- Build and Release run `44029877843` completed successfully on commit
+  `f91f19436c6cead116b0eb3a1fd22ed5ddb64a7e`. The workflow used the published
+  NSH CLI 0.5.1, rebuilt and production-signed all three official plugins,
+  verified every archive against the production root, and built the v0.3.1 MSI.
+  Downloading the artifacts and rechecking their SHA-256 manifests and
+  production signatures also passed locally.
 
 Pending release gates:
 
@@ -368,8 +374,6 @@ Pending release gates:
 - Install the generated release MSI on a clean Windows machine.
 - Perform a signed package installation smoke test using the production trust
   root.
-- Re-run the release workflow so the NSH 0.5.1 clipboard/storage compatibility
-  fix is signed by the production key.
 - Execute the automated plus manual matrix in `docs/windows-acceptance.md` on a
   clean Windows 11 23H2+ x64 VM.
 
