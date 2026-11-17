@@ -15,6 +15,7 @@ canonical TypeScript surface is
 import { Input, mount, signal, Text, View } from "nsh";
 import { Switch } from "nsh/base";
 import {
+  calendarHolidays,
   clipboardHistory,
   closeWindow,
   copyText,
@@ -53,13 +54,14 @@ for a regex trigger. A plugin window is reused by plugin ID, so handle
 | `copyText(text)` | Writes text through Steward's clipboard capability |
 | `storageGet(key)` | Reads plugin-private string storage |
 | `storageSet(key, value)` | Persists plugin-private string storage |
+| `calendarHolidays(year)` | Reads Steward's cached holiday schedule for a year |
 | `closeWindow()` | Close the current plugin window |
 | `onCommand(cb)` | Receive focus/command events while the window stays open |
 | `onTheme(cb)` | Receive accent and dark-mode changes |
 
 The current release grants clipboard history, `${dataDir}` filesystem access,
-https/mailto opening, and `steward.*` host calls. Network, process execution,
-webview, and image-picker capabilities are denied.
+https/mailto opening, and `steward.*` host calls. General plugin network,
+process execution, webview, and image-picker capabilities are denied.
 
 ## Example
 

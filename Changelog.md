@@ -16,6 +16,9 @@ Conventions:
 - **Streamlined Calendar**: the Calendar plugin now shows ISO week numbers and
   quick previous/next year controls, with the secondary date-detail panel
   removed for a cleaner month view.
+- **Live Calendar holidays**: Calendar now loads mainland China holiday and
+  adjusted-workday data from Timor's free API, caches each full year after the
+  first request, and silently omits badges when no data is available.
 - **Plugin compatibility**: upgraded the NSH and GPUI foundation and adapted
   the official plugins to the current interfaces.
 - **Plugin installation guide**: added step-by-step instructions for

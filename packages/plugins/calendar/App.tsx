@@ -1,7 +1,13 @@
-import { locale as systemLocale, mount, signal, Text, View } from "nsh";
-import { copyText, launchParams, onCommand, onTheme } from "@steward/extension-api";
+import { effect, locale as systemLocale, mount, signal, Storage, Text, View } from "nsh";
+import {
+  calendarHolidays,
+  copyText,
+  launchParams,
+  onCommand,
+  onTheme,
+} from "@steward/extension-api";
 import { calendarCopyFor, monthTitleFor } from "./calendar-i18n";
-import { officialDayKindFor } from "./calendar-meta";
+import { holidayScheduleFromApi, officialDayKindFor } from "./calendar-meta";
 import { calendarAnnotation, solarToLunar, type SolarDate } from "./lunar";
 
 const MIN_YEAR = 1900;
@@ -152,6 +158,102 @@ function monthWeeks(year: number, month: number): CalendarWeek[] {
   });
 }
 
+function visibleHolidayYears(year: number, month: number): number[] {
+  const years = new Set<number>();
+  for (const week of monthWeeks(year, month)) {
+    for (const cell of week.days) years.add(cell.date.year);
+  }
+  return [...years].sort((left, right) => left - right);
+}
+
+interface CalendarDisplayCell {
+  cell: CalendarCell;
+  officialDay: "holiday" | "workday" | null;
+}
+
+interface CalendarDisplayWeek {
+  week: number;
+  days: CalendarDisplayCell[];
+}
+
+function monthDisplayWeeks(
+  year: number,
+  month: number,
+  schedule: Record<string, string>,
+): CalendarDisplayWeek[] {
+  return monthWeeks(year, month).map((week) => ({
+    ...week,
+    days: week.days.map((cell) => ({
+      cell,
+      officialDay: officialDayKindFor(cell.date, schedule),
+    })),
+  }));
+}
+
+function holidayCacheKey(year: number): string {
+  return `calendar.holiday.v1.${year}`;
+}
+
+function cachedHolidaySchedule(value: string | null): Record<string, string> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([date, kind]) =>
+          /^\d{4}-\d{2}-\d{2}$/.test(date) && (kind === "holiday" || kind === "workday"),
+      ),
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function fetchHolidaySchedule(year: number): Promise<Record<string, string>> {
+  const response = await fetch(`https://timor.tech/api/holiday/year/${year}`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Steward (+https://github.com/iFence/steward)",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Timor holiday API returned HTTP ${response.status}`);
+  }
+  return holidayScheduleFromApi(await response.json());
+}
+
+async function loadHolidaySchedule(
+  year: number,
+  viaSteward: boolean,
+): Promise<Record<string, string>> {
+  const cacheKey = holidayCacheKey(year);
+  try {
+    const cached = cachedHolidaySchedule(await Storage.getItem(cacheKey));
+    if (cached) return cached;
+  } catch {
+    // Persistent storage is optional in development hosts.
+  }
+
+  try {
+    const schedule = viaSteward ? await calendarHolidays(year) : await fetchHolidaySchedule(year);
+    void Storage.setItem(cacheKey, JSON.stringify(schedule)).catch(() => {});
+    return schedule;
+  } catch {
+    return {};
+  }
+}
+
+async function holidaySchedules(
+  source: string,
+  viaSteward: boolean,
+): Promise<Record<string, string>> {
+  const schedules = await Promise.all(
+    source.split(",").map((value) => loadHolidaySchedule(Number(value), viaSteward)),
+  );
+  return Object.assign({}, ...schedules);
+}
+
 function initialSelection(month: { year: number; month: number }, current: SolarDate): string {
   const selected =
     current.year === month.year && current.month === month.month
@@ -168,7 +270,23 @@ function App() {
   const selected = signal(initialSelection(initial, today()));
   const accent = signal(params.accent);
   const dark = signal(params.dark);
-
+  const holidaySchedule = signal<Record<string, string>>({});
+  const holidayRequests = new Map<string, Promise<Record<string, string>>>();
+  effect(() => {
+    const source = visibleHolidayYears(year(), month()).join(",");
+    let active = true;
+    let request = holidayRequests.get(source);
+    if (!request) {
+      request = holidaySchedules(source, Boolean(params.pluginId));
+      holidayRequests.set(source, request);
+    }
+    void request.then((schedule) => {
+      if (active) holidaySchedule.set(schedule);
+    });
+    return () => {
+      active = false;
+    };
+  });
   onCommand(({ input }) => {
     const next = resolveMonth(input.replace(/^calendar\s*/i, "").trim());
     year.set(next.year);
@@ -473,7 +591,14 @@ function App() {
               </Each>
             </View>
           </View>
-          <Each of={monthWeeks(year(), month())} key={(week) => isoDate(week.days[0].date)}>
+          <Each
+            of={monthDisplayWeeks(year(), month(), holidaySchedule())}
+            key={(week) =>
+              `${isoDate(week.days[0].cell.date)}:${week.days
+                .map((day) => day.officialDay ?? "-")
+                .join("")}`
+            }
+          >
             {(week) => (
               <View
                 style={{
@@ -493,15 +618,18 @@ function App() {
                     {pad(week().week)}
                   </Text>
                 </View>
-                <Each of={week().days} key={(cell) => isoDate(cell.date)}>
+                <Each
+                  of={week().days}
+                  key={(cell) => `${isoDate(cell.cell.date)}:${cell.officialDay ?? "-"}`}
+                >
                   {(cell) => {
-                    const value = cell().date;
+                    const value = cell().cell.date;
                     const valueIso = isoDate(value);
                     const lunar = solarToLunar(value.year, value.month, value.day);
                     const annotation = lunar
                       ? calendarAnnotation(lunar, value, copy.locale)
                       : { label: copy.unavailable, emphasized: false };
-                    const officialDay = officialDayKindFor(value);
+                    const officialDay = cell().officialDay;
                     const officialBadge =
                       officialDay === "holiday"
                         ? copy.holidayBadge
@@ -510,7 +638,7 @@ function App() {
                           : null;
                     const isSelected = valueIso === selected();
                     const isToday =
-                      cell().currentMonth &&
+                      cell().cell.currentMonth &&
                       value.year === current.year &&
                       value.month === current.month &&
                       value.day === current.day;
@@ -529,7 +657,7 @@ function App() {
                             officialBadge ? `${copy.dateSeparator}${officialBadge}` : ""
                           }`}
                           accessible
-                          onPress={() => selectDate(value, cell().currentMonth)}
+                          onPress={() => selectDate(value, cell().cell.currentMonth)}
                           role="button"
                           style={{
                             alignItems: "center",
@@ -551,7 +679,7 @@ function App() {
                               style={{
                                 alignItems: "center",
                                 backgroundColor:
-                                  cell().currentMonth && officialDay === "holiday"
+                                  cell().cell.currentMonth && officialDay === "holiday"
                                     ? colors.accent
                                     : colors.muted,
                                 borderBottomRightRadius: 7,
@@ -594,7 +722,7 @@ function App() {
                               style={{
                                 color: isToday
                                   ? "#ffffff"
-                                  : cell().currentMonth
+                                  : cell().cell.currentMonth
                                     ? colors.foreground
                                     : colors.muted,
                                 fontSize: 16,
@@ -607,7 +735,7 @@ function App() {
                           <Text
                             style={{
                               color:
-                                cell().currentMonth && annotation.emphasized
+                                cell().cell.currentMonth && annotation.emphasized
                                   ? colors.accent
                                   : colors.muted,
                               fontSize: 10,

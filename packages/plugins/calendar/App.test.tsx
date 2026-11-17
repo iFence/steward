@@ -1,7 +1,21 @@
 import { expect, open, test } from "nsh/test";
 import { calendarCopyFor, monthTitleFor } from "./calendar-i18n";
-import { officialDayKindFor, solarTermFor } from "./calendar-meta";
+import { holidayScheduleFromApi, officialDayKindFor, solarTermFor } from "./calendar-meta";
 import { festivalFor, lunarCellLabel, solarToLunar } from "./lunar";
+
+const TEST_HOLIDAYS = {
+  "2024-02-04": "workday",
+  "2024-02-10": "holiday",
+  "2024-04-04": "holiday",
+  "2024-04-07": "workday",
+} as const;
+
+function holidayHandler(data: unknown): Record<string, string> {
+  const year = (data as { year: number }).year;
+  return Object.fromEntries(
+    Object.entries(TEST_HOLIDAYS).filter(([date]) => date.startsWith(`${year}-`)),
+  );
+}
 
 test("calendar supplies copy for every Steward UI language", () => {
   const today = [
@@ -50,9 +64,116 @@ test("calendar resolves solar terms and official day status", () => {
   expect(solarTermFor({ year: 2024, month: 4, day: 4 }, "zh")).toBe("清明");
   expect(solarTermFor({ year: 2024, month: 8, day: 22 }, "zh")).toBe("处暑");
   expect(solarTermFor({ year: 2024, month: 4, day: 4 }, "en")).toBe("Qingming");
-  expect(officialDayKindFor({ year: 2024, month: 2, day: 10 })).toBe("holiday");
-  expect(officialDayKindFor({ year: 2024, month: 2, day: 4 })).toBe("workday");
-  expect(officialDayKindFor({ year: 2024, month: 2, day: 5 })).toBeNull();
+  expect(officialDayKindFor({ year: 2024, month: 2, day: 10 }, TEST_HOLIDAYS)).toBe("holiday");
+  expect(officialDayKindFor({ year: 2024, month: 2, day: 4 }, TEST_HOLIDAYS)).toBe("workday");
+  expect(officialDayKindFor({ year: 2024, month: 2, day: 5 }, TEST_HOLIDAYS)).toBeNull();
+});
+
+test("calendar parses official holiday API responses", () => {
+  expect(
+    holidayScheduleFromApi({
+      code: 0,
+      holiday: {
+        "02-10": { holiday: true, date: "2024-02-10" },
+        "02-04": { holiday: false, date: "2024-02-04" },
+      },
+    }),
+  ).toEqual({
+    "2024-02-04": "workday",
+    "2024-02-10": "holiday",
+  });
+});
+
+test("calendar reuses a cached yearly holiday schedule", async () => {
+  const cacheKey = "calendar.holiday.v1.2024";
+  const app = await open("./App.tsx", {
+    storage: {
+      [cacheKey]: JSON.stringify(TEST_HOLIDAYS),
+    },
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+        "steward.calendar.holidays": () => {
+          throw new Error("the cached year must not be requested");
+        },
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  await app.waitFor("id:calendar-badge-2024-02-10");
+  expect(app.host.calls().filter((call) => call.name === "steward.calendar.holidays").length).toBe(
+    0,
+  );
+  expect(app.storage()[cacheKey]).toBe(JSON.stringify(TEST_HOLIDAYS));
+});
+
+test("calendar silently hides official badges when holiday data is unavailable", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+        "steward.calendar.holidays": () => {
+          throw new Error("offline");
+        },
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  expect(app.shows("id:calendar-root")).toBe(true);
+  expect(app.shows("id:calendar-badge-2024-02-10")).toBe(false);
+});
+
+test("calendar fetches holiday data in the standalone development host", async () => {
+  const app = await open("./App.tsx", {
+    network: {
+      "GET https://timor.tech/api/holiday/year/2024": {
+        body: {
+          code: 0,
+          holiday: {
+            "02-10": { holiday: true, date: "2024-02-10" },
+            "02-04": { holiday: false, date: "2024-02-04" },
+          },
+        },
+      },
+    },
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "",
+      },
+    },
+  });
+
+  await app.waitFor("id:calendar-badge-2024-02-10");
+  await app.press("id:calendar-next-month");
+  expect(
+    app.requests().filter((request) => request.url === "https://timor.tech/api/holiday/year/2024")
+      .length,
+  ).toBe(1);
+  expect(app.storage()["calendar.holiday.v1.2024"]).toContain("2024-02-10");
 });
 
 test("calendar renders solar and lunar dates and copies a selected day", async () => {
@@ -60,6 +181,7 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
     host: {
       handlers: {
         "steward.clipboard.write": {},
+        "steward.calendar.holidays": holidayHandler,
       },
       params: {
         accent: "#ff6d00",
@@ -75,6 +197,8 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
   const initialText = app.texts().join(" ");
   expect(initialText).toContain("2024年2月");
   expect(initialText).toContain("春节");
+  await app.waitFor("id:calendar-badge-2024-02-04");
+  await app.waitFor("id:calendar-badge-2024-02-10");
   expect(app.shows("id:calendar-badge-2024-02-04")).toBe(true);
   expect(app.shows("id:calendar-badge-2024-02-10")).toBe(true);
   expect(initialText).not.toContain("公历与农历");
@@ -86,7 +210,7 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
 
   await app.press("id:calendar-day-2024-02-10");
   expect(app.texts().join(" ")).not.toContain("农历 甲辰龙年 正月初一");
-  expect(app.host.calls()).toEqual([
+  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([
     { data: { text: "2024-02-10" }, name: "steward.clipboard.write" },
   ]);
 
@@ -114,6 +238,7 @@ test("calendar renders a solar term in the month grid", async () => {
     host: {
       handlers: {
         "steward.clipboard.write": {},
+        "steward.calendar.holidays": holidayHandler,
       },
       params: {
         accent: "#ff6d00",
@@ -128,6 +253,8 @@ test("calendar renders a solar term in the month grid", async () => {
 
   expect(app.texts().join(" ")).toContain("2024年4月");
   expect(app.texts().join(" ")).toContain("清明");
+  await app.waitFor("id:calendar-badge-2024-04-04");
+  await app.waitFor("id:calendar-badge-2024-04-07");
   expect(app.shows("id:calendar-badge-2024-04-04")).toBe(true);
   expect(app.shows("id:calendar-badge-2024-04-07")).toBe(true);
 });
@@ -137,6 +264,7 @@ test("calendar fills leading and trailing days from adjacent months", async () =
     host: {
       handlers: {
         "steward.clipboard.write": {},
+        "steward.calendar.holidays": holidayHandler,
       },
       params: {
         accent: "#ff6d00",
@@ -156,7 +284,7 @@ test("calendar fills leading and trailing days from adjacent months", async () =
 
   await app.press("id:calendar-day-2024-03-01");
   expect(app.texts().join(" ")).toContain("2024年3月");
-  expect(app.host.calls()).toEqual([
+  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([
     { data: { text: "2024-03-01" }, name: "steward.clipboard.write" },
   ]);
 });
@@ -166,6 +294,7 @@ test("calendar fits its minimum viewport without scrolling", async () => {
     host: {
       handlers: {
         "steward.clipboard.write": {},
+        "steward.calendar.holidays": holidayHandler,
       },
       params: {
         accent: "#ff6d00",

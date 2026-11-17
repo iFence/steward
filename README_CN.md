@@ -184,6 +184,13 @@ git push origin v0.3.1
 - [x] NSH-3：NSH 插件窗口与官方插件迁移
 - [ ] NSH-4：生产签名密钥、Release 基准与最终验收
 
+## 致谢
+
+感谢 [Timor 免费节假日 API](https://timor.tech/api/holiday/) 为 Calendar 插件
+提供中国大陆法定节假日与调休补班数据。该服务免费且无需注册，请遵守其文档中
+每个 IP 每 24 小时 10,000 次请求的限制。Timor 网站内容采用
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 许可。
+
 ## 许可证
 
 [MIT](LICENSE)。NSH 相关声明见

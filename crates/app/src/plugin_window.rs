@@ -20,7 +20,9 @@ use crate::services::WindowCommand;
 use crate::state::{AppState, PluginRuntimeEvent, PluginWindow};
 
 const PLUGIN_WINDOW_WIDTH: f32 = 900.0;
-const PLUGIN_WINDOW_HEIGHT: f32 = 680.0;
+const PLUGIN_WINDOW_HEIGHT: f32 = 660.0;
+const PLUGIN_WINDOW_MIN_WIDTH: f32 = 720.0;
+const PLUGIN_WINDOW_MIN_HEIGHT: f32 = 600.0;
 const FIRST_FRAME_GRACE: Duration = Duration::from_millis(250);
 
 pub(crate) fn focus_and_send(
@@ -164,6 +166,34 @@ pub(crate) fn open_launch(
             }
         }
     });
+    host.handle("steward.calendar.holidays", {
+        let cache_dir = data_dir.join("calendar-holidays");
+        move |call| {
+            let Some(year) = call.data().get("year").and_then(|value| value.as_u64()) else {
+                call.reject("steward.calendar.holidays requires an integer year");
+                return;
+            };
+            let Ok(year) = u16::try_from(year) else {
+                call.reject("steward.calendar.holidays year is out of range");
+                return;
+            };
+            let Some(reply) = call.into_reply() else {
+                return;
+            };
+            let cache_dir = cache_dir.clone();
+            std::thread::spawn(move || {
+                match crate::holiday_schedule::load_year(year, &cache_dir) {
+                    Ok(schedule) => {
+                        reply.resolve(serde_json::to_value(schedule).unwrap_or_default());
+                    }
+                    Err(error) => {
+                        tracing::warn!(year, %error, "calendar holiday schedule is unavailable");
+                        reply.resolve(serde_json::json!({}));
+                    }
+                }
+            });
+        }
+    });
     host.handle("steward.window.close", {
         let request = initial.clone();
         let services = services.clone();
@@ -195,6 +225,10 @@ pub(crate) fn open_launch(
                 ..Default::default()
             }),
             is_resizable: true,
+            window_min_size: Some(size(
+                px(PLUGIN_WINDOW_MIN_WIDTH),
+                px(PLUGIN_WINDOW_MIN_HEIGHT),
+            )),
             show: true,
             focus: true,
             ..Default::default()

@@ -15,6 +15,9 @@ export interface ClipboardEntry {
   copied_at: number;
 }
 
+export type HolidayDayKind = "holiday" | "workday";
+export type HolidaySchedule = Record<string, HolidayDayKind>;
+
 export function launchParams(): StewardLaunchParams {
   const value = host.params as unknown as Partial<StewardLaunchParams>;
   return {
@@ -55,6 +58,11 @@ export async function storageGet(key: string): Promise<string | null> {
 
 export async function storageSet(key: string, value: string): Promise<void> {
   await host.call("steward.storage.set", { key, value });
+}
+
+export async function calendarHolidays(year: number): Promise<HolidaySchedule> {
+  if (!Number.isInteger(year)) throw new Error("calendarHolidays requires an integer year");
+  return host.call<HolidaySchedule>("steward.calendar.holidays", { year }, { timeout: 20_000 });
 }
 
 export function closeWindow(): void {

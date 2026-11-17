@@ -9,6 +9,7 @@ mod clipboard_history;
 mod config;
 mod events;
 mod handlers;
+mod holiday_schedule;
 mod hotkey_registry;
 mod hotkeys;
 mod i18n;

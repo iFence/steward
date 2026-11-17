@@ -1,9 +1,19 @@
 {
   "name": "Calendar",
   "id": "it.aspirin.calendar",
-  "version": "0.2.1",
-  "build": 2,
+  "version": "0.2.2",
+  "build": 3,
   "capabilities": {
-    "host": ["steward.*"]
+    "host": ["steward.*"],
+    "network": {
+      "http": [
+        {
+          "host": "timor.tech",
+          "scheme": "https",
+          "methods": ["GET"],
+          "pathPrefix": "/api/holiday/year/"
+        }
+      ]
+    }
   }
 }

@@ -187,6 +187,15 @@ git push origin v0.3.1
 - [x] NSH-3: NSH plugin windows and official plugin migration
 - [ ] NSH-4: production keys, release benchmarks, and final acceptance
 
+## Acknowledgements
+
+Thank you to [Timor's free holiday API](https://timor.tech/api/holiday/) for
+providing the Calendar plugin's mainland China holiday and adjusted-workday
+data. The service is free and does not require registration; please respect its
+documented limit of 10,000 requests per IP address per 24 hours. Timor's site
+content is published under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
 ## License
 
 [MIT](LICENSE). NSH-derived notices are listed in
