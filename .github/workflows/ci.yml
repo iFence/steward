@@ -52,7 +52,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - name: Install pinned NSH CLI
-        run: cargo install --locked --git https://github.com/longbridge/nsh --rev 5359c07ff7b5728e67957c24322373309c90666b nsh-cli
+        run: cargo install --locked nsh-cli --version 0.5.1
       - name: install
         run: pnpm install --frozen-lockfile
       - name: lint
