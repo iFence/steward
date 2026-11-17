@@ -22,10 +22,25 @@ param(
     # The global summon hotkey as registered by the app (persisted in the
     # settings table, default "control+alt+Space"). Must match the app's
     # current binding or the synthetic WM_HOTKEY is ignored.
-    [string]$SummonHotkey = "control+alt+Space"
+    [string]$SummonHotkey = "control+alt+Space",
+    [int]$Samples = 20,
+    [string]$DataDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ($Samples -lt 2) {
+    throw "-Samples must be at least 2"
+}
+if (-not $DataDir) {
+    $DataDir = Join-Path $PSScriptRoot (
+        "..\target\benchmarks\resident-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    )
+}
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$DataDir = (Resolve-Path -LiteralPath $DataDir).Path
+$env:STEWARD_DATA_DIR = $DataDir
+$env:STEWARD_PLUGINS_DIR = Join-Path $DataDir "plugins"
+New-Item -ItemType Directory -Force -Path $env:STEWARD_PLUGINS_DIR | Out-Null
 
 Add-Type @"
 using System;
@@ -36,7 +51,11 @@ public static class Win32Bench {
     [DllImport("user32.dll")]
     public static extern bool PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")]
+    public static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")]
@@ -142,19 +161,29 @@ function Get-MemoryMB($proc) {
     }
 }
 
+function Get-P95($Values) {
+    $sorted = @($Values | Sort-Object)
+    if ($sorted.Count -eq 0) {
+        throw "cannot calculate p95 from an empty sample set"
+    }
+    $index = [math]::Ceiling($sorted.Count * 0.95) - 1
+    return [double]$sorted[[math]::Max(0, $index)]
+}
+
 # Stop any existing dev instances so hotkey/tray registration is clean.
 Get-Process steward-app -ErrorAction SilentlyContinue | Stop-Process -Force
 
 $p = Start-Process -FilePath $Exe -PassThru
-$proc = Get-Process -Id $p.Id
-$appPid = $p.Id
+try {
+    $proc = Get-Process -Id $p.Id
+    $appPid = $p.Id
 
-$bootMs = Wait-Until { (Find-TrayWindow $appPid) -ne [IntPtr]::Zero } 15000
-if ($bootMs -lt 0) { throw "tray window not found within timeout" }
-Start-Sleep -Milliseconds 300  # let hotkey registration + cache read settle
-$resident = Get-MemoryMB $proc
+    $bootMs = Wait-Until { (Find-TrayWindow $appPid) -ne [IntPtr]::Zero } 15000
+    if ($bootMs -lt 0) { throw "tray window not found within timeout" }
+    Start-Sleep -Milliseconds 300  # let hotkey registration + cache read settle
+    $resident = Get-MemoryMB $proc
 
-[void][Win32Bench]::PostMessageW((Find-HotkeyWindow $appPid), 0x0312, [IntPtr]$SummonHotkeyId, [IntPtr]0)  # WM_HOTKEY
+[void][Win32Bench]::SendMessageW((Find-HotkeyWindow $appPid), 0x0312, [IntPtr]$SummonHotkeyId, [IntPtr]0)  # WM_HOTKEY
 $firstMs = Wait-Until {
     $launcher = Find-LauncherWindow $appPid
     $launcher -ne [IntPtr]::Zero -and [Win32Bench]::IsWindowVisible($launcher)
@@ -162,33 +191,65 @@ $firstMs = Wait-Until {
 if ($firstMs -lt 0) {
     throw "launcher never became visible after WM_HOTKEY id 0x$('{0:X}' -f $SummonHotkeyId) for '$ResolvedHotkey'. The app may register a different summon hotkey (settings table 'summon_hotkey' in %APPDATA%\Steward\steward.db); pass it via -SummonHotkey."
 }
-$open = Get-MemoryMB $proc
+    $open = Get-MemoryMB $proc
 
-# Esc dismisses the launcher (hide or close per CLOSE_ON_HIDE).
-$launcher = Find-LauncherWindow $appPid
-[void][Win32Bench]::PostMessageW($launcher, 0x0100, [IntPtr]0x1B, [IntPtr]0)  # WM_KEYDOWN VK_ESCAPE
-$closedMs = Wait-Until {
-    $l2 = Find-LauncherWindow $appPid
-    $l2 -eq [IntPtr]::Zero -or -not [Win32Bench]::IsWindowVisible($l2)
-} 10000
-Start-Sleep -Milliseconds 300
-$afterClose = Get-MemoryMB $proc
-
-[void][Win32Bench]::PostMessageW((Find-HotkeyWindow $appPid), 0x0312, [IntPtr]$SummonHotkeyId, [IntPtr]0)
-$secondMs = Wait-Until {
+# Close the benchmark launcher, then repeat summon/close cycles. Closing lets
+# the app clear its cached window handle before the next synthetic hotkey;
+# merely calling ShowWindow leaves that cache stale.
+    $summonSamples = @([double]$firstMs)
     $launcher = Find-LauncherWindow $appPid
-    $launcher -ne [IntPtr]::Zero -and [Win32Bench]::IsWindowVisible($launcher)
-} 15000
-if ($secondMs -lt 0) {
-    throw "second summon never became visible (hotkey '$ResolvedHotkey', id 0x$('{0:X}' -f $SummonHotkeyId))"
-}
-Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    [void][Win32Bench]::SendMessageW($launcher, 0x0010, [IntPtr]0, [IntPtr]0)  # WM_CLOSE
+    $closedMs = Wait-Until {
+        $l2 = Find-LauncherWindow $appPid
+        $l2 -eq [IntPtr]::Zero
+    } 10000
+    if ($closedMs -lt 0) {
+        throw "launcher did not close after the first summon"
+    }
+    Start-Sleep -Milliseconds 300
+    $afterClose = Get-MemoryMB $proc
+
+    for ($sample = 2; $sample -le $Samples; $sample++) {
+    [void][Win32Bench]::SendMessageW((Find-HotkeyWindow $appPid), 0x0312, [IntPtr]$SummonHotkeyId, [IntPtr]0)
+    $summonMs = Wait-Until {
+        $launcher = Find-LauncherWindow $appPid
+        $launcher -ne [IntPtr]::Zero -and [Win32Bench]::IsWindowVisible($launcher)
+    } 15000
+    if ($summonMs -lt 0) {
+        throw "summon sample $sample never became visible (hotkey '$ResolvedHotkey', id 0x$('{0:X}' -f $SummonHotkeyId))"
+    }
+    $summonSamples += [double]$summonMs
+
+    if ($sample -lt $Samples) {
+        [void][Win32Bench]::SendMessageW(
+            (Find-LauncherWindow $appPid),
+            0x0010,
+            [IntPtr]0,
+            [IntPtr]0
+        )
+        $dismissed = Wait-Until {
+            $next = Find-LauncherWindow $appPid
+            $next -eq [IntPtr]::Zero
+        } 10000
+        if ($dismissed -lt 0) {
+            throw "launcher did not dismiss before summon sample $($sample + 1)"
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    }
+    $secondMs = $summonSamples[1]
+    $summonP95Ms = [math]::Round((Get-P95 $summonSamples), 2)
 
 "== Steward resident benchmark ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) =="
 "boot -> tray ready        : $bootMs ms"
 "resident RSS (tray-only)  : $($resident.WorkingSetMB) MB working set / $($resident.PrivateMB) MB private"
 "first summon -> visible   : $firstMs ms"
 "RSS with launcher open    : $($open.WorkingSetMB) MB working set / $($open.PrivateMB) MB private"
-"esc -> window dismissed   : $closedMs ms"
+"launcher close            : $closedMs ms"
 "RSS after dismiss         : $($afterClose.WorkingSetMB) MB working set / $($afterClose.PrivateMB) MB private"
 "second summon -> visible  : $secondMs ms"
+    "summon p95 ($Samples samples): $summonP95Ms ms"
+} finally {
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    $p.WaitForExit(5000) | Out-Null
+}

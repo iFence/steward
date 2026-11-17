@@ -111,6 +111,7 @@ pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppSta
         };
         match outcome {
             PluginLaunchOutcome::Ready {
+                requested_at,
                 initial,
                 latest,
                 launch,
@@ -119,6 +120,7 @@ pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppSta
                     crate::plugin_window::open_launch(
                         cx,
                         state.clone(),
+                        requested_at,
                         initial,
                         latest.clone(),
                         *launch,
@@ -146,7 +148,11 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
     let receiver = state.borrow().plugin_events_rx.clone();
     while let Ok(event) = receiver.try_recv() {
         match event {
-            PluginRuntimeEvent::Healthy { plugin_id, receipt } => {
+            PluginRuntimeEvent::Healthy {
+                plugin_id,
+                receipt,
+                requested_at,
+            } => {
                 // RefCell borrows in an `if let` scrutinee live through both
                 // arms. Finish the nested borrow before reading services.
                 let accepted = state.borrow().search.borrow_mut().accept_receipt(&receipt);
@@ -165,6 +171,11 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                         services.clear_notice();
                     }
                     tracing::info!(plugin_id = %plugin_id, "plugin first frame healthy");
+                    crate::metrics::duration(
+                        "plugin_first_frame",
+                        requested_at.elapsed(),
+                        serde_json::json!({ "plugin_id": plugin_id }),
+                    );
                 }
             }
             PluginRuntimeEvent::Failed {
@@ -390,6 +401,7 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
             title,
             input,
         } => {
+            let activation_started = std::time::Instant::now();
             let (locale, accent) = {
                 let state = state.borrow();
                 (state.services.locale(), state.services.accent())
@@ -405,6 +417,11 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
             };
             let focused = cx.update(|cx| crate::plugin_window::focus_and_send(cx, state, &request));
             if focused {
+                crate::metrics::duration(
+                    "plugin_focus",
+                    activation_started.elapsed(),
+                    serde_json::json!({ "plugin_id": request.plugin_id }),
+                );
                 return;
             }
             if let Err(error) = state

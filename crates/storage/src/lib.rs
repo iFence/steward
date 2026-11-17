@@ -11,9 +11,14 @@ use rusqlite::Connection;
 use steward_core_engine::AppEntry;
 
 mod apps;
+mod capabilities;
 mod clipboard;
 mod schema;
 mod settings;
+
+pub use capabilities::{
+    CapabilityAuditEntry, CapabilityGrant, NewCapabilityAuditEntry, NewCapabilityGrant,
+};
 
 /// The on-disk database file name inside the data directory.
 const DB_FILE: &str = "steward.db";
@@ -78,6 +83,13 @@ impl Storage {
         schema::migrate(&self.conn)
     }
 
+    /// Current SQLite application schema version.
+    pub fn schema_version(&self) -> Result<i64> {
+        self.conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .context("read schema version")
+    }
+
     /// Read a persisted application setting, or `None` when it was never set.
     pub fn get_setting(&self, key: &str) -> Option<String> {
         settings::get(&self.conn, key)
@@ -110,6 +122,49 @@ impl Storage {
     /// Delete the clipboard history entry with the given row id.
     pub fn delete_clipboard(&self, id: i64) -> Result<()> {
         clipboard::delete(&self.conn, id)
+    }
+
+    /// Grant one capability to a plugin publisher and version range.
+    ///
+    /// Identical active grants are idempotent. A new row is inserted after a
+    /// previous grant is revoked so audit history is never rewritten.
+    pub fn grant_capability(&self, request: &NewCapabilityGrant) -> Result<CapabilityGrant> {
+        capabilities::grant(&self.conn, request)
+    }
+
+    /// Revoke an active capability grant without deleting its history.
+    pub fn revoke_capability(&self, id: i64, revoked_at: i64) -> Result<CapabilityGrant> {
+        capabilities::revoke(&self.conn, id, revoked_at)
+    }
+
+    pub fn active_capability_grants(&self, plugin_id: &str) -> Result<Vec<CapabilityGrant>> {
+        capabilities::active_for_plugin(&self.conn, plugin_id)
+    }
+
+    pub fn capability_grant_history(&self, plugin_id: &str) -> Result<Vec<CapabilityGrant>> {
+        capabilities::history_for_plugin(&self.conn, plugin_id)
+    }
+
+    pub fn matching_capability_grants(
+        &self,
+        plugin_id: &str,
+        publisher_fingerprint: &str,
+        version: &str,
+    ) -> Result<Vec<CapabilityGrant>> {
+        capabilities::matching_active(&self.conn, plugin_id, publisher_fingerprint, version)
+    }
+
+    /// Append a structured capability audit record. Callers must keep secrets
+    /// and full sensitive payloads out of `detail`.
+    pub fn append_capability_audit(
+        &self,
+        entry: &NewCapabilityAuditEntry,
+    ) -> Result<CapabilityAuditEntry> {
+        capabilities::append_audit(&self.conn, entry)
+    }
+
+    pub fn capability_audit(&self, plugin_id: &str) -> Result<Vec<CapabilityAuditEntry>> {
+        capabilities::audit_for_plugin(&self.conn, plugin_id)
     }
 
     /// Record that `path` was launched: bump the count and update last-used.
@@ -169,6 +224,10 @@ mod tests {
     #[test]
     fn migrate_and_usage_flow() {
         let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(
+            storage.schema_version().unwrap(),
+            schema::CURRENT_SCHEMA_VERSION
+        );
         let p = Path::new("C:/calc.exe");
         assert_eq!(storage.frequency(p), 0);
 
@@ -249,6 +308,7 @@ mod tests {
                 INSERT INTO settings(key, value) VALUES ('file_index', 'legacy json');",
             )
             .unwrap();
+        storage.conn.pragma_update(None, "user_version", 0).unwrap();
 
         storage.migrate().unwrap();
 

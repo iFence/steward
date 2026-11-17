@@ -9,17 +9,21 @@ mod clipboard_history;
 mod config;
 mod events;
 mod handlers;
+mod hotkey_registry;
 mod hotkeys;
 mod i18n;
 mod instance;
 mod launch;
+mod launcher_model;
 mod logging;
+mod metrics;
 mod nsh_surface;
 mod platform;
 mod plugin_window;
 mod search;
 mod services;
 mod settings;
+mod settings_registry;
 mod shell;
 mod state;
 mod theme;
@@ -40,9 +44,11 @@ use tracing::{error, info, warn};
 use crate::config::{CHECK_UPDATES_SETTING, DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
 use crate::i18n::Localization;
 use crate::services::{AppServices, SearchState, UiSettings};
+use crate::settings_registry::SettingsRegistry;
 use crate::state::AppState;
 
 fn main() {
+    let process_started = std::time::Instant::now();
     if std::env::args().any(|arg| arg == "--sync-autostart") {
         autostart::sync_autostart_path();
         return;
@@ -82,6 +88,7 @@ fn main() {
             None
         }
     };
+    metrics::init();
     info!(data_dir = %data_dir.display(), "starting Steward");
     #[cfg(target_os = "windows")]
     platform::set_dpi_awareness();
@@ -167,6 +174,8 @@ fn main() {
         tray: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
+        hotkey_registry: crate::hotkey_registry::HotkeyRegistry::default(),
+        settings_registry: SettingsRegistry::builtin().expect("built-in settings have unique keys"),
         plugin_windows: Default::default(),
         plugin_events: plugin_event_tx,
         plugin_events_rx: plugin_event_rx,
@@ -207,6 +216,18 @@ fn main() {
             if let Err(error) = events::spawn(state.clone(), cx) {
                 error!(error = %format!("{error:#}"), "failed to start event loop");
             }
+            metrics::duration(
+                "cold_start",
+                process_started.elapsed(),
+                serde_json::json!({
+                    "cold": std::env::var_os("STEWARD_METRICS_COLD").is_none(),
+                }),
+            );
+            metrics::value(
+                "hidden_plugin_vm_count",
+                state.borrow().plugin_windows.values().count() as u64,
+                serde_json::json!({ "phase": "tray_ready" }),
+            );
             if let Ok(plugin_id) = std::env::var("STEWARD_SMOKE_PLUGIN") {
                 let command =
                     std::env::var("STEWARD_SMOKE_COMMAND").unwrap_or_else(|_| plugin_id.clone());
@@ -215,13 +236,31 @@ fn main() {
                 state.borrow().services.send_window_command(
                     crate::services::WindowCommand::Activate(
                         crate::services::RowAction::OpenPlugin {
-                            plugin_id,
-                            command,
-                            title,
+                            plugin_id: plugin_id.clone(),
+                            command: command.clone(),
+                            title: title.clone(),
                             input: String::new(),
                         },
                     ),
                 );
+                if std::env::var_os("STEWARD_SMOKE_REPEAT").is_some() {
+                    let services = services.clone();
+                    let delay = std::env::var("STEWARD_SMOKE_REPEAT_DELAY_MS")
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(2_000);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(delay));
+                        services.send_window_command(crate::services::WindowCommand::Activate(
+                            crate::services::RowAction::OpenPlugin {
+                                plugin_id,
+                                command,
+                                title,
+                                input: String::new(),
+                            },
+                        ));
+                    });
+                }
             }
 
             let closed_state = state.clone();

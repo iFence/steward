@@ -1,5 +1,7 @@
 use steward_plugin_host::{PluginHost, RouteHit};
 
+use crate::launcher_model::{FeatureId, LauncherSection};
+
 use super::{row, RowAction, SearchContribution, SearchSource};
 
 const MAX_ROUTE_RESULTS: usize = 32;
@@ -21,6 +23,8 @@ impl SearchSource for PluginSource<'_> {
         } in self.host.query(query).into_iter().take(MAX_ROUTE_RESULTS)
         {
             contribution.push(
+                FeatureId::Plugin,
+                LauncherSection::Plugins,
                 row(
                     format!("plugin:{plugin_id}:{command}"),
                     title.clone(),

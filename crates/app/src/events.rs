@@ -43,13 +43,13 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
         }
 
         while let Ok(event) = hotkey_events.try_recv() {
-            if event.state == HotKeyState::Pressed
-                && state
-                    .borrow()
-                    .summon_hotkey
-                    .is_some_and(|hotkey| hotkey.id() == event.id)
-            {
-                handlers::toggle_launcher(cx, &state);
+            if event.state == HotKeyState::Pressed {
+                let action = state.borrow().hotkey_registry.resolve(event.id).cloned();
+                if action.is_some_and(|action| action.as_str() == crate::hotkeys::SUMMON_ACTION) {
+                    let started = std::time::Instant::now();
+                    handlers::toggle_launcher(cx, &state);
+                    crate::metrics::duration("summon", started.elapsed(), serde_json::json!({}));
+                }
             }
         }
         while let Ok(event) = tray_events.try_recv() {

@@ -29,6 +29,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
+      - name: validate production trust roots
+        shell: pwsh
+        run: ./scripts/verify-trust-roots.ps1
       - name: fmt
         run: cargo fmt --check
       - name: clippy

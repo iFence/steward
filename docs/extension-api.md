@@ -13,14 +13,16 @@ canonical TypeScript surface is
 
 ```tsx
 import { Input, mount, signal, Text, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
 import { Switch } from "nsh/base";
 import {
   clipboardHistory,
   closeWindow,
+  copyText,
   launchParams,
   onCommand,
   onTheme,
+  storageGet,
+  storageSet,
 } from "@steward/extension-api";
 ```
 
@@ -48,6 +50,9 @@ for a regex trigger. A plugin window is reused by plugin ID, so handle
 | Helper | Result |
 |---|---|
 | `clipboardHistory()` | Current clipboard entries from Steward |
+| `copyText(text)` | Writes text through Steward's clipboard capability |
+| `storageGet(key)` | Reads plugin-private string storage |
+| `storageSet(key, value)` | Persists plugin-private string storage |
 | `closeWindow()` | Close the current plugin window |
 | `onCommand(cb)` | Receive focus/command events while the window stays open |
 | `onTheme(cb)` | Receive accent and dark-mode changes |

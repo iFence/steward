@@ -50,6 +50,11 @@ Required before v0.3.0 is considered release-complete:
 - [x] complete the production Ed25519 root-key ceremony;
 - [x] provision the CI release key and certificate;
 - [x] replace the empty development trust-root file;
+- [x] add unified launcher/action, hotkey, settings, and schema-migration
+  foundations;
+- [x] add capability grant, revocation, and audit storage;
+- [x] add automated trust, signed-package, performance, and MSI lifecycle
+  acceptance tooling;
 - [ ] measure release cold start, RSS, summon latency, plugin first frame, plugin
   focus, and hidden VM count;
 - [ ] install the MSI on a clean Windows machine;

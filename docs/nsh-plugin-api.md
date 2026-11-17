@@ -22,12 +22,15 @@ interface StewardLaunchParams {
 | Interface | Purpose |
 |---|---|
 | `clipboardHistory()` | Read Steward's clipboard-history snapshot. |
+| `copyText(text)` | Write text through Steward's clipboard capability. |
+| `storageGet(key)` | Read a plugin-private string value. |
+| `storageSet(key, value)` | Persist a plugin-private string value. |
 | `closeWindow()` | Ask Steward to close this plugin window. |
 | `onCommand(cb)` | Receive another command while the plugin window is open. |
 | `onTheme(cb)` | Receive accent/dark-mode changes. |
 
-These helpers live in `@steward/extension-api`. All other capabilities use NSH
-directly.
+These helpers live in `@steward/extension-api`. UI and device capabilities use
+the modules exported by the pinned NSH 0.5.1 runtime.
 
 The embedding host allows clipboard, filesystem under `${dataDir}`,
 https/mailto URL opening, and Steward host names. Network, process execution,

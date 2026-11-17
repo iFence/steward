@@ -1,6 +1,7 @@
 //! One full NSH application window per plugin.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,6 +55,7 @@ pub(crate) fn focus_and_send(
 pub(crate) fn open_launch(
     cx: &mut App,
     state: Rc<RefCell<AppState>>,
+    requested_at: std::time::Instant,
     initial: LaunchRequest,
     latest: LaunchRequest,
     launch: PluginLaunch,
@@ -82,6 +84,84 @@ pub(crate) fn open_launch(
                 .map(|entries| entries.clone())
                 .unwrap_or_default();
             call.resolve(serde_json::to_value(entries).unwrap_or_default());
+        }
+    });
+    host.handle("steward.clipboard.write", |call| {
+        let Some(text) = call
+            .data()
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        else {
+            call.reject("steward.clipboard.write requires a text string");
+            return;
+        };
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+            Ok(()) => call.resolve(serde_json::json!({})),
+            Err(error) => call.reject(format!("write clipboard text: {error}")),
+        }
+    });
+
+    let storage_path = data_dir
+        .join(&initial.plugin_id)
+        .join("steward-host-storage.json");
+    let plugin_storage = Arc::new(Mutex::new(load_plugin_storage(&storage_path)));
+    host.handle("steward.storage.get", {
+        let storage = plugin_storage.clone();
+        move |call| {
+            let Some(key) = call
+                .data()
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                call.reject("steward.storage.get requires a key string");
+                return;
+            };
+            let value = storage
+                .lock()
+                .ok()
+                .and_then(|storage| storage.get(&key).cloned());
+            call.resolve(value.map_or(serde_json::Value::Null, serde_json::Value::String));
+        }
+    });
+    host.handle("steward.storage.set", {
+        let storage = plugin_storage.clone();
+        let storage_path = storage_path.clone();
+        move |call| {
+            let Some(key) = call
+                .data()
+                .get("key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                call.reject("steward.storage.set requires a key string");
+                return;
+            };
+            let Some(value) = call
+                .data()
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                call.reject("steward.storage.set requires a value string");
+                return;
+            };
+            if key.is_empty() || key.len() > 256 || value.len() > 1024 * 1024 {
+                call.reject("plugin storage key or value exceeds its limit");
+                return;
+            }
+            let result = storage
+                .lock()
+                .map_err(|_| "plugin storage lock poisoned".to_owned())
+                .and_then(|mut storage| {
+                    storage.insert(key, value);
+                    persist_plugin_storage(&storage_path, &storage)
+                });
+            match result {
+                Ok(()) => call.resolve(serde_json::json!({})),
+                Err(error) => call.reject(format!("write plugin storage: {error}")),
+            }
         }
     });
     host.handle("steward.window.close", {
@@ -182,6 +262,11 @@ pub(crate) fn open_launch(
             host,
         },
     );
+    crate::metrics::value(
+        "plugin_window_vm_count",
+        state.borrow().plugin_windows.values().count() as u64,
+        serde_json::json!({ "plugin_id": plugin_id.clone() }),
+    );
 
     let initial_for_focus = initial.clone();
     if latest.command != initial_for_focus.command || latest.input != initial_for_focus.input {
@@ -199,11 +284,38 @@ pub(crate) fn open_launch(
             .unwrap_or(false)
         {
             healthy_for_timer.store(true, Ordering::Relaxed);
-            let _ = events.send(PluginRuntimeEvent::Healthy { plugin_id, receipt });
+            let _ = events.send(PluginRuntimeEvent::Healthy {
+                plugin_id,
+                receipt,
+                requested_at,
+            });
         }
     })
     .detach();
     Ok(())
+}
+
+fn load_plugin_storage(path: &std::path::Path) -> BTreeMap<String, String> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn persist_plugin_storage(
+    path: &std::path::Path,
+    storage: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let bytes = serde_json::to_vec(storage).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(&temporary, path).map_err(|error| error.to_string())
 }
 
 pub(crate) fn close(cx: &mut App, state: &Rc<RefCell<AppState>>, plugin_id: &str) {
@@ -215,11 +327,41 @@ pub(crate) fn close(cx: &mut App, state: &Rc<RefCell<AppState>>, plugin_id: &str
     if let Some(handle) = handle {
         let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
+    crate::metrics::value(
+        "plugin_window_vm_count",
+        state.borrow().plugin_windows.values().count() as u64,
+        serde_json::json!({ "plugin_id": plugin_id, "phase": "closed" }),
+    );
 }
 
 pub(crate) fn broadcast_theme(state: &Rc<RefCell<AppState>>, accent: &str) {
     let payload = serde_json::json!({ "accent": accent, "dark": true });
     for plugin in state.borrow().plugin_windows.values() {
         let _ = plugin.host.send("steward.theme", payload.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_private_storage_roundtrips_through_one_json_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "steward-plugin-storage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("steward-host-storage.json");
+        let values = BTreeMap::from([
+            ("pinned".into(), r#"["one","two"]"#.into()),
+            ("theme".into(), "dark".into()),
+        ]);
+        persist_plugin_storage(&path, &values).unwrap();
+        assert_eq!(load_plugin_storage(&path), values);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

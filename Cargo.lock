@@ -8859,6 +8859,7 @@ dependencies = [
  "anyhow",
  "dirs 6.0.0",
  "rusqlite",
+ "semver",
  "steward-core-engine",
 ]
 

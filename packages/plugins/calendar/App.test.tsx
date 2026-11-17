@@ -26,6 +26,9 @@ test("calendar converts known solar dates to the Chinese lunar calendar", () => 
 test("calendar renders solar and lunar dates and copies a selected day", async () => {
   const app = await open("./App.tsx", {
     host: {
+      handlers: {
+        "steward.clipboard.write": {},
+      },
       params: {
         accent: "#ff6d00",
         command: "calendar",
@@ -43,7 +46,9 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
 
   await app.press("id:calendar-day-2024-02-10");
   expect(app.texts().join(" ")).toContain("农历 甲辰龙年 正月初一");
-  expect(app.clipboard()).toBe("2024-02-10");
+  expect(app.host.calls()).toEqual([
+    { data: { text: "2024-02-10" }, name: "steward.clipboard.write" },
+  ]);
 
   await app.press("id:calendar-next-month");
   expect(app.texts().join(" ")).toContain("2024年3月");

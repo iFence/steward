@@ -6,6 +6,8 @@ use std::rc::Rc;
 use steward_core_engine::Engine;
 use steward_storage::Storage;
 
+use crate::launcher_model::{FeatureId, LauncherSection};
+
 use super::{row, RowAction, SearchContribution, SearchSource};
 
 const MAX_APP_RESULTS: usize = 32;
@@ -28,6 +30,8 @@ impl SearchSource for ApplicationSource<'_> {
         for hit in hits.into_iter().take(MAX_APP_RESULTS) {
             let icon = self.icon(&hit.app.path);
             contribution.push(
+                FeatureId::Application,
+                LauncherSection::Applications,
                 row(
                     format!("app:{}", hit.app.path.display()),
                     hit.app.name,

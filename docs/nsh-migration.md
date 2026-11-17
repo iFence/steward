@@ -151,6 +151,9 @@ Launch parameters:
 Host calls:
 
 - `steward.clipboard.history` -> clipboard entry array
+- `steward.clipboard.write` -> `{}` after writing `{ "text": "..." }`
+- `steward.storage.get` -> plugin-private string or `null`
+- `steward.storage.set` -> `{}`
 - `steward.window.close` -> `{}`
 
 Host events:
@@ -299,6 +302,18 @@ Completed files:
 - `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
 - `docs/benchmarks.md`
+- `docs/windows-acceptance.md`
+- `docs/tinycast-parity-plan.md`
+- `crates/app/src/launcher_model.rs`
+- `crates/app/src/hotkey_registry.rs`
+- `crates/app/src/settings_registry.rs`
+- `crates/app/src/metrics.rs`
+- `crates/storage/src/schema.rs`
+- `crates/storage/src/capabilities.rs`
+- `scripts/verify-trust-roots.ps1`
+- `scripts/verify-release-plugins.ps1`
+- `scripts/bench-plugins.ps1`
+- `scripts/test-msi-lifecycle.ps1`
 - `README.md`
 - `README_CN.md`
 - `AGENTS.md`
@@ -330,6 +345,21 @@ Completed acceptance:
 - Manual `Build and Release` run 42953960819 completed successfully. Its MSI
   and plugin archives matched their published SHA-256 checksums, and all three
   packaged plugins verified against the production root.
+- P0 foundation follow-up (2026-11-17): launcher contributions now produce a
+  unified `LauncherItem`/`ActionId` model; hotkeys and settings have
+  duplicate/conflict-aware registries; SQLite has explicit schema v2 migration;
+  capability grants, revocation, and audit records are persisted.
+- NSH 0.5.1 compatibility was restored for all official plugin sources by
+  replacing removed `nsh/clipboard`, `nsh/storage`, and `nsh/host` imports with
+  Steward host calls for clipboard write and plugin-private storage.
+- Calendar completed 20 release samples at 349.1 ms first-frame p95 and 5.4 ms
+  focus p95. Clipboard History and UI Showcase completed two-sample smoke
+  measurements at 327.9 ms and 336.2 ms first-frame p95. Tray startup reported
+  zero hidden plugin VMs.
+- Resident release smoke recorded 472 ms to tray readiness and 46 ms summon p95
+  over 20 close/summon samples. See `docs/benchmarks.md` for limitations.
+- The Windows acceptance matrix and automated trust, package, lifecycle, and
+  performance scripts are checked in.
 
 Pending release gates:
 
@@ -338,6 +368,10 @@ Pending release gates:
 - Install the generated release MSI on a clean Windows machine.
 - Perform a signed package installation smoke test using the production trust
   root.
+- Re-run the release workflow so the NSH 0.5.1 clipboard/storage compatibility
+  fix is signed by the production key.
+- Execute the automated plus manual matrix in `docs/windows-acceptance.md` on a
+  clean Windows 11 23H2+ x64 VM.
 
 ## Verification Commands
 

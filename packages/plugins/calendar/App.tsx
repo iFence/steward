@@ -1,6 +1,5 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
-import { launchParams, onCommand, onTheme } from "@steward/extension-api";
+import { copyText, launchParams, onCommand, onTheme } from "@steward/extension-api";
 import {
   festivalFor,
   lunarCellLabel,
@@ -258,7 +257,7 @@ function App() {
     const value = isoDate({ year: year(), month: month(), day });
     selected.set(value);
     status.set("");
-    void Clipboard.writeText(value)
+    void copyText(value)
       .then(() => status.set(copy.copied))
       .catch(() => status.set(""));
   };
@@ -428,7 +427,6 @@ function App() {
                             </Text>
                           </View>
                           <Text
-                            numberOfLines={1}
                             style={{
                               color: festival ? colors.accent : colors.muted,
                               fontSize: 10,

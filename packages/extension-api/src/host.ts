@@ -1,4 +1,4 @@
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 export interface StewardLaunchParams {
   pluginId: string;
@@ -43,6 +43,18 @@ export function onTheme(listener: (theme: { accent: string; dark: boolean }) => 
 
 export async function clipboardHistory(): Promise<ClipboardEntry[]> {
   return host.call<ClipboardEntry[]>("steward.clipboard.history");
+}
+
+export async function copyText(text: string): Promise<void> {
+  await host.call("steward.clipboard.write", { text });
+}
+
+export async function storageGet(key: string): Promise<string | null> {
+  return host.call<string | null>("steward.storage.get", { key });
+}
+
+export async function storageSet(key: string, value: string): Promise<void> {
+  await host.call("steward.storage.set", { key, value });
 }
 
 export function closeWindow(): void {

@@ -91,6 +91,11 @@ to plugins.
 | `steward-storage` | SQLite settings, usage, app cache, and clipboard rows |
 | `steward-ui-components` | NSH Rust launcher rows and palette |
 
+Steward's SQLite database records an explicit `PRAGMA user_version` and applies
+migrations incrementally. Schema v2 adds publisher/version-scoped capability
+grants and structured capability audit records. A database newer than the
+application's supported schema is rejected instead of being rewritten.
+
 The application splits launcher search into built-in, application, indexed
 file, Windows Settings, and plugin sources. A narrow launcher service exposes
 only the query, command, settings, and notice ports needed by the NSH shell;
@@ -179,6 +184,11 @@ Release packages receive only:
 Network, process execution, webview, and image-picker capabilities are denied.
 The policy is applied again when a package is prepared for launch; package
 metadata cannot grant itself extra capabilities.
+
+The current host bridge exposes clipboard history and writes, plugin-private
+string storage, command/theme events, and plugin-window close. Clipboard and
+storage calls are capability-gated by the signed package plus the release
+policy; plugin-private storage is isolated under the plugin's data directory.
 
 VM limits:
 

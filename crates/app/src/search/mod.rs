@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use steward_ui_components::LauncherRow;
 use tokio::sync::oneshot;
 
+use crate::launcher_model::{ActionId, FeatureId, LauncherItem, LauncherSection, Visibility};
+
 pub(crate) use applications::ApplicationSource;
 pub(crate) use builtin::BuiltinSource;
 pub(crate) use files::{FileSearchCache, FileSearchSource};
@@ -38,6 +40,7 @@ pub enum RowAction {
 #[derive(Debug)]
 pub struct SearchReply {
     pub generation: u64,
+    pub items: Vec<LauncherItem>,
     pub rows: Vec<LauncherRow>,
     pub actions: Vec<RowAction>,
 }
@@ -50,17 +53,29 @@ pub struct SearchRequest {
 
 #[derive(Debug, Default)]
 pub(crate) struct SearchContribution {
+    pub items: Vec<LauncherItem>,
     pub rows: Vec<LauncherRow>,
     pub actions: Vec<RowAction>,
 }
 
 impl SearchContribution {
-    pub(crate) fn push(&mut self, row: LauncherRow, action: RowAction) {
+    pub(crate) fn push(
+        &mut self,
+        feature: FeatureId,
+        section: LauncherSection,
+        row: LauncherRow,
+        action: RowAction,
+    ) {
+        let item = LauncherItem::from_row(feature, section, row.clone());
+        debug_assert_eq!(item.action, ActionId::new(item.id.clone()));
+        debug_assert_eq!(item.visibility, Visibility::Visible);
+        self.items.push(item);
         self.rows.push(row);
         self.actions.push(action);
     }
 
     fn append(&mut self, mut other: SearchContribution) {
+        self.items.append(&mut other.items);
         self.rows.append(&mut other.rows);
         self.actions.append(&mut other.actions);
     }
@@ -103,6 +118,8 @@ mod tests {
         fn contribute(&mut self, query: &str) -> SearchContribution {
             let mut contribution = SearchContribution::default();
             contribution.push(
+                FeatureId::Application,
+                LauncherSection::Commands,
                 row(self.0, format!("{query}:{}", self.0), "", None),
                 RowAction::CopyText(self.0.into()),
             );
@@ -129,5 +146,8 @@ mod tests {
             [RowAction::CopyText(first), RowAction::CopyText(second)]
                 if first == "first" && second == "second"
         ));
+        assert_eq!(contribution.items.len(), contribution.rows.len());
+        assert_eq!(contribution.items.len(), contribution.actions.len());
+        assert_eq!(contribution.items[1].action.as_str(), "second");
     }
 }

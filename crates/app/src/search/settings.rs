@@ -3,6 +3,8 @@ use std::cell::RefCell;
 use steward_core_engine::nucleo::{Config, Matcher, Utf32Str, Utf32String};
 use steward_core_engine::search_haystacks;
 
+use crate::launcher_model::{FeatureId, LauncherSection};
+
 use super::{row, RowAction, SearchContribution, SearchSource};
 
 const MAX_SETTINGS_RESULTS: usize = 16;
@@ -150,6 +152,8 @@ impl SettingsSource<'_> {
         for hit in self.index.query(query) {
             let entry = hit.entry;
             contribution.push(
+                FeatureId::WindowsSettings,
+                LauncherSection::SystemSettings,
                 row(
                     format!("settings:{}", entry.uri),
                     entry.title(self.locale),

@@ -1363,6 +1363,7 @@ mod tests {
             while let Ok(request) = request_rx.recv() {
                 let _ = request.reply.send(SearchReply {
                     generation: request.generation,
+                    items: Vec::new(),
                     rows: vec![LauncherRow {
                         id: "app:notepad".into(),
                         title: "Notepad".into(),
@@ -1438,6 +1439,7 @@ mod tests {
             while let Ok(request) = request_rx.recv() {
                 let _ = request.reply.send(SearchReply {
                     generation: request.generation,
+                    items: Vec::new(),
                     rows: vec![
                         LauncherRow {
                             id: "app:notepad".into(),

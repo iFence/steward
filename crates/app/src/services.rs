@@ -561,6 +561,7 @@ impl SearchState {
         self.pending_launches.insert(
             request.plugin_id.clone(),
             PendingLaunch {
+                requested_at: std::time::Instant::now(),
                 latest: request.clone(),
                 initial: request,
                 receiver,
@@ -585,16 +586,18 @@ impl SearchState {
             };
             finished = Some((
                 plugin_id.clone(),
+                pending.requested_at,
                 pending.initial.clone(),
                 pending.latest.clone(),
                 result,
             ));
             break;
         }
-        let (plugin_id, initial, latest, result) = finished?;
+        let (plugin_id, requested_at, initial, latest, result) = finished?;
         self.pending_launches.remove(&plugin_id);
         Some(match result {
             Ok(launch) => PluginLaunchOutcome::Ready {
+                requested_at,
                 initial,
                 latest,
                 launch: Box::new(launch),
@@ -609,9 +612,10 @@ impl SearchState {
 
     pub fn handle(&mut self, request: SearchRequest) {
         self.file_search.set_query(request.query.trim());
-        let (rows, actions) = self.local_rows(&request.query);
+        let (items, rows, actions) = self.local_rows(&request.query);
         let _ = request.reply.send(SearchReply {
             generation: request.generation,
+            items,
             rows,
             actions,
         });
@@ -651,7 +655,11 @@ impl SearchState {
     fn local_rows(
         &mut self,
         query: &str,
-    ) -> (Vec<steward_ui_components::LauncherRow>, Vec<RowAction>) {
+    ) -> (
+        Vec<crate::launcher_model::LauncherItem>,
+        Vec<steward_ui_components::LauncherRow>,
+        Vec<RowAction>,
+    ) {
         let trimmed = query.trim();
         let mut builtin = BuiltinSource {
             strings: &self.strings,
@@ -684,9 +692,10 @@ impl SearchState {
         let mut remaining_sources: [&mut dyn SearchSource; 3] =
             [&mut files, &mut settings, &mut plugins];
         let mut remaining = crate::search::collect(&mut remaining_sources, trimmed);
+        contribution.items.append(&mut remaining.items);
         contribution.rows.append(&mut remaining.rows);
         contribution.actions.append(&mut remaining.actions);
-        (contribution.rows, contribution.actions)
+        (contribution.items, contribution.rows, contribution.actions)
     }
 
     fn spawn_app_scan(&mut self) {
@@ -718,6 +727,7 @@ impl SearchState {
 }
 
 struct PendingLaunch {
+    requested_at: std::time::Instant,
     initial: LaunchRequest,
     latest: LaunchRequest,
     receiver: crossbeam_channel::Receiver<
@@ -727,6 +737,7 @@ struct PendingLaunch {
 
 pub enum PluginLaunchOutcome {
     Ready {
+        requested_at: std::time::Instant,
         initial: LaunchRequest,
         latest: LaunchRequest,
         launch: Box<steward_plugin_host::PluginLaunch>,
@@ -864,6 +875,7 @@ mod tests {
         state.pending_launches.insert(
             "com.example.test".into(),
             PendingLaunch {
+                requested_at: std::time::Instant::now(),
                 initial: request("first"),
                 latest: request("first"),
                 receiver: rx,
@@ -899,11 +911,15 @@ mod tests {
 
         #[cfg(target_os = "windows")]
         let _icon_guard = crate::app_icons::ICON_TEST_LOCK.lock().unwrap();
-        let (rows, actions) = state.local_rows("lanya");
+        let (items, rows, actions) = state.local_rows("lanya");
 
         assert!(rows
             .iter()
             .any(|row| row.id == "settings:ms-settings:bluetooth"));
+        assert!(items.iter().any(|item| {
+            item.id == "settings:ms-settings:bluetooth"
+                && item.action.as_str() == "settings:ms-settings:bluetooth"
+        }));
         assert!(actions.iter().any(|action| matches!(
             action,
             RowAction::OpenSettings(uri) if uri == "ms-settings:bluetooth"

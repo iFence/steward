@@ -55,6 +55,7 @@ pub(crate) enum PluginRuntimeEvent {
     Healthy {
         plugin_id: String,
         receipt: PackageReceipt,
+        requested_at: std::time::Instant,
     },
     Failed {
         plugin_id: String,
@@ -80,6 +81,8 @@ pub(crate) struct AppState {
     pub tray: RefCell<Option<TrayHandle>>,
     pub hotkey_manager: Option<GlobalHotKeyManager>,
     pub summon_hotkey: Option<HotKey>,
+    pub hotkey_registry: crate::hotkey_registry::HotkeyRegistry,
+    pub settings_registry: crate::settings_registry::SettingsRegistry,
     pub plugin_windows: PluginWindowManager,
     pub plugin_events: crossbeam_channel::Sender<PluginRuntimeEvent>,
     pub plugin_events_rx: crossbeam_channel::Receiver<PluginRuntimeEvent>,

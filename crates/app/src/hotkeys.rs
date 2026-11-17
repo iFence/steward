@@ -8,10 +8,12 @@ use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyManager,
 };
-use tracing::warn;
 
 use crate::config::SUMMON_HOTKEY_SETTING;
+use crate::launcher_model::ActionId;
 use crate::state::AppState;
+
+pub(crate) const SUMMON_ACTION: &str = "steward.summon";
 
 pub(crate) fn default_summon_hotkey() -> HotKey {
     HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space)
@@ -26,19 +28,20 @@ pub(crate) fn persisted_summon_hotkey(storage: &steward_storage::Storage) -> Hot
 
 pub(crate) fn setup(state: &Rc<RefCell<AppState>>) -> Result<()> {
     let manager = GlobalHotKeyManager::new().context("create global hotkey manager")?;
-    let mut hotkey = persisted_summon_hotkey(&state.borrow().storage.borrow());
+    let hotkey = persisted_summon_hotkey(&state.borrow().storage.borrow());
     if let Err(error) = manager.register(hotkey) {
-        warn!(
-            hotkey = %hotkey,
-            error = %format!("{error:#}"),
-            "failed to register summon hotkey; falling back to default"
-        );
-        hotkey = default_summon_hotkey();
-        manager
-            .register(hotkey)
-            .context("register default summon hotkey")?;
+        return Err(anyhow::anyhow!(
+            "register summon hotkey {hotkey}: {error:#}"
+        ));
     }
     let mut state = state.borrow_mut();
+    if let Err(error) = state
+        .hotkey_registry
+        .register(ActionId::new(SUMMON_ACTION), &hotkey.to_string())
+    {
+        let _ = manager.unregister(hotkey);
+        return Err(anyhow::anyhow!("register summon action: {error}"));
+    }
     state.hotkey_manager = Some(manager);
     state.summon_hotkey = Some(hotkey);
     Ok(())
@@ -54,11 +57,21 @@ pub(crate) fn replace_summon_hotkey(
         .parse::<HotKey>()
         .with_context(|| format!("parse summon hotkey '{requested}'"))?;
     let mut state = state.borrow_mut();
-    let manager = state
-        .hotkey_manager
+    let state = &mut *state;
+    let AppState {
+        hotkey_manager,
+        hotkey_registry,
+        summon_hotkey,
+        ..
+    } = state;
+    let action = ActionId::new(SUMMON_ACTION);
+    hotkey_registry
+        .validate(&action, &next.to_string())
+        .map_err(|error| anyhow::anyhow!("validate summon hotkey: {error}"))?;
+    let manager = hotkey_manager
         .as_ref()
         .context("global hotkey manager is not initialized")?;
-    let current = state.summon_hotkey.context("no summon hotkey is active")?;
+    let current = summon_hotkey.context("no summon hotkey is active")?;
     if current == next {
         return Ok(next);
     }
@@ -75,6 +88,11 @@ pub(crate) fn replace_summon_hotkey(
                 .unwrap_or_else(|| "ok".into())
         ));
     }
-    state.summon_hotkey = Some(next);
+    if let Err(error) = hotkey_registry.register(action, &next.to_string()) {
+        let _ = manager.unregister(next);
+        let _ = manager.register(current);
+        return Err(anyhow::anyhow!("register summon action {next}: {error}"));
+    }
+    *summon_hotkey = Some(next);
     Ok(next)
 }

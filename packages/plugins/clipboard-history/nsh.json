@@ -4,7 +4,11 @@
   "version": "0.1.1",
   "build": 1,
   "capabilities": {
-    "clipboard": true,
-    "host": ["steward.clipboard.history"]
+    "host": [
+      "steward.clipboard.history",
+      "steward.clipboard.write",
+      "steward.storage.get",
+      "steward.storage.set"
+    ]
   }
 }

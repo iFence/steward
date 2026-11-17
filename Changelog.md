@@ -17,6 +17,10 @@ Conventions:
   the official plugins to the current interfaces.
 - **Plugin installation guide**: added step-by-step instructions for
   downloading, extracting, and installing signed plugin packages.
+- **P0 release foundation**: launcher contributions now share stable action
+  identifiers, hotkey and setting registrations report conflicts, database
+  migrations are versioned, and plugin capability grants, revocation, and
+  audit records are persisted.
 
 ### ✨ New Features
 
@@ -36,9 +40,10 @@ Conventions:
   reliably when the active window and launcher are on different displays.
 - **Plugin launch stability**: fixed a possible crash when a plugin package
   failed verification.
-- **Official plugin builds**: migrated Calendar, Clipboard History, and UI
-  Showcase to the current NSH host, clipboard, storage, input, switch, and text
-  APIs so release builds pass with the pinned NSH CLI.
+- **Official plugin runtime compatibility**: Calendar, Clipboard History, and
+  UI Showcase now use Steward host calls for clipboard writes and private
+  storage, and UI Showcase uses the current NSH input event shapes. This fixes
+  first-frame failures caused by modules removed in NSH 0.5.1.
 
 ---
 

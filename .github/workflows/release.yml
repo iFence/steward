@@ -62,6 +62,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Validate production trust roots
+        shell: pwsh
+        run: ./scripts/verify-trust-roots.ps1
+
       - name: Install WiX Toolset and cargo-wix
         shell: pwsh
         run: |
@@ -164,6 +168,10 @@ jobs:
           STEWARD_NSH_RELEASE_KEY: ${{ runner.temp }}\steward-nsh-release.secret
           STEWARD_NSH_RELEASE_CERT: ${{ runner.temp }}\steward-nsh-release.cert
         run: ./scripts/package-plugins.ps1 -ForceSign
+
+      - name: Verify signed packages with the production root
+        shell: pwsh
+        run: ./scripts/verify-release-plugins.ps1
 
       - name: Generate plugin checksums
         shell: pwsh

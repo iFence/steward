@@ -7,6 +7,8 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::launcher_model::{FeatureId, LauncherSection};
+
 use super::{row, RowAction, SearchContribution, SearchSource};
 
 const MAX_FILE_RESULTS: usize = 12;
@@ -105,6 +107,8 @@ impl SearchSource for FileSearchSource<'_> {
         let mut contribution = SearchContribution::default();
         if self.cache.failed {
             contribution.push(
+                FeatureId::FileSearch,
+                LauncherSection::Files,
                 row(
                     "file-search:unavailable",
                     self.unavailable_title,
@@ -127,6 +131,8 @@ impl SearchSource for FileSearchSource<'_> {
                 .map(|parent| parent.to_string_lossy().into_owned())
                 .unwrap_or_else(|| hit.path.to_string_lossy().into_owned());
             contribution.push(
+                FeatureId::FileSearch,
+                LauncherSection::Files,
                 row(
                     format!("file:{}", hit.path.display()),
                     hit.name.clone(),

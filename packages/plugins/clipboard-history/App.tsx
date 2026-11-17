@@ -1,7 +1,12 @@
 import { mount, signal, Text, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
-import { Storage } from "nsh/storage";
-import { clipboardHistory, launchParams, type ClipboardEntry } from "@steward/extension-api";
+import {
+  clipboardHistory,
+  copyText,
+  launchParams,
+  storageGet,
+  storageSet,
+  type ClipboardEntry,
+} from "@steward/extension-api";
 
 const PIN_KEY = "pinned";
 
@@ -16,13 +21,15 @@ function App() {
       status.set(items.length ? "" : "Clipboard history is empty.");
     })
     .catch(() => status.set("Clipboard history is unavailable in this test host."));
-  void Storage.getItem(PIN_KEY).then((value) => {
-    try {
-      pinned.set(value ? (JSON.parse(value) as string[]) : []);
-    } catch {
-      pinned.set([]);
-    }
-  });
+  void storageGet(PIN_KEY)
+    .then((value) => {
+      try {
+        pinned.set(value ? (JSON.parse(value) as string[]) : []);
+      } catch {
+        pinned.set([]);
+      }
+    })
+    .catch(() => pinned.set([]));
 
   const ordered = () =>
     [...entries()].sort((a, b) => {
@@ -36,7 +43,9 @@ function App() {
       ? pinned().filter((entry) => entry !== id)
       : [...pinned(), id];
     pinned.set(next);
-    void Storage.setItem(PIN_KEY, JSON.stringify(next));
+    void storageSet(PIN_KEY, JSON.stringify(next)).catch(() => {
+      status.set("Pinned entries could not be saved.");
+    });
   };
 
   return (
@@ -61,13 +70,11 @@ function App() {
               role="button"
               style={{ flex: 1 }}
               onPress={async () => {
-                await Clipboard.writeText(entry().text);
+                await copyText(entry().text);
                 status.set("Copied to clipboard");
               }}
             >
-              <Text numberOfLines={2} style={{ color: "#ffffff" }}>
-                {entry().text}
-              </Text>
+              <Text style={{ color: "#ffffff" }}>{entry().text}</Text>
             </View>
             <View role="button" onPress={() => togglePin(entry().id)} style={{ padding: 8 }}>
               <Text style={{ color: pinned().includes(entry().id) ? "#863bff" : "#79797c" }}>
