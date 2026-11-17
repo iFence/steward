@@ -7,41 +7,47 @@ Conventions:
 - The content below the heading is what appears in the GitHub Release body and the in-app update dialog
 - End each version section with `---` or by starting the next version heading
 
-## v0.3.1
+## v0.3.2
 
 ### 🚀 Improvements
 
+- **Streamlined and adaptive Calendar**: Calendar now shows ISO week numbers,
+  quick previous/next year controls, a cleaner month view, a minimum window
+  size, and a responsive grid without horizontal or vertical scrollbars.
+- **Live Calendar holidays**: Calendar loads mainland China holiday and
+  adjusted-workday data from Timor's free API. Each year is cached after the
+  first request, and unavailable data is silently omitted.
+
+### ✨ New Features
+
+- **Administrator actions**: applications and files can now be run as
+  Administrator from Quick Actions with `Ctrl+Shift+Enter`, with localized
+  action labels.
+
+### 🐛 Bug Fixes
+
+- **Plugin reliability**: the official Calendar, Clipboard History, and UI
+  Showcase plugins now open reliably after the runtime upgrade.
+
+---
+
+## v0.3.1
+
+### Improvements
+
 - **Clearer launcher actions**: the status bar now shows the selected result's
   primary action and icon, making it easier to recognize what Enter will do.
-- **Streamlined Calendar**: the Calendar plugin now shows ISO week numbers and
-  quick previous/next year controls, with the secondary date-detail panel
-  removed for a cleaner month view.
-- **Live Calendar holidays**: Calendar now loads mainland China holiday and
-  adjusted-workday data from Timor's free API, caches each full year after the
-  first request, and silently omits badges when no data is available.
-- **Plugin compatibility**: upgraded the NSH and GPUI foundation and adapted
-  the official plugins to the current interfaces.
-- **Plugin installation guide**: added step-by-step instructions for
-  downloading, extracting, and installing signed plugin packages.
-- **Plugin development guide**: added a Chinese end-to-end guide for local
-  preview, host-mocked tests, development signing, isolated Steward
-  integration, packaging, and troubleshooting.
-- **P0 release foundation**: launcher contributions now share stable action
-  identifiers, hotkey and setting registrations report conflicts, database
-  migrations are versioned, and plugin capability grants, revocation, and
-  audit records are persisted.
 
 ### ✨ New Features
 
 - **Quick actions menu**: press `Ctrl+K` or choose **Actions** in the launcher
   to open a searchable menu for the selected result. It supports keyboard
-  navigation, showing files in File Explorer, running applications and files
-  as Administrator with `Ctrl+Shift+Enter`, and all supported UI languages.
+  navigation and showing files in File Explorer.
 - **Automatic update checks**: Steward checks GitHub Releases on startup by
   default and can be checked manually from **Settings > About**. Matching
   Windows installers are SHA-256 verified before the updater starts.
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - **Single-instance startup**: launching Steward again now focuses the existing
   launcher instead of creating another background process, tray icon, hotkey
@@ -50,10 +56,6 @@ Conventions:
   reliably when the active window and launcher are on different displays.
 - **Plugin launch stability**: fixed a possible crash when a plugin package
   failed verification.
-- **Official plugin runtime compatibility**: Calendar, Clipboard History, and
-  UI Showcase now use Steward host calls for clipboard writes and private
-  storage, and UI Showcase uses the current NSH input event shapes. This fixes
-  first-frame failures caused by modules removed in NSH 0.5.1.
 
 ---
 

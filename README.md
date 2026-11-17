@@ -152,7 +152,7 @@ top-level plugin directory under `%APPDATA%\Steward\plugins`.
 
 ## Releases
 
-Pushing a version tag such as `v0.3.1` starts the Windows build-and-release
+Pushing a version tag such as `v0.3.2` starts the Windows build-and-release
 workflow. The tag must match `[workspace.package].version` in `Cargo.toml`, and
 `Changelog.md` must contain a matching `## vX.Y.Z` section. The workflow builds
 the MSI, signs and packages the official plugins, generates SHA-256 checksums,
@@ -162,8 +162,8 @@ Configure `STEWARD_NSH_RELEASE_KEY` and `STEWARD_NSH_RELEASE_CERT` as repository
 secrets containing the signing key and certificate file contents:
 
 ```powershell
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.3.2
+git push origin v0.3.2
 ```
 
 ## Documentation
