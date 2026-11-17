@@ -1,33 +1,14 @@
-import { mount, Scroll, signal, Text, View } from "nsh";
+import { locale as systemLocale, mount, signal, Text, View } from "nsh";
 import { copyText, launchParams, onCommand, onTheme } from "@steward/extension-api";
-import {
-  festivalFor,
-  lunarCellLabel,
-  lunarDateLabel,
-  lunarZodiacYear,
-  solarToLunar,
-  type SolarDate,
-} from "./lunar";
+import { calendarCopyFor, monthTitleFor } from "./calendar-i18n";
+import { officialDayKindFor } from "./calendar-meta";
+import { calendarAnnotation, solarToLunar, type SolarDate } from "./lunar";
 
 const MIN_YEAR = 1900;
 const MAX_YEAR = 2100;
 const GRID_CELLS = 42;
-const WEEKDAYS_ZH = ["一", "二", "三", "四", "五", "六", "日"];
-const WEEKDAYS_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const LONG_WEEKDAYS_ZH = ["日", "一", "二", "三", "四", "五", "六"];
-
-interface CalendarCopy {
-  subtitle: string;
-  today: string;
-  previous: string;
-  next: string;
-  selected: string;
-  copyHint: string;
-  copied: string;
-  unavailable: string;
-  festival: string;
-  weekdays: string[];
-}
+const CONTROL_HEIGHT = 30;
+const CONTROL_RADIUS = 8;
 
 interface Palette {
   background: string;
@@ -37,39 +18,6 @@ interface Palette {
   muted: string;
   selection: string;
   accent: string;
-}
-
-function isChinese(locale: string): boolean {
-  return locale.toLowerCase().startsWith("zh");
-}
-
-function copyFor(locale: string): CalendarCopy {
-  if (isChinese(locale)) {
-    return {
-      subtitle: "公历与农历",
-      today: "今天",
-      previous: "上个月",
-      next: "下个月",
-      selected: "选中日期",
-      copyHint: "点击日期可复制公历",
-      copied: "已复制",
-      unavailable: "农历数据不可用",
-      festival: "节日",
-      weekdays: WEEKDAYS_ZH,
-    };
-  }
-  return {
-    subtitle: "Gregorian and Chinese lunar calendar",
-    today: "Today",
-    previous: "Previous month",
-    next: "Next month",
-    selected: "Selected date",
-    copyHint: "Select a date to copy its ISO value",
-    copied: "Copied",
-    unavailable: "Lunar data unavailable",
-    festival: "Festival",
-    weekdays: WEEKDAYS_EN,
-  };
 }
 
 function paletteFor(dark: boolean, accent: string): Palette {
@@ -100,12 +48,6 @@ function pad(value: number): string {
 
 function isoDate(date: SolarDate): string {
   return `${date.year}-${pad(date.month)}-${pad(date.day)}`;
-}
-
-function parseIsoDate(value: string): SolarDate | null {
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return null;
-  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
 }
 
 function today(): SolarDate {
@@ -142,32 +84,71 @@ function firstWeekdayMonday(year: number, month: number): number {
   return (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
 }
 
-function monthCells(year: number, month: number): Array<number | null> {
-  const cells: Array<number | null> = Array(firstWeekdayMonday(year, month)).fill(null);
-  for (let day = 1; day <= daysInMonth(year, month); day += 1) cells.push(day);
-  while (cells.length < GRID_CELLS) cells.push(null);
+interface CalendarCell {
+  date: SolarDate;
+  currentMonth: boolean;
+}
+
+function monthCells(year: number, month: number): CalendarCell[] {
+  const cells: CalendarCell[] = [];
+  const leading = firstWeekdayMonday(year, month);
+  const previousYear = month === 1 ? year - 1 : year;
+  const previousMonth = month === 1 ? 12 : month - 1;
+  const previousMonthDays = daysInMonth(previousYear, previousMonth);
+
+  for (let index = leading - 1; index >= 0; index -= 1) {
+    cells.push({
+      date: {
+        year: previousYear,
+        month: previousMonth,
+        day: previousMonthDays - index,
+      },
+      currentMonth: false,
+    });
+  }
+  for (let day = 1; day <= daysInMonth(year, month); day += 1) {
+    cells.push({ date: { year, month, day }, currentMonth: true });
+  }
+
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  let nextDay = 1;
+  while (cells.length < GRID_CELLS) {
+    cells.push({
+      date: { year: nextYear, month: nextMonth, day: nextDay },
+      currentMonth: false,
+    });
+    nextDay += 1;
+  }
   return cells;
 }
 
-function monthTitle(year: number, month: number, locale: string): string {
-  if (isChinese(locale)) return `${year}年${month}月`;
-  return new Date(year, month - 1, 1).toLocaleString(locale, {
-    month: "long",
-    year: "numeric",
-  });
+function isoWeek(date: SolarDate): number {
+  const value = new Date(Date.UTC(date.year, date.month - 1, date.day));
+  const weekday = value.getUTCDay() || 7;
+  value.setUTCDate(value.getUTCDate() + 4 - weekday);
+  const yearStart = Date.UTC(value.getUTCFullYear(), 0, 1);
+  return Math.ceil(((value.getTime() - yearStart) / 86_400_000 + 1) / 7);
 }
 
-function formatSolarDate(date: SolarDate, locale: string): string {
-  if (isChinese(locale)) {
-    const weekday =
-      LONG_WEEKDAYS_ZH[new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()];
-    return `${date.year}年${date.month}月${date.day}日 星期${weekday}`;
-  }
-  return new Date(date.year, date.month - 1, date.day).toLocaleDateString(locale, {
-    day: "numeric",
-    month: "long",
-    weekday: "long",
-    year: "numeric",
+interface CalendarWeek {
+  week: number;
+  days: CalendarCell[];
+}
+
+function monthWeeks(year: number, month: number): CalendarWeek[] {
+  const cells = monthCells(year, month);
+  const leading = firstWeekdayMonday(year, month);
+  return Array.from({ length: GRID_CELLS / 7 }, (_, index) => {
+    const monday = new Date(Date.UTC(year, month - 1, 1 - leading + index * 7));
+    return {
+      week: isoWeek({
+        year: monday.getUTCFullYear(),
+        month: monday.getUTCMonth() + 1,
+        day: monday.getUTCDate(),
+      }),
+      days: cells.slice(index * 7, (index + 1) * 7),
+    };
   });
 }
 
@@ -185,7 +166,6 @@ function App() {
   const year = signal(initial.year);
   const month = signal(initial.month);
   const selected = signal(initialSelection(initial, today()));
-  const status = signal("");
   const accent = signal(params.accent);
   const dark = signal(params.dark);
 
@@ -194,7 +174,6 @@ function App() {
     year.set(next.year);
     month.set(next.month);
     selected.set(initialSelection(next, today()));
-    status.set("");
   });
 
   onTheme((theme) => {
@@ -202,7 +181,9 @@ function App() {
     dark.set(theme.dark);
   });
 
-  const copy = copyFor(params.locale);
+  // Steward supplies its configured locale. The standalone NSH development
+  // host has no launch params, so follow the operating system there.
+  const copy = calendarCopyFor(params.pluginId ? params.locale : systemLocale());
   const currentPalette = () => paletteFor(dark(), accent());
   const colors: Palette = {
     get accent() {
@@ -238,11 +219,14 @@ function App() {
     year.set(boundedYear);
     month.set(boundedMonth);
     selected.set(isoDate({ year: boundedYear, month: boundedMonth, day: 1 }));
-    status.set("");
   };
 
   const moveMonth = (delta: number) => {
     selectMonth(year(), month() + delta);
+  };
+
+  const moveYear = (delta: number) => {
+    selectMonth(year() + delta, month());
   };
 
   const goToday = () => {
@@ -250,44 +234,83 @@ function App() {
     year.set(current.year);
     month.set(current.month);
     selected.set(isoDate(current));
-    status.set("");
   };
 
-  const selectDay = (day: number) => {
-    const value = isoDate({ year: year(), month: month(), day });
+  const selectDate = (date: SolarDate, currentMonth: boolean) => {
+    if (!currentMonth) selectMonth(date.year, date.month);
+    const value = isoDate(date);
     selected.set(value);
-    status.set("");
-    void copyText(value)
-      .then(() => status.set(copy.copied))
-      .catch(() => status.set(""));
+    void copyText(value).catch(() => {});
   };
 
-  const selectedSolar = () => parseIsoDate(selected());
-  const selectedLunar = () => {
-    const solar = selectedSolar();
-    return solar ? solarToLunar(solar.year, solar.month, solar.day) : null;
-  };
-  const selectedFestival = () => {
-    const solar = selectedSolar();
-    const lunar = selectedLunar();
-    return solar && lunar ? festivalFor(lunar, solar) : null;
-  };
   const current = today();
 
   return (
-    <Scroll style={{ flex: 1, backgroundColor: colors.background }}>
-      <View style={{ padding: 24, gap: 16 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <View style={{ flex: 1 }}>
+    <View
+      style={{
+        backgroundColor: colors.background,
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        overflow: "hidden",
+      }}
+      testID="calendar-root"
+    >
+      <View style={{ flex: 1, gap: 16, minHeight: 0, minWidth: 0, padding: 24 }}>
+        <View
+          style={{
+            alignItems: "center",
+            flexDirection: "row",
+            flexShrink: 0,
+            gap: 12,
+            minWidth: 0,
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 0 }}>
             <Text
-              style={{ color: colors.foreground, fontSize: 28, fontWeight: "bold" }}
+              style={{
+                color: colors.foreground,
+                fontSize: 28,
+                fontWeight: "bold",
+                numberOfLines: 1,
+                textOverflow: "ellipsis",
+              }}
               testID="calendar-month-title"
             >
-              {monthTitle(year(), month(), params.locale)}
+              {monthTitleFor(year(), month(), copy)}
             </Text>
-            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>{copy.subtitle}</Text>
           </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <View style={{ alignItems: "center", flexDirection: "row", flexShrink: 0, gap: 8 }}>
+            <View
+              accessibilityLabel={copy.previousYear}
+              accessible
+              disabled={year() === MIN_YEAR}
+              onPress={() => moveYear(-1)}
+              role="button"
+              style={{
+                alignItems: "center",
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                borderRadius: CONTROL_RADIUS,
+                borderWidth: 1,
+                height: CONTROL_HEIGHT,
+                justifyContent: "center",
+                width: 32,
+              }}
+              testID="calendar-prev-year"
+            >
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 20,
+                  lineHeight: 20,
+                  textAlign: "center",
+                  textAlignVertical: "center",
+                }}
+              >
+                «
+              </Text>
+            </View>
             <View
               accessibilityLabel={copy.previous}
               accessible
@@ -298,15 +321,25 @@ function App() {
                 alignItems: "center",
                 backgroundColor: colors.card,
                 borderColor: colors.border,
-                borderRadius: 9,
+                borderRadius: CONTROL_RADIUS,
                 borderWidth: 1,
-                height: 36,
+                height: CONTROL_HEIGHT,
                 justifyContent: "center",
-                width: 36,
+                width: 32,
               }}
               testID="calendar-prev-month"
             >
-              <Text style={{ color: colors.foreground, fontSize: 22 }}>‹</Text>
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 20,
+                  lineHeight: 20,
+                  textAlign: "center",
+                  textAlignVertical: "center",
+                }}
+              >
+                ‹
+              </Text>
             </View>
             <View
               accessibilityLabel={copy.today}
@@ -317,15 +350,25 @@ function App() {
                 alignItems: "center",
                 backgroundColor: colors.card,
                 borderColor: colors.border,
-                borderRadius: 9,
+                borderRadius: CONTROL_RADIUS,
                 borderWidth: 1,
-                height: 36,
+                height: CONTROL_HEIGHT,
                 justifyContent: "center",
                 paddingHorizontal: 14,
               }}
               testID="calendar-today"
             >
-              <Text style={{ color: colors.foreground, fontSize: 13 }}>{copy.today}</Text>
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 13,
+                  lineHeight: 16,
+                  textAlign: "center",
+                  textAlignVertical: "center",
+                }}
+              >
+                {copy.today}
+              </Text>
             </View>
             <View
               accessibilityLabel={copy.next}
@@ -337,15 +380,55 @@ function App() {
                 alignItems: "center",
                 backgroundColor: colors.card,
                 borderColor: colors.border,
-                borderRadius: 9,
+                borderRadius: CONTROL_RADIUS,
                 borderWidth: 1,
-                height: 36,
+                height: CONTROL_HEIGHT,
                 justifyContent: "center",
-                width: 36,
+                width: 32,
               }}
               testID="calendar-next-month"
             >
-              <Text style={{ color: colors.foreground, fontSize: 22 }}>›</Text>
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 20,
+                  lineHeight: 20,
+                  textAlign: "center",
+                  textAlignVertical: "center",
+                }}
+              >
+                ›
+              </Text>
+            </View>
+            <View
+              accessibilityLabel={copy.nextYear}
+              accessible
+              disabled={year() === MAX_YEAR}
+              onPress={() => moveYear(1)}
+              role="button"
+              style={{
+                alignItems: "center",
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                borderRadius: CONTROL_RADIUS,
+                borderWidth: 1,
+                height: CONTROL_HEIGHT,
+                justifyContent: "center",
+                width: 32,
+              }}
+              testID="calendar-next-year"
+            >
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 20,
+                  lineHeight: 20,
+                  textAlign: "center",
+                  textAlignVertical: "center",
+                }}
+              >
+                »
+              </Text>
             </View>
           </View>
         </View>
@@ -356,43 +439,97 @@ function App() {
             borderColor: colors.border,
             borderRadius: 16,
             borderWidth: 1,
+            flex: 1,
+            minHeight: 0,
+            overflow: "hidden",
             padding: 8,
           }}
         >
-          <View style={{ flexDirection: "row", paddingBottom: 6, paddingTop: 2 }}>
-            <Each of={copy.weekdays} key="index">
-              {(weekday) => (
-                <View style={{ alignItems: "center", padding: 5, width: "14.2857%" }}>
-                  <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "bold" }}>
-                    {weekday()}
+          <View
+            style={{
+              flexDirection: "row",
+              flexShrink: 0,
+              paddingBottom: 6,
+              paddingTop: 2,
+            }}
+          >
+            <View
+              style={{ alignItems: "center", padding: 5, width: 40 }}
+              testID="calendar-week-header"
+            >
+              <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
+                {copy.week}
+              </Text>
+            </View>
+            <View style={{ flex: 1, flexDirection: "row" }}>
+              <Each of={copy.weekdays} key="index">
+                {(weekday) => (
+                  <View style={{ alignItems: "center", flex: 1, padding: 5 }}>
+                    <Text style={{ color: colors.muted, fontSize: 12, fontWeight: "bold" }}>
+                      {weekday()}
+                    </Text>
+                  </View>
+                )}
+              </Each>
+            </View>
+          </View>
+          <Each of={monthWeeks(year(), month())} key={(week) => isoDate(week.days[0].date)}>
+            {(week) => (
+              <View
+                style={{
+                  alignItems: "stretch",
+                  flex: 1,
+                  flexDirection: "row",
+                  minHeight: 0,
+                }}
+              >
+                <View
+                  accessibilityLabel={copy.weekLabel(week().week)}
+                  accessible
+                  style={{ alignItems: "center", justifyContent: "center", width: 40 }}
+                  testID={`calendar-week-${pad(week().week)}`}
+                >
+                  <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
+                    {pad(week().week)}
                   </Text>
                 </View>
-              )}
-            </Each>
-          </View>
-          <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-            <Each of={monthCells(year(), month())} key="index">
-              {(day) => (
-                <View style={{ padding: 2, width: "14.2857%" }}>
-                  {day() === null ? (
-                    <View style={{ height: 68 }} />
-                  ) : (
-                    (() => {
-                      const value = { year: year(), month: month(), day: day()! };
-                      const valueIso = isoDate(value);
-                      const lunar = solarToLunar(value.year, value.month, value.day);
-                      const label = lunar ? lunarCellLabel(lunar, value) : copy.unavailable;
-                      const festival = lunar ? festivalFor(lunar, value) : null;
-                      const isSelected = valueIso === selected();
-                      const isToday =
-                        value.year === current.year &&
-                        value.month === current.month &&
-                        value.day === current.day;
-                      return (
+                <Each of={week().days} key={(cell) => isoDate(cell.date)}>
+                  {(cell) => {
+                    const value = cell().date;
+                    const valueIso = isoDate(value);
+                    const lunar = solarToLunar(value.year, value.month, value.day);
+                    const annotation = lunar
+                      ? calendarAnnotation(lunar, value, copy.locale)
+                      : { label: copy.unavailable, emphasized: false };
+                    const officialDay = officialDayKindFor(value);
+                    const officialBadge =
+                      officialDay === "holiday"
+                        ? copy.holidayBadge
+                        : officialDay === "workday"
+                          ? copy.workdayBadge
+                          : null;
+                    const isSelected = valueIso === selected();
+                    const isToday =
+                      cell().currentMonth &&
+                      value.year === current.year &&
+                      value.month === current.month &&
+                      value.day === current.day;
+                    return (
+                      <View
+                        style={{
+                          flex: 1,
+                          minHeight: 0,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          padding: 2,
+                        }}
+                      >
                         <View
-                          accessibilityLabel={`${valueIso}，${label}`}
+                          accessibilityLabel={`${valueIso}${copy.dateSeparator}${annotation.label}${
+                            officialBadge ? `${copy.dateSeparator}${officialBadge}` : ""
+                          }`}
                           accessible
-                          onPress={() => selectDay(value.day)}
+                          onPress={() => selectDate(value, cell().currentMonth)}
                           role="button"
                           style={{
                             alignItems: "center",
@@ -400,12 +537,49 @@ function App() {
                             borderColor: isSelected || isToday ? colors.accent : "transparent",
                             borderRadius: 10,
                             borderWidth: isSelected ? 2 : 1,
-                            height: 68,
+                            flex: 1,
                             justifyContent: "center",
+                            minHeight: 0,
                             padding: 3,
+                            position: "relative",
+                            width: "100%",
                           }}
                           testID={`calendar-day-${valueIso}`}
                         >
+                          {officialDay ? (
+                            <View
+                              style={{
+                                alignItems: "center",
+                                backgroundColor:
+                                  cell().currentMonth && officialDay === "holiday"
+                                    ? colors.accent
+                                    : colors.muted,
+                                borderBottomRightRadius: 7,
+                                height: 14,
+                                justifyContent: "center",
+                                left: 0,
+                                minWidth: 18,
+                                paddingHorizontal: 2,
+                                position: "absolute",
+                                top: 0,
+                              }}
+                              testID={`calendar-badge-${valueIso}`}
+                            >
+                              <Text
+                                style={{
+                                  color: "#ffffff",
+                                  fontSize: 8,
+                                  fontWeight: "bold",
+                                  lineHeight: 10,
+                                  numberOfLines: 1,
+                                  textAlign: "center",
+                                  textAlignVertical: "center",
+                                }}
+                              >
+                                {officialBadge}
+                              </Text>
+                            </View>
+                          ) : null}
                           <View
                             style={{
                               alignItems: "center",
@@ -418,76 +592,44 @@ function App() {
                           >
                             <Text
                               style={{
-                                color: isToday ? "#ffffff" : colors.foreground,
+                                color: isToday
+                                  ? "#ffffff"
+                                  : cell().currentMonth
+                                    ? colors.foreground
+                                    : colors.muted,
                                 fontSize: 16,
                                 fontWeight: isToday || isSelected ? "bold" : "normal",
                               }}
                             >
-                              {day()}
+                              {value.day}
                             </Text>
                           </View>
                           <Text
                             style={{
-                              color: festival ? colors.accent : colors.muted,
+                              color:
+                                cell().currentMonth && annotation.emphasized
+                                  ? colors.accent
+                                  : colors.muted,
                               fontSize: 10,
                               marginTop: 2,
+                              numberOfLines: 1,
                               textAlign: "center",
+                              textOverflow: "clip",
                             }}
                           >
-                            {label}
+                            {annotation.label}
                           </Text>
                         </View>
-                      );
-                    })()
-                  )}
-                </View>
-              )}
-            </Each>
-          </View>
+                      </View>
+                    );
+                  }}
+                </Each>
+              </View>
+            )}
+          </Each>
         </View>
-
-        <View
-          style={{
-            alignItems: "center",
-            backgroundColor: colors.card,
-            borderColor: colors.border,
-            borderRadius: 14,
-            borderWidth: 1,
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: 16,
-            justifyContent: "space-between",
-            padding: 16,
-          }}
-        >
-          <View style={{ flex: 1, gap: 4, minWidth: 240 }}>
-            <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
-              {copy.selected}
-            </Text>
-            <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "bold" }}>
-              {selectedSolar()
-                ? formatSolarDate(selectedSolar()!, params.locale)
-                : copy.unavailable}
-            </Text>
-            <Text style={{ color: colors.foreground, fontSize: 14 }}>
-              {selectedLunar()
-                ? `农历 ${lunarZodiacYear(selectedLunar()!)} ${lunarDateLabel(selectedLunar()!)}`
-                : copy.unavailable}
-            </Text>
-            {selectedFestival() ? (
-              <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "bold" }}>
-                {copy.festival} · {selectedFestival()}
-              </Text>
-            ) : null}
-          </View>
-          <Text style={{ color: status() ? colors.accent : colors.muted, fontSize: 12 }}>
-            {status() || copy.copyHint}
-          </Text>
-        </View>
-
-        <Text style={{ color: colors.muted, fontSize: 11, textAlign: "right" }}>1900–2100</Text>
       </View>
-    </Scroll>
+    </View>
   );
 }
 

@@ -1,5 +1,26 @@
 import { expect, open, test } from "nsh/test";
+import { calendarCopyFor, monthTitleFor } from "./calendar-i18n";
+import { officialDayKindFor, solarTermFor } from "./calendar-meta";
 import { festivalFor, lunarCellLabel, solarToLunar } from "./lunar";
+
+test("calendar supplies copy for every Steward UI language", () => {
+  const today = [
+    ["en-US", "Today"],
+    ["zh-CN", "今天"],
+    ["ja-JP", "今日"],
+    ["ko-KR", "오늘"],
+    ["de-DE", "Heute"],
+    ["fr-FR", "Aujourd’hui"],
+    ["ru-RU", "Сегодня"],
+  ] as const;
+
+  for (const [locale, expected] of today) {
+    expect(calendarCopyFor(locale).today).toBe(expected);
+  }
+
+  expect(calendarCopyFor("de-DE").weekdays[0]).toBe("Mo");
+  expect(monthTitleFor(2024, 2, calendarCopyFor("fr-FR")).toLowerCase()).toContain("février");
+});
 
 test("calendar converts known solar dates to the Chinese lunar calendar", () => {
   const newYear = solarToLunar(2024, 2, 10);
@@ -21,6 +42,17 @@ test("calendar converts known solar dates to the Chinese lunar calendar", () => 
   expect(midAutumn.month).toBe(8);
   expect(midAutumn.day).toBe(15);
   expect(lunarCellLabel(midAutumn, { year: 2024, month: 9, day: 17 })).toBe("中秋节");
+  expect(lunarCellLabel(newYear, { year: 2024, month: 2, day: 10 }, "en")).toBe("New Year");
+  expect(lunarCellLabel(midAutumn, { year: 2024, month: 9, day: 17 }, "ja")).toBe("中秋節");
+});
+
+test("calendar resolves solar terms and official day status", () => {
+  expect(solarTermFor({ year: 2024, month: 4, day: 4 }, "zh")).toBe("清明");
+  expect(solarTermFor({ year: 2024, month: 8, day: 22 }, "zh")).toBe("处暑");
+  expect(solarTermFor({ year: 2024, month: 4, day: 4 }, "en")).toBe("Qingming");
+  expect(officialDayKindFor({ year: 2024, month: 2, day: 10 })).toBe("holiday");
+  expect(officialDayKindFor({ year: 2024, month: 2, day: 4 })).toBe("workday");
+  expect(officialDayKindFor({ year: 2024, month: 2, day: 5 })).toBeNull();
 });
 
 test("calendar renders solar and lunar dates and copies a selected day", async () => {
@@ -43,16 +75,112 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
   const initialText = app.texts().join(" ");
   expect(initialText).toContain("2024年2月");
   expect(initialText).toContain("春节");
+  expect(app.shows("id:calendar-badge-2024-02-04")).toBe(true);
+  expect(app.shows("id:calendar-badge-2024-02-10")).toBe(true);
+  expect(initialText).not.toContain("公历与农历");
+  expect(initialText).not.toContain("选中日期");
+  expect(initialText).not.toContain("点击日期可复制公历");
+  expect(initialText).not.toContain("1900–2100");
+  expect(app.spanStyle("id:calendar-week-05 >> text:05").color).toContain("#94949c");
+  expect(app.spanStyle("id:calendar-week-10 >> text:10").color).toContain("#94949c");
 
   await app.press("id:calendar-day-2024-02-10");
-  expect(app.texts().join(" ")).toContain("农历 甲辰龙年 正月初一");
+  expect(app.texts().join(" ")).not.toContain("农历 甲辰龙年 正月初一");
   expect(app.host.calls()).toEqual([
     { data: { text: "2024-02-10" }, name: "steward.clipboard.write" },
   ]);
 
   await app.press("id:calendar-next-month");
   expect(app.texts().join(" ")).toContain("2024年3月");
+  expect(app.shows("id:calendar-day-2024-02-10")).toBe(false);
+  expect(app.shows("id:calendar-day-2024-03-01")).toBe(true);
+
+  await app.press("id:calendar-next-year");
+  expect(app.texts().join(" ")).toContain("2025年3月");
+  expect(app.shows("id:calendar-day-2024-03-15")).toBe(false);
+  expect(app.shows("id:calendar-day-2025-03-15")).toBe(true);
+
+  await app.press("id:calendar-prev-year");
+  expect(app.texts().join(" ")).toContain("2024年3月");
+  expect(app.shows("id:calendar-day-2025-03-15")).toBe(false);
+  expect(app.shows("id:calendar-day-2024-03-15")).toBe(true);
 
   await app.host.send("steward.theme", { accent: "#26a69a", dark: false });
   expect(app.spanStyle("id:calendar-month-title >> text:2024年3月").color).toContain("#202024");
+});
+
+test("calendar renders a solar term in the month grid", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-04",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  expect(app.texts().join(" ")).toContain("2024年4月");
+  expect(app.texts().join(" ")).toContain("清明");
+  expect(app.shows("id:calendar-badge-2024-04-04")).toBe(true);
+  expect(app.shows("id:calendar-badge-2024-04-07")).toBe(true);
+});
+
+test("calendar fills leading and trailing days from adjacent months", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  expect(app.texts().join(" ")).toContain("2024年2月");
+  expect(app.spanStyle("id:calendar-day-2024-01-31 >> text:31").color).toContain("#94949c");
+  expect(app.spanStyle("id:calendar-day-2024-02-01 >> text:1").color).toContain("#f5f5f7");
+  expect(app.spanStyle("id:calendar-day-2024-03-10 >> text:10").color).toContain("#94949c");
+
+  await app.press("id:calendar-day-2024-03-01");
+  expect(app.texts().join(" ")).toContain("2024年3月");
+  expect(app.host.calls()).toEqual([
+    { data: { text: "2024-03-01" }, name: "steward.clipboard.write" },
+  ]);
+});
+
+test("calendar fits its minimum viewport without scrolling", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  await app.setViewport(720, 600);
+
+  expect(app.shows("id:calendar-root")).toBe(true);
+  expect(app.shows("id:calendar-day-2024-02-01")).toBe(true);
+  expect(app.shows("id:calendar-day-2024-03-10")).toBe(true);
 });

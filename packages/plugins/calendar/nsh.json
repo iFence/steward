@@ -1,8 +1,8 @@
 {
   "name": "Calendar",
   "id": "it.aspirin.calendar",
-  "version": "0.2.0",
-  "build": 1,
+  "version": "0.2.1",
+  "build": 2,
   "capabilities": {
     "host": ["steward.*"]
   }
