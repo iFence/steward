@@ -6,6 +6,8 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/iFence/steward?style=flat-square&color=orange" alt="License"></a>
+  <a href="https://github.com/iFence/steward/releases"><img src="https://img.shields.io/github/downloads/iFence/steward/total?style=flat-square&color=blue" alt="Downloads"></a>
+  <a href="https://github.com/iFence/steward/releases/latest"><img src="https://img.shields.io/github/v/release/iFence/steward?style=flat-square&color=green" alt="Version"></a>
   <img src="https://img.shields.io/badge/MSRV-1.97-red?style=flat-square" alt="MSRV">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square" alt="Platform">
   <a href="https://github.com/iFence/steward"><img src="https://img.shields.io/github/stars/iFence/steward?style=social" alt="Stars"></a>
@@ -132,6 +134,9 @@ App.test.tsx     NSH 无头测试
 [docs/nsh-plugin-api.md](docs/nsh-plugin-api.md)，路由清单见
 [docs/plugin-manifest-spec.md](docs/plugin-manifest-spec.md)。
 
+完整的本地预览、无头测试、GPUI 宿主构建、临时签名和隔离集成流程见
+[插件开发与本地测试](docs/plugin-development-zh-CN.md)。
+
 发布包使用 NSH release key/certificate 签名：
 
 ```powershell
@@ -163,6 +168,7 @@ git push origin v0.3.1
 - [架构说明](docs/architecture.md)
 - [NSH 迁移计划与状态](docs/nsh-migration.md)
 - [NSH 插件 API](docs/nsh-plugin-api.md)
+- [插件开发与本地测试](docs/plugin-development-zh-CN.md)
 - [插件 manifest v2](docs/plugin-manifest-spec.md)
 - [性能基准](docs/benchmarks.md)
 - [Roadmap](docs/roadmap.md)

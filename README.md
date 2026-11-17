@@ -6,6 +6,8 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/iFence/steward?style=flat-square&color=orange" alt="License"></a>
+  <a href="https://github.com/iFence/steward/releases"><img src="https://img.shields.io/github/downloads/iFence/steward/total?style=flat-square&color=blue" alt="Downloads"></a>
+  <a href="https://github.com/iFence/steward/releases/latest"><img src="https://img.shields.io/github/v/release/iFence/steward?style=flat-square&color=green" alt="Version"></a>
   <img src="https://img.shields.io/badge/MSRV-1.97-red?style=flat-square" alt="MSRV">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square" alt="Platform">
   <a href="https://github.com/iFence/steward"><img src="https://img.shields.io/github/stars/iFence/steward?style=social" alt="Stars"></a>
@@ -169,6 +171,7 @@ git push origin v0.3.1
 - [Architecture](docs/architecture.md)
 - [NSH migration plan and status](docs/nsh-migration.md)
 - [NSH plugin API](docs/nsh-plugin-api.md)
+- [Plugin development and local testing (Chinese)](docs/plugin-development-zh-CN.md)
 - [Plugin manifest v2](docs/plugin-manifest-spec.md)
 - [Performance benchmarks](docs/benchmarks.md)
 - [Roadmap](docs/roadmap.md)

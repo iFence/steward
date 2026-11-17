@@ -10,3 +10,7 @@ TypeScript and TSX packages for the Steward monorepo.
 Run `pnpm typecheck` and `pnpm build` from the repository root after installing
 the pinned NSH CLI described in the top-level README. Package output stays
 under each plugin's ignored `dist/` directory.
+
+For local preview, host-mocked tests, development signing, and isolated
+Steward integration, see
+[Plugin development and local testing](../docs/plugin-development-zh-CN.md).

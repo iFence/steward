@@ -9,14 +9,20 @@ Conventions:
 
 ## v0.3.1
 
-### Improvements
+### 🚀 Improvements
 
 - **Clearer launcher actions**: the status bar now shows the selected result's
   primary action and icon, making it easier to recognize what Enter will do.
+- **Streamlined Calendar**: the Calendar plugin now shows ISO week numbers and
+  quick previous/next year controls, with the secondary date-detail panel
+  removed for a cleaner month view.
 - **Plugin compatibility**: upgraded the NSH and GPUI foundation and adapted
   the official plugins to the current interfaces.
 - **Plugin installation guide**: added step-by-step instructions for
   downloading, extracting, and installing signed plugin packages.
+- **Plugin development guide**: added a Chinese end-to-end guide for local
+  preview, host-mocked tests, development signing, isolated Steward
+  integration, packaging, and troubleshooting.
 - **P0 release foundation**: launcher contributions now share stable action
   identifiers, hotkey and setting registrations report conflicts, database
   migrations are versioned, and plugin capability grants, revocation, and
@@ -26,12 +32,13 @@ Conventions:
 
 - **Quick actions menu**: press `Ctrl+K` or choose **Actions** in the launcher
   to open a searchable menu for the selected result. It supports keyboard
-  navigation, showing files in File Explorer, and all supported UI languages.
+  navigation, showing files in File Explorer, running applications and files
+  as Administrator with `Ctrl+Shift+Enter`, and all supported UI languages.
 - **Automatic update checks**: Steward checks GitHub Releases on startup by
   default and can be checked manually from **Settings > About**. Matching
   Windows installers are SHA-256 verified before the updater starts.
 
-### Bug Fixes
+### 🐛 Bug Fixes
 
 - **Single-instance startup**: launching Steward again now focuses the existing
   launcher instead of creating another background process, tray icon, hotkey
