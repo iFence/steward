@@ -179,19 +179,7 @@ pub fn StewardLauncher() -> impl IntoElement {
             else {
                 return false;
             };
-            let command = match item.kind {
-                ActionMenuItemKind::Primary => action.map(WindowCommand::Activate),
-                ActionMenuItemKind::ShowInFileExplorer => action
-                    .as_ref()
-                    .and_then(row_path)
-                    .cloned()
-                    .map(RowAction::RevealInExplorer)
-                    .map(WindowCommand::Activate),
-                ActionMenuItemKind::ApplicationWindow
-                | ActionMenuItemKind::RecentFiles
-                | ActionMenuItemKind::RunAsAdministrator
-                | ActionMenuItemKind::RunAsDifferentUser => None,
-            };
+            let command = action_menu_command(item.kind, action.as_ref());
             if let Some(command) = command {
                 app.send_window_command(command);
                 true
@@ -320,6 +308,19 @@ pub fn StewardLauncher() -> impl IntoElement {
     let has_rows = move || rows.with(|rows| !rows.is_empty());
     let current_action: Rc<dyn Fn() -> Option<RowAction>> =
         Rc::new(move || actions.with(|actions| actions.get(selected.get()).cloned()));
+    let run_as_administrator_handler: Rc<dyn Fn(&str)> = {
+        let app = app.clone();
+        let current_action = current_action.clone();
+        Rc::new(move |_| {
+            let action = current_action();
+            if let Some(command) =
+                action_menu_command(ActionMenuItemKind::RunAsAdministrator, action.as_ref())
+            {
+                app.send_window_command(command);
+            }
+        })
+    };
+    bind_launcher_key("ctrl+shift+enter", false, run_as_administrator_handler);
     let current_row: Rc<dyn Fn() -> LauncherRow> = {
         Rc::new(move || rows.with(|rows| rows.get(selected.get()).cloned().unwrap_or_default()))
     };
@@ -567,7 +568,9 @@ fn action_status_hint(label: impl Fn() -> String + 'static) -> impl IntoElement 
 
 fn primary_action_label(action: Option<&RowAction>, strings: &crate::i18n::UiStrings) -> String {
     match action {
-        Some(RowAction::LaunchApp(_)) => strings.launcher_open_application.clone(),
+        Some(RowAction::LaunchApp(_) | RowAction::RunAsAdministrator(_)) => {
+            strings.launcher_open_application.clone()
+        }
         Some(RowAction::OpenFile(_)) => strings.launcher_open_file.clone(),
         Some(RowAction::CopyText(_)) => strings.launcher_copy.clone(),
         Some(RowAction::OpenUrl(_)) => strings.open_url.clone(),
@@ -654,7 +657,7 @@ struct ActionPanelRowOptions {
 
 fn primary_action_icon(action: Option<&RowAction>) -> ActionPanelIcon {
     match action {
-        Some(RowAction::LaunchApp(_)) => ActionPanelIcon::Play,
+        Some(RowAction::LaunchApp(_) | RowAction::RunAsAdministrator(_)) => ActionPanelIcon::Play,
         Some(RowAction::OpenFile(_)) => ActionPanelIcon::File,
         Some(RowAction::CopyText(_)) => ActionPanelIcon::Copy,
         Some(RowAction::OpenUrl(_)) => ActionPanelIcon::Globe,
@@ -671,6 +674,7 @@ fn action_menu_items(
     action: Option<&RowAction>,
 ) -> Vec<ActionMenuItem> {
     let has_path = action.and_then(row_path).is_some();
+    let can_run_as_administrator = action.is_some_and(can_run_as_administrator);
     vec![
         ActionMenuItem {
             kind: ActionMenuItemKind::Primary,
@@ -702,7 +706,7 @@ fn action_menu_items(
             icon: ActionPanelIcon::Shield,
             keys: &["Ctrl", "Shift"],
             enter: true,
-            enabled: false,
+            enabled: can_run_as_administrator,
         },
         ActionMenuItem {
             kind: ActionMenuItemKind::RunAsDifferentUser,
@@ -721,6 +725,33 @@ fn action_menu_items(
             enabled: has_path,
         },
     ]
+}
+
+fn can_run_as_administrator(action: &RowAction) -> bool {
+    matches!(action, RowAction::LaunchApp(_) | RowAction::OpenFile(_))
+}
+
+fn action_menu_command(
+    kind: ActionMenuItemKind,
+    action: Option<&RowAction>,
+) -> Option<WindowCommand> {
+    match kind {
+        ActionMenuItemKind::Primary => action.cloned().map(WindowCommand::Activate),
+        ActionMenuItemKind::RunAsAdministrator => action
+            .filter(|action| can_run_as_administrator(action))
+            .and_then(row_path)
+            .cloned()
+            .map(RowAction::RunAsAdministrator)
+            .map(WindowCommand::Activate),
+        ActionMenuItemKind::ShowInFileExplorer => action
+            .and_then(row_path)
+            .cloned()
+            .map(RowAction::RevealInExplorer)
+            .map(WindowCommand::Activate),
+        ActionMenuItemKind::ApplicationWindow
+        | ActionMenuItemKind::RecentFiles
+        | ActionMenuItemKind::RunAsDifferentUser => None,
+    }
 }
 
 fn filtered_action_indices(items: &[ActionMenuItem], query: &str) -> Vec<usize> {
@@ -768,10 +799,9 @@ fn action_menu_item_handler(
     kind: ActionMenuItemKind,
     app: Arc<LauncherServices>,
     current_action: Rc<dyn Fn() -> Option<RowAction>>,
-    path_action: Rc<dyn Fn() -> Option<std::path::PathBuf>>,
 ) -> impl Fn() + 'static {
     move || {
-        activate_action_menu_item(kind, &app, &current_action, &path_action);
+        activate_action_menu_item(kind, &app, &current_action);
     }
 }
 
@@ -779,19 +809,9 @@ fn activate_action_menu_item(
     kind: ActionMenuItemKind,
     app: &LauncherServices,
     current_action: &Rc<dyn Fn() -> Option<RowAction>>,
-    path_action: &Rc<dyn Fn() -> Option<std::path::PathBuf>>,
 ) -> bool {
-    let action = match kind {
-        ActionMenuItemKind::Primary => current_action().map(WindowCommand::Activate),
-        ActionMenuItemKind::ShowInFileExplorer => path_action()
-            .map(RowAction::RevealInExplorer)
-            .map(WindowCommand::Activate),
-        ActionMenuItemKind::ApplicationWindow
-        | ActionMenuItemKind::RecentFiles
-        | ActionMenuItemKind::RunAsAdministrator
-        | ActionMenuItemKind::RunAsDifferentUser => None,
-    };
-    if let Some(command) = action {
+    let action = current_action();
+    if let Some(command) = action_menu_command(kind, action.as_ref()) {
         app.send_window_command(command);
         true
     } else {
@@ -815,10 +835,6 @@ fn action_menu_content(
     let strings = app.ui_strings();
     let search_placeholder = strings.launcher_action_search.clone();
     let no_results = strings.launcher_action_no_results.clone();
-    let path_action: Rc<dyn Fn() -> Option<std::path::PathBuf>> = {
-        let current_action = current_action.clone();
-        Rc::new(move || current_action().as_ref().and_then(row_path).cloned())
-    };
     let actions = view()
         .flex_1()
         .flex_col()
@@ -840,7 +856,6 @@ fn action_menu_content(
                 {
                     let app = app.clone();
                     let current_action = current_action.clone();
-                    let path_action = path_action.clone();
                     move |item: nsh_core::element::ReadSignal<ActionMenuItem>,
                           _: nsh_core::element::ReadSignal<usize>| {
                         let item = item.get_untracked();
@@ -855,12 +870,7 @@ fn action_menu_content(
                                 close_on_select: item.enabled,
                             },
                             move || action_selected.get() == Some(kind),
-                            action_menu_item_handler(
-                                kind,
-                                app.clone(),
-                                current_action.clone(),
-                                path_action.clone(),
-                            ),
+                            action_menu_item_handler(kind, app.clone(), current_action.clone()),
                         )
                     }
                 },
@@ -1164,7 +1174,9 @@ fn action_panel_icon_sized(kind: ActionPanelIcon, size: f32) -> impl IntoElement
 
 fn row_path(action: &RowAction) -> Option<&std::path::PathBuf> {
     match action {
-        RowAction::LaunchApp(path) | RowAction::OpenFile(path) => Some(path),
+        RowAction::LaunchApp(path)
+        | RowAction::RunAsAdministrator(path)
+        | RowAction::OpenFile(path) => Some(path),
         _ => None,
     }
 }
@@ -1228,9 +1240,9 @@ mod tests {
     use steward_ui_components::LauncherRow;
 
     use super::{
-        action_menu_items, filtered_action_indices, launcher_height, launcher_height_with_actions,
-        next_action_selection, next_selection, primary_action_label, row_path, submission_action,
-        ActionMenuItemKind, StewardLauncher,
+        action_menu_command, action_menu_items, filtered_action_indices, launcher_height,
+        launcher_height_with_actions, next_action_selection, next_selection, primary_action_label,
+        row_path, submission_action, ActionMenuItemKind, StewardLauncher,
     };
     use crate::{
         i18n::UiStrings,
@@ -1337,6 +1349,15 @@ mod tests {
 
         assert_eq!(
             next_action_selection(&items, &all, Some(ActionMenuItemKind::Primary), 1),
+            Some(ActionMenuItemKind::RunAsAdministrator)
+        );
+        assert_eq!(
+            next_action_selection(
+                &items,
+                &all,
+                Some(ActionMenuItemKind::RunAsAdministrator),
+                1
+            ),
             Some(ActionMenuItemKind::ShowInFileExplorer)
         );
         assert_eq!(
@@ -1350,7 +1371,44 @@ mod tests {
         );
 
         let administrator = filtered_action_indices(&items, "administrator");
-        assert_eq!(next_action_selection(&items, &administrator, None, 1), None);
+        assert_eq!(
+            next_action_selection(&items, &administrator, None, 1),
+            Some(ActionMenuItemKind::RunAsAdministrator)
+        );
+        let application_window = filtered_action_indices(&items, "application window");
+        assert_eq!(
+            next_action_selection(&items, &application_window, None, 1),
+            None
+        );
+    }
+
+    #[test]
+    fn administrator_action_is_available_for_paths_but_not_other_results() {
+        let strings = ui_strings("Search");
+        let path = PathBuf::from(r"C:\Windows\notepad.exe");
+        let app = RowAction::LaunchApp(path.clone());
+        let file = RowAction::OpenFile(path.clone());
+        let url = RowAction::OpenUrl("https://example.com".into());
+
+        let enabled = |action: &RowAction| {
+            action_menu_items(&strings, Some(action))
+                .into_iter()
+                .find(|item| item.kind == ActionMenuItemKind::RunAsAdministrator)
+                .is_some_and(|item| item.enabled)
+        };
+        assert!(enabled(&app));
+        assert!(enabled(&file));
+        assert!(!enabled(&url));
+        assert!(matches!(
+            action_menu_command(ActionMenuItemKind::RunAsAdministrator, Some(&app)),
+            Some(WindowCommand::Activate(RowAction::RunAsAdministrator(target)))
+                if target == path
+        ));
+        assert!(matches!(
+            action_menu_command(ActionMenuItemKind::ShowInFileExplorer, Some(&app)),
+            Some(WindowCommand::Activate(RowAction::RevealInExplorer(target)))
+                if target == path
+        ));
     }
 
     #[test]
@@ -1396,6 +1454,16 @@ mod tests {
         let mut app = Headless::start(config).unwrap();
 
         app.wait_for("text:Notepad").unwrap();
+        app.press_key("ctrl+shift+enter").unwrap();
+        let shortcut_commands = command_rx.try_iter().collect::<Vec<_>>();
+        assert!(
+            shortcut_commands.iter().any(|command| matches!(
+                command,
+                WindowCommand::Activate(RowAction::RunAsAdministrator(path)) if path == &app_path
+            )),
+            "{shortcut_commands:?}"
+        );
+
         app.press("text:Actions").unwrap();
         app.wait_for("text:Search for actions...").unwrap();
         app.wait_for("text:Application Window").unwrap();
@@ -1405,26 +1473,23 @@ mod tests {
         app.wait_for("text:Run as Administrator").unwrap();
         app.wait_for_gone("text:Application Window", Duration::from_millis(500))
             .unwrap();
-
-        app.type_text("id:action-search", "zzzz").unwrap();
-        app.wait_for("text:No matching actions").unwrap();
-        app.wait_for_gone("text:Run as Administrator", Duration::from_millis(500))
-            .unwrap();
-
-        app.press_key("escape").unwrap();
-        app.press("text:Actions").unwrap();
-        app.wait_for("id:action-search").unwrap();
-        app.press_key("down").unwrap();
         app.press_key("enter").unwrap();
 
         let commands = command_rx.try_iter().collect::<Vec<_>>();
         assert!(
             commands.iter().any(|command| matches!(
                 command,
-                WindowCommand::Activate(RowAction::RevealInExplorer(path)) if path == &app_path
+                WindowCommand::Activate(RowAction::RunAsAdministrator(path)) if path == &app_path
             )),
             "{commands:?}"
         );
+
+        app.wait_for_gone("id:action-search", Duration::from_millis(500))
+            .unwrap();
+        app.press("text:Actions").unwrap();
+        app.wait_for("id:action-search").unwrap();
+        app.type_text("id:action-search", "zzzz").unwrap();
+        app.wait_for("text:No matching actions").unwrap();
     }
 
     #[test]

@@ -41,6 +41,19 @@ pub(crate) fn launch(path: &std::path::Path) -> Result<()> {
     }
 }
 
+/// Launch `path` through the Windows shell with the `runas` verb. Windows
+/// shows its UAC prompt when the current process is not already elevated.
+#[cfg(target_os = "windows")]
+pub(crate) fn run_as_administrator(path: &std::path::Path) -> Result<()> {
+    shell_execute(path, "runas")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn run_as_administrator(path: &std::path::Path) -> Result<()> {
+    let _ = path;
+    anyhow::bail!("running as administrator is only supported on Windows")
+}
+
 /// Open `path` with its registered default program through the Windows shell.
 #[cfg(target_os = "windows")]
 pub(crate) fn open_file(path: &std::path::Path) -> Result<()> {

@@ -22,6 +22,7 @@ pub(crate) use settings::{SettingsIndex, SettingsSource};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowAction {
     LaunchApp(PathBuf),
+    RunAsAdministrator(PathBuf),
     OpenFile(PathBuf),
     RevealInExplorer(PathBuf),
     ShowProperties(PathBuf),

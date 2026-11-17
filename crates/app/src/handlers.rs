@@ -348,6 +348,19 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
             }
         }
+        RowAction::RunAsAdministrator(path) => {
+            let _ = state.borrow().storage.borrow().upsert_usage(&path);
+            if let Err(error) = crate::launch::run_as_administrator(&path) {
+                error!(
+                    path = %path.display(),
+                    error = %format!("{error:#}"),
+                    "launch application as administrator"
+                );
+            }
+            if let Some(handle) = state.borrow().window {
+                let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
+            }
+        }
         RowAction::OpenFile(path) => {
             let _ = state.borrow().storage.borrow().upsert_usage(&path);
             if let Err(error) = crate::launch::open_file(&path) {
