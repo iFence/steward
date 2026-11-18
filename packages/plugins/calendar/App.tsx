@@ -1,12 +1,6 @@
-import { effect, locale as systemLocale, mount, signal, Storage, Text, View } from "nsh";
-import {
-  calendarHolidays,
-  copyText,
-  launchParams,
-  onCommand,
-  onTheme,
-} from "@steward/extension-api";
-import { calendarCopyFor, monthTitleFor } from "./calendar-i18n";
+import { effect, keymap, locale as systemLocale, mount, signal, Storage, Text, View } from "nsh";
+import { calendarHolidays, launchParams, onCommand, onTheme } from "@steward/extension-api";
+import { calendarCopyFor, monthTitleFor, relativeDaysLabel } from "./calendar-i18n";
 import { holidayScheduleFromApi, officialDayKindFor } from "./calendar-meta";
 import { calendarAnnotation, solarToLunar, type SolarDate } from "./lunar";
 
@@ -54,6 +48,24 @@ function pad(value: number): string {
 
 function isoDate(date: SolarDate): string {
   return `${date.year}-${pad(date.month)}-${pad(date.day)}`;
+}
+
+function parseIsoDate(value: string): SolarDate {
+  const [year, month, day] = value.split("-").map(Number);
+  return { year, month, day };
+}
+
+function dayNumber(date: SolarDate): number {
+  return Math.floor(Date.UTC(date.year, date.month - 1, date.day) / 86_400_000);
+}
+
+function shiftDate(date: SolarDate, days: number): SolarDate {
+  const value = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
+  return {
+    year: value.getUTCFullYear(),
+    month: value.getUTCMonth() + 1,
+    day: value.getUTCDate(),
+  };
 }
 
 function today(): SolarDate {
@@ -356,12 +368,28 @@ function App() {
 
   const selectDate = (date: SolarDate, currentMonth: boolean) => {
     if (!currentMonth) selectMonth(date.year, date.month);
-    const value = isoDate(date);
-    selected.set(value);
-    void copyText(value).catch(() => {});
+    selected.set(isoDate(date));
   };
 
+  const moveSelectedDate = (days: number) => {
+    const next = shiftDate(parseIsoDate(selected()), days);
+    if (next.year < MIN_YEAR || next.year > MAX_YEAR) return;
+    selectDate(next, next.year === year() && next.month === month());
+  };
+
+  keymap.bind(
+    {
+      left: () => moveSelectedDate(-1),
+      right: () => moveSelectedDate(1),
+      up: () => moveSelectedDate(-7),
+      down: () => moveSelectedDate(7),
+    },
+    { repeat: true },
+  );
+
   const current = today();
+  const relativeDay = () =>
+    relativeDaysLabel(dayNumber(parseIsoDate(selected())) - dayNumber(current), copy);
 
   return (
     <View
@@ -384,12 +412,22 @@ function App() {
             minWidth: 0,
           }}
         >
-          <View style={{ flex: 1, minWidth: 0 }}>
+          <View
+            style={{
+              alignItems: "flex-end",
+              flex: 1,
+              flexDirection: "row",
+              gap: 8,
+              minWidth: 0,
+            }}
+          >
             <Text
               style={{
                 color: colors.foreground,
+                flexShrink: 1,
                 fontSize: 28,
                 fontWeight: "bold",
+                minWidth: 0,
                 numberOfLines: 1,
                 textOverflow: "ellipsis",
               }}
@@ -397,6 +435,20 @@ function App() {
             >
               {monthTitleFor(year(), month(), copy)}
             </Text>
+            {relativeDay() ? (
+              <Text
+                style={{
+                  color: colors.muted,
+                  flexShrink: 0,
+                  fontSize: 12,
+                  lineHeight: 16,
+                  paddingBottom: 3,
+                }}
+                testID="calendar-relative-day"
+              >
+                {relativeDay()}
+              </Text>
+            ) : null}
           </View>
           <View style={{ alignItems: "center", flexDirection: "row", flexShrink: 0, gap: 8 }}>
             <View
@@ -592,9 +644,12 @@ function App() {
             </View>
           </View>
           <Each
-            of={monthDisplayWeeks(year(), month(), holidaySchedule())}
+            of={monthDisplayWeeks(year(), month(), holidaySchedule()).map((week) => ({
+              ...week,
+              selectedDate: selected(),
+            }))}
             key={(week) =>
-              `${isoDate(week.days[0].cell.date)}:${week.days
+              `${isoDate(week.days[0].cell.date)}:${week.selectedDate}:${week.days
                 .map((day) => day.officialDay ?? "-")
                 .join("")}`
             }
@@ -636,7 +691,7 @@ function App() {
                         : officialDay === "workday"
                           ? copy.workdayBadge
                           : null;
-                    const isSelected = valueIso === selected();
+                    const isSelected = valueIso === week().selectedDate;
                     const isToday =
                       cell().cell.currentMonth &&
                       value.year === current.year &&
@@ -662,7 +717,7 @@ function App() {
                           style={{
                             alignItems: "center",
                             backgroundColor: isSelected ? colors.selection : "transparent",
-                            borderColor: isSelected || isToday ? colors.accent : "transparent",
+                            borderColor: isSelected ? colors.accent : "transparent",
                             borderRadius: 10,
                             borderWidth: isSelected ? 2 : 1,
                             flex: 1,
@@ -674,6 +729,20 @@ function App() {
                           }}
                           testID={`calendar-day-${valueIso}`}
                         >
+                          {isSelected ? (
+                            <View
+                              style={{
+                                backgroundColor: colors.accent,
+                                borderRadius: 3,
+                                height: 6,
+                                position: "absolute",
+                                right: 5,
+                                top: 5,
+                                width: 6,
+                              }}
+                              testID={`calendar-selected-${valueIso}`}
+                            />
+                          ) : null}
                           {officialDay ? (
                             <View
                               style={{
@@ -722,9 +791,11 @@ function App() {
                               style={{
                                 color: isToday
                                   ? "#ffffff"
-                                  : cell().cell.currentMonth
-                                    ? colors.foreground
-                                    : colors.muted,
+                                  : isSelected
+                                    ? colors.accent
+                                    : cell().cell.currentMonth
+                                      ? colors.foreground
+                                      : colors.muted,
                                 fontSize: 16,
                                 fontWeight: isToday || isSelected ? "bold" : "normal",
                               }}

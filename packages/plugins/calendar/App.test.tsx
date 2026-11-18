@@ -1,5 +1,5 @@
 import { expect, open, test } from "nsh/test";
-import { calendarCopyFor, monthTitleFor } from "./calendar-i18n";
+import { calendarCopyFor, monthTitleFor, relativeDaysLabel } from "./calendar-i18n";
 import { holidayScheduleFromApi, officialDayKindFor, solarTermFor } from "./calendar-meta";
 import { festivalFor, lunarCellLabel, solarToLunar } from "./lunar";
 
@@ -34,6 +34,9 @@ test("calendar supplies copy for every Steward UI language", () => {
 
   expect(calendarCopyFor("de-DE").weekdays[0]).toBe("Mo");
   expect(monthTitleFor(2024, 2, calendarCopyFor("fr-FR")).toLowerCase()).toContain("février");
+  expect(relativeDaysLabel(-3, calendarCopyFor("zh-CN"))).toBe("3天前");
+  expect(relativeDaysLabel(2, calendarCopyFor("zh-CN"))).toBe("2天后");
+  expect(relativeDaysLabel(0, calendarCopyFor("zh-CN"))).toBe("");
 });
 
 test("calendar converts known solar dates to the Chinese lunar calendar", () => {
@@ -176,7 +179,7 @@ test("calendar fetches holiday data in the standalone development host", async (
   expect(app.storage()["calendar.holiday.v1.2024"]).toContain("2024-02-10");
 });
 
-test("calendar renders solar and lunar dates and copies a selected day", async () => {
+test("calendar renders solar and lunar dates and selects a day without copying", async () => {
   const app = await open("./App.tsx", {
     host: {
       handlers: {
@@ -210,9 +213,8 @@ test("calendar renders solar and lunar dates and copies a selected day", async (
 
   await app.press("id:calendar-day-2024-02-10");
   expect(app.texts().join(" ")).not.toContain("农历 甲辰龙年 正月初一");
-  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([
-    { data: { text: "2024-02-10" }, name: "steward.clipboard.write" },
-  ]);
+  expect(app.spanStyle("id:calendar-day-2024-02-10 >> text:10").color).toContain("#ff6d00");
+  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([]);
 
   await app.press("id:calendar-next-month");
   expect(app.texts().join(" ")).toContain("2024年3月");
@@ -259,6 +261,106 @@ test("calendar renders a solar term in the month grid", async () => {
   expect(app.shows("id:calendar-badge-2024-04-07")).toBe(true);
 });
 
+test("calendar distinguishes the selected day from today", async () => {
+  const current = new Date();
+  const year = current.getFullYear();
+  const month = current.getMonth() + 1;
+  const selectedDay = current.getDate() === 1 ? 2 : 1;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const todayIso = `${year}-${pad(month)}-${pad(current.getDate())}`;
+  const selectedIso = `${year}-${pad(month)}-${pad(selectedDay)}`;
+  const relativeLabel = (day: number) => {
+    const dayValue = (value: number) => Math.floor(Date.UTC(year, month - 1, value) / 86_400_000);
+    const difference = dayValue(day) - dayValue(current.getDate());
+    return difference < 0 ? `${-difference}天前` : difference > 0 ? `${difference}天后` : "";
+  };
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.clipboard.write": {},
+        "steward.calendar.holidays": holidayHandler,
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: `calendar ${year}-${month}`,
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  expect(app.shows("id:calendar-relative-day")).toBe(false);
+  await app.press(`id:calendar-day-${selectedIso}`);
+  expect(app.spanStyle(`id:calendar-day-${todayIso} >> text:${current.getDate()}`).color).toContain(
+    "#ffffff",
+  );
+  expect(app.spanStyle(`id:calendar-day-${selectedIso} >> text:${selectedDay}`).color).toContain(
+    "#ff6d00",
+  );
+  expect(app.shows("id:calendar-relative-day")).toBe(true);
+  expect(app.texts()).toContain(relativeLabel(selectedDay));
+
+  await app.keyboard.press("right");
+  expect(
+    app.spanStyle(`id:calendar-day-${selectedIso} >> text:${selectedDay}`).color,
+  ).not.toContain("#ff6d00");
+  expect(
+    app.spanStyle(
+      `id:calendar-day-${year}-${pad(month)}-${pad(selectedDay + 1)} >> text:${selectedDay + 1}`,
+    ).color,
+  ).toContain("#ff6d00");
+  expect(app.texts()).toContain(relativeLabel(selectedDay + 1));
+
+  await app.keyboard.press("down");
+  expect(
+    app.spanStyle(
+      `id:calendar-day-${year}-${pad(month)}-${pad(selectedDay + 8)} >> text:${selectedDay + 8}`,
+    ).color,
+  ).toContain("#ff6d00");
+  expect(app.texts()).toContain(relativeLabel(selectedDay + 8));
+
+  await app.keyboard.press("left");
+  await app.keyboard.press("up");
+  expect(app.spanStyle(`id:calendar-day-${selectedIso} >> text:${selectedDay}`).color).toContain(
+    "#ff6d00",
+  );
+  expect(app.texts()).toContain(relativeLabel(selectedDay));
+  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([]);
+});
+
+test("calendar arrow keys move the selected date across months", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.calendar.holidays": holidayHandler,
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  await app.press("id:calendar-day-2024-02-29");
+  await app.keyboard.press("right");
+  expect(app.texts().join(" ")).toContain("2024年3月");
+  expect(app.spanStyle("id:calendar-day-2024-03-01 >> text:1").color).toContain("#ff6d00");
+
+  await app.keyboard.press("left");
+  expect(app.texts().join(" ")).toContain("2024年2月");
+  expect(app.spanStyle("id:calendar-day-2024-02-29 >> text:29").color).toContain("#ff6d00");
+
+  await app.keyboard.press("down");
+  expect(app.texts().join(" ")).toContain("2024年3月");
+  expect(app.spanStyle("id:calendar-day-2024-03-07 >> text:7").color).toContain("#ff6d00");
+});
+
 test("calendar fills leading and trailing days from adjacent months", async () => {
   const app = await open("./App.tsx", {
     host: {
@@ -279,14 +381,13 @@ test("calendar fills leading and trailing days from adjacent months", async () =
 
   expect(app.texts().join(" ")).toContain("2024年2月");
   expect(app.spanStyle("id:calendar-day-2024-01-31 >> text:31").color).toContain("#94949c");
-  expect(app.spanStyle("id:calendar-day-2024-02-01 >> text:1").color).toContain("#f5f5f7");
+  expect(app.spanStyle("id:calendar-day-2024-02-01 >> text:1").color).toContain("#ff6d00");
   expect(app.spanStyle("id:calendar-day-2024-03-10 >> text:10").color).toContain("#94949c");
 
   await app.press("id:calendar-day-2024-03-01");
   expect(app.texts().join(" ")).toContain("2024年3月");
-  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([
-    { data: { text: "2024-03-01" }, name: "steward.clipboard.write" },
-  ]);
+  expect(app.spanStyle("id:calendar-day-2024-03-01 >> text:1").color).toContain("#ff6d00");
+  expect(app.host.calls().filter((call) => call.name === "steward.clipboard.write")).toEqual([]);
 });
 
 test("calendar fits its minimum viewport without scrolling", async () => {

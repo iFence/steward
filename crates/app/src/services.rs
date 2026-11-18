@@ -627,22 +627,52 @@ impl SearchState {
         }
         let app_scan = self.app_scan.clone();
         if let Some(rx) = app_scan {
-            while let Ok(apps) = rx.try_recv() {
-                let _ = self.storage.borrow_mut().mark_seen(&apps);
-                self.engine.set_entries(apps);
-                self.search_revision.fetch_add(1, Ordering::Relaxed);
+            let mut finished = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(apps) => {
+                        if self.engine.entries() != apps.as_slice() {
+                            let _ = self.storage.borrow_mut().mark_seen(&apps);
+                            self.engine.set_entries(apps);
+                            self.search_revision.fetch_add(1, Ordering::Relaxed);
+                        }
+                        finished = true;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                }
             }
-            self.app_scan = None;
-            self.next_app_scan = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            if finished {
+                self.app_scan = None;
+                self.next_app_scan = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            }
         }
         let plugin_scan = self.plugin_scan.clone();
         if let Some(rx) = plugin_scan {
-            while let Ok(plugins) = rx.try_recv() {
-                self.plugin_host.set_plugins(&plugins);
-                self.search_revision.fetch_add(1, Ordering::Relaxed);
+            let mut finished = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(plugins) => {
+                        if self.plugin_host.set_plugins(&plugins) {
+                            self.search_revision.fetch_add(1, Ordering::Relaxed);
+                        }
+                        finished = true;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        finished = true;
+                        break;
+                    }
+                }
             }
-            self.plugin_scan = None;
-            self.next_plugin_scan = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            if finished {
+                self.plugin_scan = None;
+                self.next_plugin_scan =
+                    std::time::Instant::now() + std::time::Duration::from_secs(30);
+            }
         }
         if self.app_scan.is_none() && std::time::Instant::now() >= self.next_app_scan {
             self.spawn_app_scan();
@@ -690,11 +720,12 @@ impl SearchState {
             locale: &self.locale,
         };
         let mut remaining_sources: [&mut dyn SearchSource; 3] =
-            [&mut files, &mut settings, &mut plugins];
+            [&mut plugins, &mut settings, &mut files];
         let mut remaining = crate::search::collect(&mut remaining_sources, trimmed);
         contribution.items.append(&mut remaining.items);
         contribution.rows.append(&mut remaining.rows);
         contribution.actions.append(&mut remaining.actions);
+        contribution.sort_for_query(trimmed);
         (contribution.items, contribution.rows, contribution.actions)
     }
 

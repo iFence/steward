@@ -6,7 +6,7 @@ mod files;
 mod plugins;
 mod settings;
 
-use std::path::PathBuf;
+use std::{cmp::Reverse, path::PathBuf};
 
 use steward_ui_components::LauncherRow;
 use tokio::sync::oneshot;
@@ -59,6 +59,22 @@ pub(crate) struct SearchContribution {
     pub actions: Vec<RowAction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchQuality {
+    Fuzzy,
+    Contains,
+    Prefix,
+    Exact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SourcePriority {
+    File,
+    Settings,
+    ApplicationOrPlugin,
+    Command,
+}
+
 impl SearchContribution {
     pub(crate) fn push(
         &mut self,
@@ -75,10 +91,87 @@ impl SearchContribution {
         self.actions.push(action);
     }
 
+    /// Rank by match quality first, then by result kind. The stable sort keeps
+    /// each source's own relevance ordering for otherwise equal matches.
+    pub(crate) fn sort_for_query(&mut self, query: &str) {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() || self.items.len() < 2 {
+            return;
+        }
+        debug_assert_eq!(self.items.len(), self.rows.len());
+        debug_assert_eq!(self.items.len(), self.actions.len());
+
+        let mut ranked: Vec<_> = std::mem::take(&mut self.items)
+            .into_iter()
+            .zip(std::mem::take(&mut self.rows))
+            .zip(std::mem::take(&mut self.actions))
+            .map(|((item, row), action)| RankedContribution {
+                rank: result_rank(&query, &item, &action),
+                item,
+                row,
+                action,
+            })
+            .collect();
+        ranked.sort_by_key(|entry| Reverse(entry.rank));
+        for entry in ranked {
+            self.items.push(entry.item);
+            self.rows.push(entry.row);
+            self.actions.push(entry.action);
+        }
+    }
+
     fn append(&mut self, mut other: SearchContribution) {
         self.items.append(&mut other.items);
         self.rows.append(&mut other.rows);
         self.actions.append(&mut other.actions);
+    }
+}
+
+struct RankedContribution {
+    rank: (MatchQuality, SourcePriority),
+    item: LauncherItem,
+    row: LauncherRow,
+    action: RowAction,
+}
+
+fn result_rank(
+    query: &str,
+    item: &LauncherItem,
+    action: &RowAction,
+) -> (MatchQuality, SourcePriority) {
+    let priority = match item.section {
+        LauncherSection::Favorites | LauncherSection::Commands => SourcePriority::Command,
+        LauncherSection::Applications | LauncherSection::Plugins => {
+            SourcePriority::ApplicationOrPlugin
+        }
+        LauncherSection::SystemSettings => SourcePriority::Settings,
+        LauncherSection::Files => SourcePriority::File,
+    };
+    if priority == SourcePriority::Command {
+        return (MatchQuality::Exact, priority);
+    }
+
+    let mut quality = match_quality(query, &item.title);
+    if item.section == LauncherSection::Files {
+        if let RowAction::OpenFile(path) = action {
+            if let Some(stem) = path.file_stem() {
+                quality = quality.max(match_quality(query, &stem.to_string_lossy()));
+            }
+        }
+    }
+    (quality, priority)
+}
+
+fn match_quality(query: &str, value: &str) -> MatchQuality {
+    let value = value.to_lowercase();
+    if value == query {
+        MatchQuality::Exact
+    } else if value.starts_with(query) {
+        MatchQuality::Prefix
+    } else if value.contains(query) {
+        MatchQuality::Contains
+    } else {
+        MatchQuality::Fuzzy
     }
 }
 
@@ -150,5 +243,88 @@ mod tests {
         assert_eq!(contribution.items.len(), contribution.rows.len());
         assert_eq!(contribution.items.len(), contribution.actions.len());
         assert_eq!(contribution.items[1].action.as_str(), "second");
+    }
+
+    #[test]
+    fn equal_matches_prefer_applications_and_plugins_over_files() {
+        let mut contribution = SearchContribution::default();
+        contribution.push(
+            FeatureId::FileSearch,
+            LauncherSection::Files,
+            row("file:calendar.pdf", "calendar.pdf", "", None),
+            RowAction::OpenFile(PathBuf::from(r"C:\Documents\calendar.pdf")),
+        );
+        contribution.push(
+            FeatureId::Plugin,
+            LauncherSection::Plugins,
+            row("plugin:calendar", "Calendar", "", None),
+            RowAction::OpenPlugin {
+                plugin_id: "it.aspirin.calendar".into(),
+                command: "calendar".into(),
+                title: "Calendar".into(),
+                input: "calendar".into(),
+            },
+        );
+        contribution.push(
+            FeatureId::Application,
+            LauncherSection::Applications,
+            row("app:calendar", "Calendar", "", None),
+            RowAction::LaunchApp(PathBuf::from(r"C:\Program Files\Calendar\calendar.exe")),
+        );
+
+        contribution.sort_for_query("calendar");
+
+        assert_eq!(
+            contribution
+                .rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["plugin:calendar", "app:calendar", "file:calendar.pdf"]
+        );
+    }
+
+    #[test]
+    fn a_stronger_file_match_can_outrank_a_fuzzy_application_match() {
+        let mut contribution = SearchContribution::default();
+        contribution.push(
+            FeatureId::Application,
+            LauncherSection::Applications,
+            row("app:cal", "Cal", "", None),
+            RowAction::LaunchApp(PathBuf::from(r"C:\Program Files\Cal\cal.exe")),
+        );
+        contribution.push(
+            FeatureId::FileSearch,
+            LauncherSection::Files,
+            row("file:calendar", "calendar.pdf", "", None),
+            RowAction::OpenFile(PathBuf::from(r"C:\Documents\calendar.pdf")),
+        );
+
+        contribution.sort_for_query("calendar");
+
+        assert_eq!(contribution.rows[0].id, "file:calendar");
+        assert_eq!(contribution.rows[1].id, "app:cal");
+    }
+
+    #[test]
+    fn generated_commands_remain_above_file_results() {
+        let mut contribution = SearchContribution::default();
+        contribution.push(
+            FeatureId::FileSearch,
+            LauncherSection::Files,
+            row("file:answer", "2+2", "", None),
+            RowAction::OpenFile(PathBuf::from(r"C:\Documents\2+2.txt")),
+        );
+        contribution.push(
+            FeatureId::Calculator,
+            LauncherSection::Commands,
+            row("calc", "Calculator", "4", None),
+            RowAction::CopyText("4".into()),
+        );
+
+        contribution.sort_for_query("2+2");
+
+        assert_eq!(contribution.rows[0].id, "calc");
+        assert_eq!(contribution.rows[1].id, "file:answer");
     }
 }

@@ -97,13 +97,19 @@ impl PluginHost {
         self.trust.add_root_base64(key)
     }
 
-    pub fn set_plugins(&mut self, metas: &[PluginMeta]) {
-        self.catalog.set_plugins(metas);
+    pub fn set_plugins(&mut self, metas: &[PluginMeta]) -> bool {
+        if !self.catalog.set_plugins(metas) {
+            return false;
+        }
         self.routes.clear();
         for meta in metas {
-            self.routes
-                .add_plugin(&meta.manifest.id, &meta.manifest.commands);
+            self.routes.add_plugin(
+                &meta.manifest.id,
+                meta.icon.as_deref(),
+                &meta.manifest.commands,
+            );
         }
+        true
     }
 
     pub fn query(&self, query: &str) -> Vec<RouteHit> {

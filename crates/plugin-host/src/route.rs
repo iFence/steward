@@ -12,6 +12,7 @@ pub struct RouteHit {
     pub plugin_id: String,
     pub command: String,
     pub title: String,
+    pub icon: Option<String>,
     pub input: String,
     pub fuzzy: bool,
     pub score: u16,
@@ -22,6 +23,7 @@ struct Route {
     plugin_id: String,
     command: String,
     title: String,
+    icon: Option<String>,
     value: Option<String>,
     kind: TriggerType,
     regex: Option<regex::Regex>,
@@ -47,7 +49,7 @@ impl RouteIndex {
         self.regexes.clear();
     }
 
-    pub fn add_plugin(&mut self, plugin_id: &str, commands: &[PluginCommand]) {
+    pub fn add_plugin(&mut self, plugin_id: &str, icon: Option<&str>, commands: &[PluginCommand]) {
         for command in commands {
             let haystacks = haystacks(command);
             let haystack_texts = haystacks
@@ -58,6 +60,7 @@ impl RouteIndex {
                 plugin_id: plugin_id.to_owned(),
                 command: command.name.clone(),
                 title: command.title.clone(),
+                icon: icon.map(str::to_owned),
                 value: command.trigger.value.clone(),
                 kind: command.trigger.kind,
                 regex: (command.trigger.kind == TriggerType::Regex)
@@ -104,6 +107,7 @@ impl RouteIndex {
                         plugin_id: route.plugin_id.clone(),
                         command: route.command.clone(),
                         title: route.title.clone(),
+                        icon: route.icon.clone(),
                         input: query.to_owned(),
                         fuzzy: !strong_match(route, &needle_text),
                         score,
@@ -128,6 +132,7 @@ impl RouteIndex {
                         plugin_id: route.plugin_id.clone(),
                         command: route.command.clone(),
                         title: route.title.clone(),
+                        icon: route.icon.clone(),
                         input: rest.trim().to_owned(),
                         fuzzy: false,
                         score: u16::MAX,
@@ -144,6 +149,7 @@ impl RouteIndex {
                         plugin_id: route.plugin_id.clone(),
                         command: route.command.clone(),
                         title: route.title.clone(),
+                        icon: route.icon.clone(),
                         input: query.to_owned(),
                         fuzzy: false,
                         score: u16::MAX,
@@ -224,6 +230,7 @@ mod tests {
         let mut index = RouteIndex::new();
         index.add_plugin(
             "p",
+            None,
             &[
                 command("calendar", TriggerType::Command, None),
                 command("calc", TriggerType::Prefix, Some("= ")),
@@ -239,8 +246,16 @@ mod tests {
     #[test]
     fn longest_prefix_wins() {
         let mut index = RouteIndex::new();
-        index.add_plugin("short", &[command("s", TriggerType::Prefix, Some("ca "))]);
-        index.add_plugin("long", &[command("l", TriggerType::Prefix, Some("cal "))]);
+        index.add_plugin(
+            "short",
+            None,
+            &[command("s", TriggerType::Prefix, Some("ca "))],
+        );
+        index.add_plugin(
+            "long",
+            None,
+            &[command("l", TriggerType::Prefix, Some("cal "))],
+        );
         assert_eq!(index.match_query("cal x")[0].plugin_id, "long");
     }
 
@@ -250,14 +265,46 @@ mod tests {
         let commands = (0..40)
             .map(|index| command(&format!("run{index}"), TriggerType::Command, None))
             .collect::<Vec<_>>();
-        index.add_plugin("p", &commands);
+        index.add_plugin("p", None, &commands);
         assert_eq!(index.match_query("run").len(), MAX_ROUTE_HITS);
     }
 
     #[test]
     fn invalid_regexes_are_never_returned() {
         let mut index = RouteIndex::new();
-        index.add_plugin("p", &[command("broken", TriggerType::Regex, Some("["))]);
+        index.add_plugin(
+            "p",
+            None,
+            &[command("broken", TriggerType::Regex, Some("["))],
+        );
         assert!(index.match_query("anything").is_empty());
+    }
+
+    #[test]
+    fn localized_keywords_and_manifest_icons_reach_route_hits() {
+        let icon = r##"<svg viewBox="0 0 1 1"><path fill="#FF6D00" /></svg>"##;
+        let mut index = RouteIndex::new();
+        index.add_plugin(
+            "calendar",
+            Some(icon),
+            &[PluginCommand {
+                name: "calendar".into(),
+                title: "Calendar".into(),
+                keywords: vec!["日历".into(), "rili".into(), "rl".into()],
+                trigger: Trigger {
+                    kind: TriggerType::Command,
+                    value: None,
+                },
+            }],
+        );
+
+        for query in ["calendar", "日历", "rili", "rl"] {
+            let hit = index
+                .match_query(query)
+                .into_iter()
+                .find(|hit| hit.command == "calendar")
+                .unwrap_or_else(|| panic!("{query} should open Calendar"));
+            assert_eq!(hit.icon.as_deref(), Some(icon));
+        }
     }
 }

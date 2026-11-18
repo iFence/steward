@@ -1,8 +1,8 @@
 # Calendar
 
-Official NSH TSX plugin. Type `calendar` in Steward to open a full calendar
-window with Gregorian dates and their Chinese lunar equivalents. Each day
-shows its lunar day (or month start/festival).
+Official NSH TSX plugin. Type `calendar`, `日历`, `rili`, or `rl` in Steward to
+open a full calendar window with Gregorian dates and their Chinese lunar
+equivalents. Each day shows its lunar day (or month start/festival).
 
 The interface follows Steward's language setting and supports English,
 Simplified Chinese, Japanese, Korean, German, French, and Russian. In the
@@ -10,7 +10,11 @@ standalone NSH development host it follows the operating-system locale.
 
 The command accepts `calendar +3`, `calendar -1`, or an absolute
 `calendar 2026-09`. Use the header buttons to move between months or return
-to today. Clicking a day selects it and copies its ISO date.
+to today. Clicking a day keeps a selected state that is visually distinct from
+today's marker. A small label after the month title shows how many days the
+selected date is before or after today, and is hidden when the selected date
+is today. Use Left/Right to move the selection by one day and Up/Down to move
+it by one week.
 Leading and trailing cells show adjacent-month dates in a muted color; clicking
 one switches to that month.
 

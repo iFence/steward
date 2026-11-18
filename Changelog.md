@@ -3,6 +3,7 @@
 This file tracks the user-facing release notes for each version.
 
 Conventions:
+
 - Each version uses `## vX.Y.Z` as the heading, e.g. `## v0.1.0`
 - The content below the heading is what appears in the GitHub Release body and the in-app update dialog
 - End each version section with `---` or by starting the next version heading
@@ -11,12 +12,23 @@ Conventions:
 
 ### 🚀 Improvements
 
+- **Calendar discovery and icon**: Calendar can now be opened with `calendar`,
+  `日历`, `rili`, or `rl`, and launcher results show its orange calendar icon
+  again.
+- **Calendar day selection**: clicking a day now keeps a distinct selection
+  highlight without copying the date to the clipboard.
+- **Calendar relative dates and keyboard navigation**: the header shows how
+  many days the selected date is from today, while arrow keys move the
+  selection by one day or one week, crossing month boundaries as needed.
 - **Streamlined and adaptive Calendar**: Calendar now shows ISO week numbers,
   quick previous/next year controls, a cleaner month view, a minimum window
   size, and a responsive grid without horizontal or vertical scrollbars.
 - **Live Calendar holidays**: Calendar loads mainland China holiday and
   adjusted-workday data from Timor's free API. Each year is cached after the
   first request, and unavailable data is silently omitted.
+- **Launcher result priority**: equally strong application and plugin matches
+  now appear before file results, while a clearly stronger file match can still
+  rank above weaker application or plugin matches.
 
 ### ✨ New Features
 
@@ -26,6 +38,8 @@ Conventions:
 
 ### 🐛 Bug Fixes
 
+- **Stable launcher selection**: background search refreshes no longer reset
+  the selected result or dismiss an open Quick Actions menu.
 - **Plugin reliability**: the official Calendar, Clipboard History, and UI
   Showcase plugins now open reliably after the runtime upgrade.
 
@@ -148,6 +162,7 @@ Conventions:
 ## v0.2.0
 
 ### ✨ New Features
+
 - **Virtual UI Trees**: plugins can return a `{ "type": "ui" }` view — a serializable element tree built with a React-style builder (`div()`, `col()`, `text()`, `button()`, `input()`, …). The host validates the tree and renders it with the same gpui components as the launcher, so plugins get real layout and styling without running any UI code and without leaving the plugin process.
 - **Interactive elements**: buttons and links deliver `click`, inputs deliver `change` and `submit`, and a handler that returns a new tree redraws the view. Input text is owned by the host, so typing stays responsive even when a plugin is slow.
 - **UI Showcase plugin**: an official example plugin (`uishowcase`) demonstrating layout containers, styled text, a click handler and a host-owned input, with the view poppable into its own window.
@@ -176,6 +191,7 @@ Conventions:
 Steward's first release: an instant, low-memory launcher for Windows with a process-isolated plugin platform.
 
 ### ✨ New Features
+
 - **Summon instantly, stay out of the way**: Steward starts silently in the system tray; `Ctrl+Alt+Space` (or a tray click) brings up the launcher bar and `Esc` hides it again. The process keeps running, so the next summon is immediate.
 - **Application search**: apps from the Start menu are indexed with their real shell icons and matched with a fuzzy matcher, so partial or out-of-order queries still find the right entry.
 - **Full-disk file search**: an NTFS index built from the `$MFT` and the USN journal searches files across every volume, and keeps tracking installs, removals and renames while Steward runs.
@@ -187,12 +203,14 @@ Steward's first release: an instant, low-memory launcher for Windows with a proc
 - **Settings**: language (English, 中文, 日本語, 한국어, Deutsch, Français, Русский), theme accent color, launch at startup, and hotkey recording.
 
 ### 🚀 Improvements
+
 - **Frosted-glass surfaces**: the launcher draws a dark, blurred bar and adapts its scrim to whatever is behind it, so white text stays readable over bright windows; the selected-row highlight follows the same curve.
 - **Consistent theming**: the settings window, plugin panels and built-in plugin views pick up the accent color you choose at runtime instead of hard-coded colors.
 - **Native Windows polish**: per-monitor DPI awareness, dark native tray menu and title bar, a borderless draggable launcher bar, and no console window in debug or release builds.
 - **Fast by design**: GPUI, the app index and the plugin metadata cache load at startup so summoning the bar never waits on a scan; heavier capabilities stay behind the plugin process boundary.
 
 ### 🐛 Bug Fixes
+
 - **Stable memory while the file index runs**: the full-disk index no longer copies itself on every background refresh — catch-up updates it in place, the index-to-file-id map is only built while a change batch needs it, and snapshots stream straight into the database. A machine with a million files no longer sees large periodic memory spikes after startup.
 
 ---

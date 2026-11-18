@@ -26,6 +26,14 @@ const STATUS_HINT_HEIGHT: f32 = 26.0;
 /// relying on one focus command landing on the right frame.
 const FOCUS_RETRIES: u8 = 5;
 
+#[derive(Clone, Copy)]
+enum SelectionMode {
+    Reset,
+    Preserve,
+}
+
+type LauncherFilter = Rc<dyn Fn(&str, SelectionMode)>;
+
 #[component]
 pub fn StewardLauncher() -> impl IntoElement {
     let app: Arc<LauncherServices> = services().expect("launcher services in EngineContext");
@@ -42,9 +50,10 @@ pub fn StewardLauncher() -> impl IntoElement {
     let action_input_ref = element_ref();
     let list_ref = element_ref();
 
-    let filter: Rc<dyn Fn(&str)> = {
+    let filter: LauncherFilter = {
         let app = app.clone();
-        Rc::new(move |text: &str| {
+        Rc::new(move |text: &str, selection_mode: SelectionMode| {
+            let preserve_selection = matches!(selection_mode, SelectionMode::Preserve);
             query.set(text.to_owned());
             let next = generation.with_untracked(|generation| *generation + 1);
             generation.set(next);
@@ -72,15 +81,57 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 );
                                 actions_value.insert(0, RowAction::DismissNotice);
                             }
+                            let previous_selected = selected.get_untracked();
+                            let previous_first_visible = first_visible.get_untracked();
+                            let selected_id = if preserve_selection {
+                                rows.with_untracked(|rows| {
+                                    rows.get(previous_selected).map(|row| row.id.clone())
+                                })
+                            } else {
+                                None
+                            };
+                            let preserved_index = selected_id
+                                .as_ref()
+                                .and_then(|id| rows_value.iter().position(|row| &row.id == id));
                             let height = launcher_height(rows_value.len().min(MAX_VISIBLE_ROWS));
-                            actions_open.set(false);
-                            action_search.set(String::new());
-                            action_selected.set(None);
+                            if !preserve_selection || preserved_index.is_none() {
+                                actions_open.set(false);
+                                action_search.set(String::new());
+                                action_selected.set(None);
+                            }
                             rows.set(rows_value);
                             actions.set(actions_value);
-                            selected.set(0);
-                            first_visible.set(0);
-                            list_ref.scroll_to_index(0, percentage(0.0), px(0.0), false);
+                            let selected_index = if preserve_selection {
+                                preserved_index.unwrap_or_else(|| {
+                                    rows.with_untracked(|rows| {
+                                        previous_selected.min(rows.len().saturating_sub(1))
+                                    })
+                                })
+                            } else {
+                                0
+                            };
+                            selected.set(selected_index);
+                            if preserve_selection {
+                                let first = previous_first_visible;
+                                if selected_index < first {
+                                    list_ref.scroll_to_index(
+                                        selected_index as u32,
+                                        percentage(0.0),
+                                        px(0.0),
+                                        false,
+                                    );
+                                } else if selected_index >= first + MAX_VISIBLE_ROWS {
+                                    list_ref.scroll_to_index(
+                                        selected_index as u32,
+                                        percentage(1.0),
+                                        px(0.0),
+                                        false,
+                                    );
+                                }
+                            } else {
+                                first_visible.set(0);
+                                list_ref.scroll_to_index(0, percentage(0.0), px(0.0), false);
+                            }
                             app.send_window_command(WindowCommand::Resize { height });
                         }
                     }
@@ -88,7 +139,7 @@ pub fn StewardLauncher() -> impl IntoElement {
             });
         })
     };
-    filter("");
+    filter("", SelectionMode::Reset);
 
     let observed_revision = signal(app.search_revision());
     let observed_locale = signal(app.locale_revision());
@@ -111,7 +162,7 @@ pub fn StewardLauncher() -> impl IntoElement {
                 observed_locale.set(locale_revision);
             }
             if search_changed || locale_changed {
-                filter(&query.get_untracked());
+                filter(&query.get_untracked(), SelectionMode::Preserve);
             }
         }
     });
@@ -126,7 +177,7 @@ pub fn StewardLauncher() -> impl IntoElement {
             let focus_changed = focus_revision != observed_launcher_focus.get_untracked();
             if reset_changed {
                 observed_launcher_reset.set(reset_revision);
-                filter("");
+                filter("", SelectionMode::Reset);
             }
             if focus_changed {
                 observed_launcher_focus.set(focus_revision);
@@ -366,7 +417,7 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 })
                                 .on_change({
                                     let filter = filter.clone();
-                                    move |text: &str| filter(text)
+                                    move |text: &str| filter(text, SelectionMode::Reset)
                                 })
                                 .on_submit({
                                     let submit = submit.clone();
@@ -1230,7 +1281,10 @@ fn add_input_focus(input: &nsh_core::element::ElementRef) {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::{atomic::AtomicU64, Arc};
+    use std::sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    };
     use std::time::Duration;
 
     use nsh_core::element::EngineContext;
@@ -1562,6 +1616,142 @@ mod tests {
                 >= 2,
             "the popup header should repeat the selected result name: {:?}",
             app.screen().texts()
+        );
+
+        app.press_key("enter").unwrap();
+        assert!(command_rx.try_iter().any(|command| matches!(
+            command,
+            WindowCommand::Activate(RowAction::LaunchApp(path)) if path == zed_path
+        )));
+    }
+
+    #[test]
+    fn background_refresh_preserves_selection_and_action_menu() {
+        let placeholder = "Search apps, files, settings, or type a command...";
+        let notepad_path = PathBuf::from(r"C:\Windows\notepad.exe");
+        let zed_path = PathBuf::from(r"C:\Program Files\Zed\zed.exe");
+        let aardvark_path = PathBuf::from(r"C:\Program Files\Aardvark\aardvark.exe");
+        let reply_notepad = notepad_path.clone();
+        let reply_zed = zed_path.clone();
+        let reply_aardvark = aardvark_path.clone();
+        let (request_tx, request_rx) = crossbeam_channel::unbounded::<SearchRequest>();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let reply_count = request_count.clone();
+        std::thread::spawn(move || {
+            while let Ok(request) = request_rx.recv() {
+                let response_number = reply_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let (rows, actions) = if response_number == 1 {
+                    (
+                        vec![
+                            LauncherRow {
+                                id: "app:notepad".into(),
+                                title: "Notepad".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                            LauncherRow {
+                                id: "app:zed".into(),
+                                title: "Zed".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                        ],
+                        vec![
+                            RowAction::LaunchApp(reply_notepad.clone()),
+                            RowAction::LaunchApp(reply_zed.clone()),
+                        ],
+                    )
+                } else {
+                    (
+                        vec![
+                            LauncherRow {
+                                id: "app:aardvark".into(),
+                                title: "Aardvark".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                            LauncherRow {
+                                id: "app:notepad".into(),
+                                title: "Notepad".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                            LauncherRow {
+                                id: "app:zed".into(),
+                                title: "Zed".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                        ],
+                        vec![
+                            RowAction::LaunchApp(reply_aardvark.clone()),
+                            RowAction::LaunchApp(reply_notepad.clone()),
+                            RowAction::LaunchApp(reply_zed.clone()),
+                        ],
+                    )
+                };
+                let _ = request.reply.send(SearchReply {
+                    generation: request.generation,
+                    items: Vec::new(),
+                    rows,
+                    actions,
+                });
+            }
+        });
+        let (command_tx, command_rx) = crossbeam_channel::unbounded();
+        let search_revision = Arc::new(AtomicU64::new(0));
+        let services = Arc::new(AppServices::new(
+            request_tx,
+            command_tx,
+            UiSettings::new(
+                "en".into(),
+                ui_strings(placeholder),
+                "#863bff".into(),
+                false,
+                "control+alt+Space".into(),
+                false,
+            ),
+            search_revision.clone(),
+        ));
+        let config = EngineConfig {
+            context: EngineContext::default().with(std::sync::Arc::new(services.launcher())),
+            ..EngineConfig::new(Root::of::<StewardLauncher>())
+        };
+        let mut app = Headless::start(config).unwrap();
+
+        app.wait_for("text:Zed").unwrap();
+        app.press_key("down").unwrap();
+        app.press_key("ctrl+k").unwrap();
+        app.wait_for("id:action-search").unwrap();
+        let initial_requests = request_count.load(Ordering::Relaxed);
+
+        search_revision.fetch_add(1, Ordering::Relaxed);
+        for _ in 0..40 {
+            if request_count.load(Ordering::Relaxed) > initial_requests {
+                break;
+            }
+            app.wait(Duration::from_millis(25)).unwrap();
+        }
+        assert!(
+            request_count.load(Ordering::Relaxed) > initial_requests,
+            "the revision change should trigger a background search"
+        );
+        app.wait(Duration::from_millis(50)).unwrap();
+
+        app.wait_for("id:action-search").unwrap();
+        assert!(
+            app.screen()
+                .texts()
+                .iter()
+                .filter(|text| **text == "Zed")
+                .count()
+                >= 2,
+            "the selected row should remain Zed after the refreshed list inserts Aardvark"
         );
 
         app.press_key("enter").unwrap();

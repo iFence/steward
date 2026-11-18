@@ -15,6 +15,34 @@ export interface CalendarCopy {
   weekdays: string[];
   months: string[];
   weekLabel: (week: number) => string;
+  daysBefore: (days: number) => string;
+  daysAfter: (days: number) => string;
+}
+
+function englishDayCount(days: number): string {
+  return `${days} ${days === 1 ? "day" : "days"}`;
+}
+
+function germanDayCount(days: number): string {
+  return `${days} ${days === 1 ? "Tag" : "Tagen"}`;
+}
+
+function frenchDayCount(days: number): string {
+  return `${days} ${days === 1 ? "jour" : "jours"}`;
+}
+
+function russianDayCount(days: number): string {
+  const lastTwo = days % 100;
+  const last = days % 10;
+  const word =
+    lastTwo >= 11 && lastTwo <= 14
+      ? "дней"
+      : last === 1
+        ? "день"
+        : last >= 2 && last <= 4
+          ? "дня"
+          : "дней";
+  return `${days} ${word}`;
 }
 
 export function normalizeCalendarLocale(locale: string): CalendarLocale {
@@ -68,6 +96,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "12月",
         ],
         weekLabel: (week) => `第${week}周`,
+        daysBefore: (days) => `${days}天前`,
+        daysAfter: (days) => `${days}天后`,
       };
     case "ja":
       return {
@@ -98,6 +128,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "12月",
         ],
         weekLabel: (week) => `第${week}週`,
+        daysBefore: (days) => `${days}日前`,
+        daysAfter: (days) => `${days}日後`,
       };
     case "ko":
       return {
@@ -128,6 +160,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "12월",
         ],
         weekLabel: (week) => `${week}주`,
+        daysBefore: (days) => `${days}일 전`,
+        daysAfter: (days) => `${days}일 후`,
       };
     case "de":
       return {
@@ -158,6 +192,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "Dezember",
         ],
         weekLabel: (week) => `KW ${week}`,
+        daysBefore: (days) => `vor ${germanDayCount(days)}`,
+        daysAfter: (days) => `in ${germanDayCount(days)}`,
       };
     case "fr":
       return {
@@ -188,6 +224,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "décembre",
         ],
         weekLabel: (week) => `Sem. ${week}`,
+        daysBefore: (days) => `il y a ${frenchDayCount(days)}`,
+        daysAfter: (days) => `dans ${frenchDayCount(days)}`,
       };
     case "ru":
       return {
@@ -218,6 +256,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "декабрь",
         ],
         weekLabel: (week) => `Нед. ${week}`,
+        daysBefore: (days) => `${russianDayCount(days)} назад`,
+        daysAfter: (days) => `через ${russianDayCount(days)}`,
       };
     default:
       return {
@@ -248,6 +288,8 @@ export function calendarCopyFor(locale: string): CalendarCopy {
           "December",
         ],
         weekLabel: (week) => `Week ${week}`,
+        daysBefore: (days) => `${englishDayCount(days)} ago`,
+        daysAfter: (days) => `in ${englishDayCount(days)}`,
       };
   }
 }
@@ -256,4 +298,9 @@ export function monthTitleFor(year: number, month: number, copy: CalendarCopy): 
   if (copy.locale === "zh" || copy.locale === "ja") return `${year}年${month}月`;
   if (copy.locale === "ko") return `${year}년 ${month}월`;
   return `${copy.months[month - 1]} ${year}`;
+}
+
+export function relativeDaysLabel(days: number, copy: CalendarCopy): string {
+  if (days === 0) return "";
+  return days < 0 ? copy.daysBefore(-days) : copy.daysAfter(days);
 }

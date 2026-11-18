@@ -8,12 +8,17 @@ pub(crate) struct PluginCatalog {
 }
 
 impl PluginCatalog {
-    pub(crate) fn set_plugins(&mut self, metas: &[PluginMeta]) {
-        self.plugins = metas
+    pub(crate) fn set_plugins(&mut self, metas: &[PluginMeta]) -> bool {
+        let plugins = metas
             .iter()
             .cloned()
             .map(|meta| (meta.manifest.id.clone(), meta))
-            .collect();
+            .collect::<HashMap<_, _>>();
+        if self.plugins == plugins {
+            return false;
+        }
+        self.plugins = plugins;
+        true
     }
 
     pub(crate) fn get(&self, plugin_id: &str) -> Option<&PluginMeta> {
