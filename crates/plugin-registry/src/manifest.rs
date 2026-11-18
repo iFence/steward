@@ -34,16 +34,19 @@ impl PluginManifest {
                 self.schema_version
             )));
         }
-        if self.id.trim().is_empty() || self.id.split('.').count() < 2 {
+        if !valid_plugin_id(&self.id) {
             return Err(ManifestError(
-                "id must be a non-empty reverse-domain identifier".into(),
+                "id must be a reverse-domain identifier with alphanumeric, '-' or '_' labels"
+                    .into(),
             ));
         }
         if self.name.trim().is_empty() {
             return Err(ManifestError("name must not be empty".into()));
         }
-        if self.version.trim().is_empty() {
-            return Err(ManifestError("version must not be empty".into()));
+        if semver::Version::parse(&self.version).is_err() {
+            return Err(ManifestError(
+                "version must be a valid semantic version".into(),
+            ));
         }
         if self.package != PACKAGE_FILE {
             return Err(ManifestError(format!(
@@ -73,6 +76,30 @@ impl PluginManifest {
         }
         Ok(())
     }
+}
+
+fn valid_plugin_id(id: &str) -> bool {
+    let mut labels = 0;
+    for label in id.split('.') {
+        labels += 1;
+        if label.is_empty()
+            || label.len() > 63
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || !label
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            || !label
+                .bytes()
+                .last()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        {
+            return false;
+        }
+    }
+    labels >= 2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,6 +262,21 @@ mod tests {
         assert!(bad.validate().is_err());
         bad = manifest();
         bad.package = "../plugin.nshpkg".into();
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn ids_and_versions_are_strict() {
+        let mut bad = manifest();
+        bad.id = "..".into();
+        assert!(bad.validate().is_err());
+        bad.id = "com.example.".into();
+        assert!(bad.validate().is_err());
+        bad.id = "com.example bad".into();
+        assert!(bad.validate().is_err());
+
+        bad = manifest();
+        bad.version = "not-semver".into();
         assert!(bad.validate().is_err());
     }
 

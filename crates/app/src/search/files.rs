@@ -503,14 +503,17 @@ mod tests {
         };
 
         let contribution = source.contribute("report");
-        assert_eq!(contribution.rows[0].title, "report.pdf");
-        assert_eq!(contribution.rows[0].subtitle, r"C:\Users\test\Documents");
+        assert_eq!(contribution.items[0].title, "report.pdf");
         assert_eq!(
-            contribution.rows[0].subtitle_placement,
+            contribution.items[0].subtitle.as_deref(),
+            Some(r"C:\Users\test\Documents")
+        );
+        assert_eq!(
+            contribution.items[0].subtitle_placement,
             steward_ui_components::SubtitlePlacement::AfterTitle
         );
         assert!(matches!(
-            &contribution.actions[0],
+            &contribution.items[0].action,
             RowAction::OpenFile(path)
                 if path == Path::new(r"C:\Users\test\Documents\report.pdf")
         ));
@@ -533,9 +536,9 @@ mod tests {
         };
 
         let contribution = source.contribute("report");
-        assert_eq!(contribution.rows[0].title, "Unavailable");
+        assert_eq!(contribution.items[0].title, "Unavailable");
         assert!(matches!(
-            &contribution.actions[0],
+            &contribution.items[0].action,
             RowAction::OpenSettings(uri) if uri == "ms-settings:search"
         ));
     }

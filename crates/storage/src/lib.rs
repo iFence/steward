@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
-use steward_core_engine::AppEntry;
 
 mod apps;
 mod capabilities;
@@ -32,6 +31,13 @@ pub struct ClipboardHistoryRow {
     pub id: i64,
     pub text: String,
     pub copied_at: i64,
+}
+
+/// An application row stored in the launcher index cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedApp {
+    pub name: String,
+    pub path: PathBuf,
 }
 
 /// Thin wrapper over a SQLite connection with a stable application schema.
@@ -185,7 +191,7 @@ impl Storage {
 
     /// All cached applications from the last successful scan, for acceleration
     /// of cold start.
-    pub fn cached_apps(&self) -> Result<Vec<AppEntry>> {
+    pub fn cached_apps(&self) -> Result<Vec<CachedApp>> {
         apps::cached(&self.conn)
     }
 
@@ -194,7 +200,7 @@ impl Storage {
     /// time. Unlike a clear-and-reinsert this avoids rewriting unchanged rows;
     /// callers only invoke it when the scanned set actually differs from the
     /// current index, so an idle reconcile does not touch the database.
-    pub fn mark_seen(&mut self, apps: &[AppEntry]) -> Result<()> {
+    pub fn mark_seen(&mut self, apps: &[CachedApp]) -> Result<()> {
         apps::mark_seen(&mut self.conn, apps)
     }
 }
@@ -214,8 +220,8 @@ fn unix_seconds() -> i64 {
 mod tests {
     use super::*;
 
-    fn entry(name: &str, path: &str) -> AppEntry {
-        AppEntry {
+    fn entry(name: &str, path: &str) -> CachedApp {
+        CachedApp {
             name: name.into(),
             path: PathBuf::from(path),
         }

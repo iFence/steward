@@ -6,12 +6,12 @@ mod files;
 mod plugins;
 mod settings;
 
-use std::{cmp::Reverse, path::PathBuf};
+use std::cmp::Reverse;
 
 use steward_ui_components::LauncherRow;
 use tokio::sync::oneshot;
 
-use crate::launcher_model::{ActionId, FeatureId, LauncherItem, LauncherSection, Visibility};
+use crate::launcher_model::{ActionId, FeatureId, LauncherItem, LauncherSection, RowAction};
 
 pub(crate) use applications::ApplicationSource;
 pub(crate) use builtin::BuiltinSource;
@@ -19,31 +19,10 @@ pub(crate) use files::{FileSearchCache, FileSearchSource};
 pub(crate) use plugins::PluginSource;
 pub(crate) use settings::{SettingsIndex, SettingsSource};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RowAction {
-    LaunchApp(PathBuf),
-    RunAsAdministrator(PathBuf),
-    OpenFile(PathBuf),
-    RevealInExplorer(PathBuf),
-    ShowProperties(PathBuf),
-    CopyText(String),
-    OpenUrl(String),
-    OpenSettings(String),
-    DismissNotice,
-    OpenPlugin {
-        plugin_id: String,
-        command: String,
-        title: String,
-        input: String,
-    },
-}
-
 #[derive(Debug)]
 pub struct SearchReply {
     pub generation: u64,
     pub items: Vec<LauncherItem>,
-    pub rows: Vec<LauncherRow>,
-    pub actions: Vec<RowAction>,
 }
 
 pub struct SearchRequest {
@@ -55,8 +34,6 @@ pub struct SearchRequest {
 #[derive(Debug, Default)]
 pub(crate) struct SearchContribution {
     pub items: Vec<LauncherItem>,
-    pub rows: Vec<LauncherRow>,
-    pub actions: Vec<RowAction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -83,12 +60,9 @@ impl SearchContribution {
         row: LauncherRow,
         action: RowAction,
     ) {
-        let item = LauncherItem::from_row(feature, section, row.clone());
-        debug_assert_eq!(item.action, ActionId::new(item.id.clone()));
-        debug_assert_eq!(item.visibility, Visibility::Visible);
+        let item = LauncherItem::from_row(feature, section, row, action);
+        debug_assert_eq!(item.action_id, ActionId::new(item.id.clone()));
         self.items.push(item);
-        self.rows.push(row);
-        self.actions.push(action);
     }
 
     /// Rank by match quality first, then by result kind. The stable sort keeps
@@ -98,47 +72,30 @@ impl SearchContribution {
         if query.is_empty() || self.items.len() < 2 {
             return;
         }
-        debug_assert_eq!(self.items.len(), self.rows.len());
-        debug_assert_eq!(self.items.len(), self.actions.len());
-
         let mut ranked: Vec<_> = std::mem::take(&mut self.items)
             .into_iter()
-            .zip(std::mem::take(&mut self.rows))
-            .zip(std::mem::take(&mut self.actions))
-            .map(|((item, row), action)| RankedContribution {
-                rank: result_rank(&query, &item, &action),
+            .map(|item| RankedContribution {
+                rank: result_rank(&query, &item),
                 item,
-                row,
-                action,
             })
             .collect();
         ranked.sort_by_key(|entry| Reverse(entry.rank));
         for entry in ranked {
             self.items.push(entry.item);
-            self.rows.push(entry.row);
-            self.actions.push(entry.action);
         }
     }
 
     fn append(&mut self, mut other: SearchContribution) {
         self.items.append(&mut other.items);
-        self.rows.append(&mut other.rows);
-        self.actions.append(&mut other.actions);
     }
 }
 
 struct RankedContribution {
     rank: (MatchQuality, SourcePriority),
     item: LauncherItem,
-    row: LauncherRow,
-    action: RowAction,
 }
 
-fn result_rank(
-    query: &str,
-    item: &LauncherItem,
-    action: &RowAction,
-) -> (MatchQuality, SourcePriority) {
+fn result_rank(query: &str, item: &LauncherItem) -> (MatchQuality, SourcePriority) {
     let priority = match item.section {
         LauncherSection::Favorites | LauncherSection::Commands => SourcePriority::Command,
         LauncherSection::Applications | LauncherSection::Plugins => {
@@ -153,7 +110,7 @@ fn result_rank(
 
     let mut quality = match_quality(query, &item.title);
     if item.section == LauncherSection::Files {
-        if let RowAction::OpenFile(path) = action {
+        if let RowAction::OpenFile(path) = &item.action {
             if let Some(stem) = path.file_stem() {
                 quality = quality.max(match_quality(query, &stem.to_string_lossy()));
             }
@@ -204,6 +161,8 @@ pub(crate) fn row(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     struct FixedSource(&'static str);
@@ -229,20 +188,23 @@ mod tests {
         let contribution = collect(&mut sources, "query");
         assert_eq!(
             contribution
-                .rows
+                .items
                 .iter()
-                .map(|row| row.id.as_str())
+                .map(|item| item.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["first", "second"]
         );
         assert!(matches!(
-            contribution.actions.as_slice(),
+            contribution
+                .items
+                .iter()
+                .map(|item| &item.action)
+                .collect::<Vec<_>>()
+                .as_slice(),
             [RowAction::CopyText(first), RowAction::CopyText(second)]
                 if first == "first" && second == "second"
         ));
-        assert_eq!(contribution.items.len(), contribution.rows.len());
-        assert_eq!(contribution.items.len(), contribution.actions.len());
-        assert_eq!(contribution.items[1].action.as_str(), "second");
+        assert_eq!(contribution.items[1].action_id.as_str(), "second");
     }
 
     #[test]
@@ -276,9 +238,9 @@ mod tests {
 
         assert_eq!(
             contribution
-                .rows
+                .items
                 .iter()
-                .map(|row| row.id.as_str())
+                .map(|item| item.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["plugin:calendar", "app:calendar", "file:calendar.pdf"]
         );
@@ -302,8 +264,8 @@ mod tests {
 
         contribution.sort_for_query("calendar");
 
-        assert_eq!(contribution.rows[0].id, "file:calendar");
-        assert_eq!(contribution.rows[1].id, "app:cal");
+        assert_eq!(contribution.items[0].id, "file:calendar");
+        assert_eq!(contribution.items[1].id, "app:cal");
     }
 
     #[test]
@@ -324,7 +286,7 @@ mod tests {
 
         contribution.sort_for_query("2+2");
 
-        assert_eq!(contribution.rows[0].id, "calc");
-        assert_eq!(contribution.rows[1].id, "file:answer");
+        assert_eq!(contribution.items[0].id, "calc");
+        assert_eq!(contribution.items[1].id, "file:answer");
     }
 }

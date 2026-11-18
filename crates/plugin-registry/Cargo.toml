@@ -10,3 +10,4 @@ serde_json.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 regex.workspace = true
+semver.workspace = true

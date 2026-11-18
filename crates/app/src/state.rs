@@ -7,7 +7,7 @@ use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager};
 use gpui::AnyWindowHandle;
 use nsh_engine::HostChannel;
 use nsh_package::PackageReceipt;
-use steward_plugin_contract::{LaunchRequest, PluginErrorCode};
+use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginSessionId};
 
 use crate::clipboard_history::ClipboardEntry;
 use crate::i18n::Localization;
@@ -17,6 +17,8 @@ use crate::tray::TrayHandle;
 pub(crate) struct PluginWindow {
     pub handle: AnyWindowHandle,
     pub host: HostChannel,
+    pub session_id: PluginSessionId,
+    pub cancel_health: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -37,8 +39,8 @@ impl PluginWindowManager {
         self.windows.remove(plugin_id)
     }
 
-    pub(crate) fn contains(&self, plugin_id: &str) -> bool {
-        self.windows.contains_key(plugin_id)
+    pub(crate) fn session_id(&self, plugin_id: &str) -> Option<PluginSessionId> {
+        self.windows.get(plugin_id).map(|window| window.session_id)
     }
 
     pub(crate) fn retain(&mut self, f: impl FnMut(&String, &mut PluginWindow) -> bool) {
@@ -54,11 +56,14 @@ impl PluginWindowManager {
 pub(crate) enum PluginRuntimeEvent {
     Healthy {
         plugin_id: String,
+        session_id: PluginSessionId,
         receipt: PackageReceipt,
         requested_at: std::time::Instant,
+        first_frame_at: std::time::Instant,
     },
     Failed {
         plugin_id: String,
+        session_id: PluginSessionId,
         request: LaunchRequest,
         code: PluginErrorCode,
         error: String,
@@ -82,7 +87,6 @@ pub(crate) struct AppState {
     pub hotkey_manager: Option<GlobalHotKeyManager>,
     pub summon_hotkey: Option<HotKey>,
     pub hotkey_registry: crate::hotkey_registry::HotkeyRegistry,
-    pub settings_registry: crate::settings_registry::SettingsRegistry,
     pub plugin_windows: PluginWindowManager,
     pub plugin_events: crossbeam_channel::Sender<PluginRuntimeEvent>,
     pub plugin_events_rx: crossbeam_channel::Receiver<PluginRuntimeEvent>,

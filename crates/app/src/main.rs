@@ -1,7 +1,6 @@
 //! Steward desktop entry point with an NSH Rust launcher shell.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-#![allow(dead_code)]
 
 mod app_icons;
 mod autostart;
@@ -20,10 +19,12 @@ mod logging;
 mod metrics;
 mod nsh_surface;
 mod platform;
+mod plugin_runtime;
 mod plugin_window;
 mod search;
 mod services;
 mod settings;
+#[allow(dead_code)] // Backup metadata is registered now and consumed by the backup feature.
 mod settings_registry;
 mod shell;
 mod state;
@@ -45,7 +46,6 @@ use tracing::{error, info, warn};
 use crate::config::{CHECK_UPDATES_SETTING, DEFAULT_ACCENT, LANGUAGE_SETTING, THEME_COLOR_SETTING};
 use crate::i18n::Localization;
 use crate::services::{AppServices, SearchState, UiSettings};
-use crate::settings_registry::SettingsRegistry;
 use crate::state::AppState;
 
 fn main() {
@@ -176,7 +176,6 @@ fn main() {
         hotkey_manager: None,
         summon_hotkey: None,
         hotkey_registry: crate::hotkey_registry::HotkeyRegistry::default(),
-        settings_registry: SettingsRegistry::builtin().expect("built-in settings have unique keys"),
         plugin_windows: Default::default(),
         plugin_events: plugin_event_tx,
         plugin_events_rx: plugin_event_rx,
@@ -283,7 +282,16 @@ fn main() {
                 closed_state
                     .borrow_mut()
                     .plugin_windows
-                    .retain(|_, window| window.handle.window_id() != window_id);
+                    .retain(|_, window| {
+                        if window.handle.window_id() == window_id {
+                            window
+                                .cancel_health
+                                .store(true, std::sync::atomic::Ordering::Release);
+                            false
+                        } else {
+                            true
+                        }
+                    });
             })
             .detach();
         }

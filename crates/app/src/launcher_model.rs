@@ -1,6 +1,28 @@
 //! UI-independent launcher contributions and stable action identifiers.
 
+use std::path::PathBuf;
+
 use steward_ui_components::{LauncherRow, SubtitlePlacement};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RowAction {
+    LaunchApp(PathBuf),
+    RunAsAdministrator(PathBuf),
+    OpenFile(PathBuf),
+    RevealInExplorer(PathBuf),
+    #[allow(dead_code)] // Reserved for the file context menu tracked in the parity plan.
+    ShowProperties(PathBuf),
+    CopyText(String),
+    OpenUrl(String),
+    OpenSettings(String),
+    DismissNotice,
+    OpenPlugin {
+        plugin_id: String,
+        command: String,
+        title: String,
+        input: String,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ActionId(String);
@@ -30,6 +52,7 @@ pub(crate) enum FeatureId {
     StewardSettings,
     FileSearch,
     Plugin,
+    Notice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,13 +63,6 @@ pub(crate) enum LauncherSection {
     SystemSettings,
     Commands,
     Plugins,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Visibility {
-    #[default]
-    Visible,
-    Hidden,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,29 +107,30 @@ pub(crate) struct LauncherItem {
     pub(crate) section: LauncherSection,
     pub(crate) title: String,
     pub(crate) subtitle: Option<String>,
-    pub(crate) aliases: Vec<String>,
-    pub(crate) keywords: Vec<String>,
+    pub(crate) subtitle_placement: SubtitlePlacement,
     pub(crate) icon: LauncherIcon,
-    pub(crate) action: ActionId,
-    pub(crate) visibility: Visibility,
-    pub(crate) hotkey: Option<HotkeyBinding>,
+    pub(crate) action_id: ActionId,
+    pub(crate) action: RowAction,
 }
 
 impl LauncherItem {
-    pub(crate) fn from_row(feature: FeatureId, section: LauncherSection, row: LauncherRow) -> Self {
-        let action = ActionId::new(row.id.clone());
+    pub(crate) fn from_row(
+        feature: FeatureId,
+        section: LauncherSection,
+        row: LauncherRow,
+        action: RowAction,
+    ) -> Self {
+        let action_id = ActionId::new(row.id.clone());
         Self {
-            id: row.id,
             feature,
             section,
             title: row.title,
             subtitle: (!row.subtitle.is_empty()).then_some(row.subtitle),
-            aliases: Vec::new(),
-            keywords: Vec::new(),
+            subtitle_placement: row.subtitle_placement,
             icon: LauncherIcon::from_source(row.icon),
+            id: row.id,
+            action_id,
             action,
-            visibility: Visibility::Visible,
-            hotkey: None,
         }
     }
 
@@ -123,27 +140,8 @@ impl LauncherItem {
             title: self.title.clone(),
             subtitle: self.subtitle.clone().unwrap_or_default(),
             icon: self.icon.source(),
-            subtitle_placement: SubtitlePlacement::default(),
+            subtitle_placement: self.subtitle_placement,
         }
-    }
-
-    pub(crate) fn is_visible(&self) -> bool {
-        self.visibility == Visibility::Visible
-    }
-
-    pub(crate) fn with_hotkey(mut self, hotkey: HotkeyBinding) -> Self {
-        self.hotkey = Some(hotkey);
-        self
-    }
-
-    pub(crate) fn with_search_terms(
-        mut self,
-        aliases: impl IntoIterator<Item = impl Into<String>>,
-        keywords: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        self.aliases = aliases.into_iter().map(Into::into).collect();
-        self.keywords = keywords.into_iter().map(Into::into).collect();
-        self
     }
 }
 
@@ -163,11 +161,19 @@ mod tests {
 
     #[test]
     fn items_keep_a_stable_action_id_and_convert_to_a_ui_row() {
-        let item =
-            LauncherItem::from_row(FeatureId::Application, LauncherSection::Applications, row());
-        assert_eq!(item.action.as_str(), "app:notepad");
+        let item = LauncherItem::from_row(
+            FeatureId::Application,
+            LauncherSection::Applications,
+            row(),
+            RowAction::LaunchApp(PathBuf::from("C:/notepad.exe")),
+        );
+        assert_eq!(item.action_id.as_str(), "app:notepad");
         assert_eq!(item.to_row().title, "Notepad");
         assert_eq!(item.to_row().subtitle, "Application");
+        assert_eq!(
+            item.to_row().subtitle_placement,
+            SubtitlePlacement::AfterTitle
+        );
     }
 
     #[test]
@@ -175,14 +181,5 @@ mod tests {
         let binding = HotkeyBinding::parse("control+alt+Space").unwrap();
         assert_eq!(binding.as_str(), "control+alt+Space");
         assert!(HotkeyBinding::parse("not-a-hotkey").is_err());
-    }
-
-    #[test]
-    fn hidden_items_are_explicitly_marked() {
-        let mut item =
-            LauncherItem::from_row(FeatureId::Application, LauncherSection::Applications, row());
-        assert!(item.is_visible());
-        item.visibility = Visibility::Hidden;
-        assert!(!item.is_visible());
     }
 }

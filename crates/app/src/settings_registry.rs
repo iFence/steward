@@ -10,7 +10,6 @@ use crate::launcher_model::FeatureId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsPage {
     General,
-    About,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +95,7 @@ impl SettingsRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, key: &str) -> Option<&SettingsDefinition> {
         self.definitions.get(key)
     }

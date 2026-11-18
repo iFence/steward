@@ -32,7 +32,7 @@ Steward app process
 
 ## Module breakdown
 
-- Workspace root `Cargo.toml` (resolver 2, edition 2021, version 0.3.1)
+- Workspace root `Cargo.toml` (resolver 2, edition 2021, version 0.3.2)
   declares shared versions in `[workspace.dependencies]`.
 - Rust crates live under `crates/`:
 
@@ -40,6 +40,8 @@ Steward app process
   |---|---|
   | `app` | GPUI Fast entry, NSH shell, tray, hotkeys, and plugin windows |
   | `core-engine` | application search, fuzzy matching, and ranking |
+  | `search` | shared pinyin haystacks and matcher vocabulary |
+  | `plugin-contract` | versioned launcher and host DTOs |
   | `plugin-host` | signed-package verification, catalog, and route-only launch |
   | `plugin-registry` | plugin routing metadata cache (SQLite) |
   | `storage` | SQLite wrapper and settings |
@@ -83,8 +85,8 @@ Steward app process
 - A distributable plugin zip contains `<plugin-id>/plugin.json` and
   `<plugin-id>/plugin.nshpkg` only.
 - Release builds load verified packages only. Production trust roots live in
-  `assets/nsh/trust-roots.json`; that file intentionally ships empty until the
-  production key ceremony is complete, so release verification fails closed.
+  `assets/nsh/trust-roots.json`. Verification fails closed when the file has no
+  root or no configured root accepts the package certificate.
 - Never commit private keys or certificate secrets. CI reads
   `STEWARD_NSH_RELEASE_KEY` and `STEWARD_NSH_RELEASE_CERT`.
 - The manifest ID/version and package ID/version must match.

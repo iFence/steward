@@ -15,6 +15,7 @@ use crate::config::{
     LAUNCHER_HEADER_HEIGHT, LAUNCHER_INPUT_HEIGHT, LAUNCHER_INPUT_INSET, LAUNCHER_MARGIN,
     LAUNCHER_STATUS_BAR_HEIGHT,
 };
+use crate::launcher_model::{FeatureId, LauncherItem, LauncherSection};
 use crate::services::{services, LauncherServices, RowAction, WindowCommand};
 
 const MAX_VISIBLE_ROWS: usize = 8;
@@ -66,21 +67,30 @@ pub fn StewardLauncher() -> impl IntoElement {
                 spawn(async move {
                     if let Some(reply) = app.search(next, query_text).await {
                         if generation.get() == reply.generation {
-                            let mut rows_value = reply.rows;
-                            let mut actions_value = reply.actions;
+                            let mut items = reply.items;
                             if let Some(notice) = app.notice() {
-                                rows_value.insert(
+                                items.insert(
                                     0,
-                                    LauncherRow {
-                                        id: "launch-notice".into(),
-                                        title: notice.title,
-                                        subtitle: notice.message,
-                                        icon: None,
-                                        subtitle_placement: Default::default(),
-                                    },
+                                    LauncherItem::from_row(
+                                        FeatureId::Notice,
+                                        LauncherSection::Favorites,
+                                        LauncherRow {
+                                            id: "launch-notice".into(),
+                                            title: notice.title,
+                                            subtitle: notice.message,
+                                            icon: None,
+                                            subtitle_placement: Default::default(),
+                                        },
+                                        RowAction::DismissNotice,
+                                    ),
                                 );
-                                actions_value.insert(0, RowAction::DismissNotice);
                             }
+                            let rows_value =
+                                items.iter().map(LauncherItem::to_row).collect::<Vec<_>>();
+                            let actions_value = items
+                                .iter()
+                                .map(|item| item.action.clone())
+                                .collect::<Vec<_>>();
                             let previous_selected = selected.get_untracked();
                             let previous_first_visible = first_visible.get_untracked();
                             let selected_id = if preserve_selection {
@@ -1300,8 +1310,24 @@ mod tests {
     };
     use crate::{
         i18n::UiStrings,
+        launcher_model::{FeatureId, LauncherItem, LauncherSection},
         services::{AppServices, RowAction, SearchReply, SearchRequest, UiSettings, WindowCommand},
     };
+
+    fn items_from_rows(rows: Vec<LauncherRow>, actions: Vec<RowAction>) -> Vec<LauncherItem> {
+        assert_eq!(rows.len(), actions.len());
+        rows.into_iter()
+            .zip(actions)
+            .map(|(row, action)| {
+                LauncherItem::from_row(
+                    FeatureId::Application,
+                    LauncherSection::Applications,
+                    row,
+                    action,
+                )
+            })
+            .collect()
+    }
 
     fn ui_strings(placeholder: &str) -> UiStrings {
         UiStrings {
@@ -1475,15 +1501,16 @@ mod tests {
             while let Ok(request) = request_rx.recv() {
                 let _ = request.reply.send(SearchReply {
                     generation: request.generation,
-                    items: Vec::new(),
-                    rows: vec![LauncherRow {
-                        id: "app:notepad".into(),
-                        title: "Notepad".into(),
-                        subtitle: "Application".into(),
-                        icon: None,
-                        subtitle_placement: Default::default(),
-                    }],
-                    actions: vec![RowAction::LaunchApp(reply_path.clone())],
+                    items: items_from_rows(
+                        vec![LauncherRow {
+                            id: "app:notepad".into(),
+                            title: "Notepad".into(),
+                            subtitle: "Application".into(),
+                            icon: None,
+                            subtitle_placement: Default::default(),
+                        }],
+                        vec![RowAction::LaunchApp(reply_path.clone())],
+                    ),
                 });
             }
         });
@@ -1558,27 +1585,28 @@ mod tests {
             while let Ok(request) = request_rx.recv() {
                 let _ = request.reply.send(SearchReply {
                     generation: request.generation,
-                    items: Vec::new(),
-                    rows: vec![
-                        LauncherRow {
-                            id: "app:notepad".into(),
-                            title: "Notepad".into(),
-                            subtitle: "Application".into(),
-                            icon: None,
-                            subtitle_placement: Default::default(),
-                        },
-                        LauncherRow {
-                            id: "app:zed".into(),
-                            title: "Zed".into(),
-                            subtitle: "Application".into(),
-                            icon: None,
-                            subtitle_placement: Default::default(),
-                        },
-                    ],
-                    actions: vec![
-                        RowAction::LaunchApp(reply_notepad.clone()),
-                        RowAction::LaunchApp(reply_zed.clone()),
-                    ],
+                    items: items_from_rows(
+                        vec![
+                            LauncherRow {
+                                id: "app:notepad".into(),
+                                title: "Notepad".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                            LauncherRow {
+                                id: "app:zed".into(),
+                                title: "Zed".into(),
+                                subtitle: "Application".into(),
+                                icon: None,
+                                subtitle_placement: Default::default(),
+                            },
+                        ],
+                        vec![
+                            RowAction::LaunchApp(reply_notepad.clone()),
+                            RowAction::LaunchApp(reply_zed.clone()),
+                        ],
+                    ),
                 });
             }
         });
@@ -1697,9 +1725,7 @@ mod tests {
                 };
                 let _ = request.reply.send(SearchReply {
                     generation: request.generation,
-                    items: Vec::new(),
-                    rows,
-                    actions,
+                    items: items_from_rows(rows, actions),
                 });
             }
         });

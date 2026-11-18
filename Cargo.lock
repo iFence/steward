@@ -8840,6 +8840,7 @@ dependencies = [
  "dirs 6.0.0",
  "regex",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
 ]
@@ -8860,7 +8861,6 @@ dependencies = [
  "dirs 6.0.0",
  "rusqlite",
  "semver",
- "steward-core-engine",
 ]
 
 [[package]]

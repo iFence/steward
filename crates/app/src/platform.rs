@@ -19,7 +19,6 @@ pub use windows::*;
 mod windows {
     use gpui::Window;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use std::time::Duration;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, GetFocus, GetKeyState, GetKeyboardState, SetActiveWindow, SetFocus,
         SetKeyboardState, VK_LMENU, VK_MENU, VK_RMENU,
@@ -36,12 +35,10 @@ mod windows {
         UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
         UI::Shell::{DefSubclassProc, SetWindowSubclass},
         UI::WindowsAndMessaging::{
-            DefWindowProcW, GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow,
-            GetGUIThreadInfo, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
-            IsWindowVisible, PostMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-            ShowWindow, GUITHREADINFO, GWL_STYLE, HTCAPTION, HWND_TOPMOST, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_CHAR,
-            WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_SYSCHAR, WS_THICKFRAME,
+            DefWindowProcW, GetClientRect, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+            GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
+            SetForegroundWindow, SetWindowPos, ShowWindow, GUITHREADINFO, HTCAPTION, HWND_TOPMOST,
+            SWP_NOACTIVATE, SW_HIDE, SW_SHOW, WM_CHAR, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_SYSCHAR,
         },
     };
 
@@ -168,29 +165,6 @@ mod windows {
     pub fn hide_target(target: WindowTarget) {
         unsafe {
             ShowWindow(target.0, SW_HIDE);
-        }
-    }
-
-    /// Make a borderless PopUp window user-resizable. GPUI's `WindowKind::PopUp`
-    /// branch does not add `WS_THICKFRAME` even when `WindowOptions::is_resizable`
-    /// is set, so the OS never opens a resize loop; add the style after creation
-    /// and re-frame so the edges become draggable.
-    pub fn make_resizable(window: &Window) {
-        let Some(hwnd) = hwnd(window) else {
-            return;
-        };
-        unsafe {
-            let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
-            SetWindowLongPtrW(hwnd, GWL_STYLE, (style | WS_THICKFRAME) as isize);
-            SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
         }
     }
 
@@ -464,18 +438,6 @@ mod windows {
         (samples > 0).then(|| (luminance / samples as f64) as f32)
     }
 
-    /// Associate the default IME context with the launcher so the input
-    /// method can compose text (Chinese/Japanese/Korean input).
-    pub fn enable_ime(window: &Window) {
-        let Some(hwnd) = hwnd(window) else {
-            return;
-        };
-        unsafe {
-            use windows_sys::Win32::UI::Input::Ime::{ImmAssociateContextEx, IACE_DEFAULT};
-            ImmAssociateContextEx(hwnd, std::ptr::null_mut(), IACE_DEFAULT);
-        }
-    }
-
     /// Force the native titlebar to render dark regardless of the OS theme.
     /// GPUI derives `DWMWA_USE_IMMERSIVE_DARK_MODE` from the system appearance
     /// at window creation (light mode => light titlebar); re-applying the
@@ -522,44 +484,6 @@ mod windows {
             (width * scale).round() as i32 + border_x,
             (height * scale).round() as i32 + border_y,
         )
-    }
-
-    /// Resize the launcher window so its client area is `width` x `height`
-    /// logical pixels. The current top-left corner is kept so the drop-down
-    /// grows downward. `width`/`height` are the same DPI-aware units GPUI's
-    /// layout uses; physical pixels are derived from the window's own DPI.
-    pub fn resize(window: &Window, width: f32, height: f32) {
-        let Some(hwnd) = hwnd(window) else {
-            return;
-        };
-        unsafe {
-            let (width_px, height_px) =
-                client_to_window_px(hwnd, width, height, GetDpiForWindow(hwnd));
-            let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
-            GetWindowRect(hwnd, &mut rect);
-            let (x, y) = (rect.left, rect.top);
-            SetWindowPos(
-                hwnd,
-                std::ptr::null_mut(),
-                x,
-                y,
-                width_px,
-                height_px,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
-    }
-
-    /// Full on/off period of the caret blink. Windows exposes the OS caret
-    /// blink time (the on-phase), so a full blink cycle is twice that. If the
-    /// OS reports blink disabled (0), fall back to the standard 1.06 s cycle.
-    pub fn caret_blink_period() -> Duration {
-        let on_ms = unsafe { GetCaretBlinkTime() };
-        if on_ms == 0 {
-            Duration::from_millis(1060)
-        } else {
-            Duration::from_millis(u64::from(on_ms) * 2)
-        }
     }
 
     /// Compute where the launcher should sit on `monitor`: sized for `height`
@@ -850,21 +774,11 @@ mod stub {
         None
     }
 
-    /// Resizing is a Windows-specific launcher behavior for now.
-    pub fn resize(_window: &Window, _width: f32, _height: f32) {}
-
     /// Native titlebar dark-mode forcing is Windows-only; other platforms
     /// already follow the app theme.
     pub fn force_dark_titlebar(_window: &Window) {}
 
-    /// Other platforms apply `is_resizable: true` natively; no style patch.
-    pub fn make_resizable(_window: &Window) {}
-
     pub fn focus(_window: &Window) -> bool {
         false
-    }
-
-    pub fn caret_blink_period() -> Duration {
-        Duration::from_millis(1060)
     }
 }

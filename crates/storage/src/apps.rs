@@ -3,9 +3,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
-use steward_core_engine::AppEntry;
 
-use crate::{path_key, unix_seconds};
+use crate::{path_key, unix_seconds, CachedApp};
 
 pub(crate) fn upsert_usage(conn: &Connection, path: &Path) -> Result<()> {
     let key = path_key(path);
@@ -29,13 +28,13 @@ pub(crate) fn frequency(conn: &Connection, path: &Path) -> u32 {
     .unwrap_or(0)
 }
 
-pub(crate) fn cached(conn: &Connection) -> Result<Vec<AppEntry>> {
+pub(crate) fn cached(conn: &Connection) -> Result<Vec<CachedApp>> {
     let mut stmt = conn
         .prepare("SELECT path, name FROM apps")
         .context("prepare cached apps query")?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(AppEntry {
+            Ok(CachedApp {
                 path: std::path::PathBuf::from(row.get::<_, String>(0)?),
                 name: row.get(1)?,
             })
@@ -45,7 +44,7 @@ pub(crate) fn cached(conn: &Connection) -> Result<Vec<AppEntry>> {
         .context("collect cached apps")
 }
 
-pub(crate) fn mark_seen(conn: &mut Connection, apps: &[AppEntry]) -> Result<()> {
+pub(crate) fn mark_seen(conn: &mut Connection, apps: &[CachedApp]) -> Result<()> {
     let now = unix_seconds();
     let tx = conn.transaction().context("begin scan transaction")?;
     {

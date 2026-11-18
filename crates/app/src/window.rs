@@ -163,13 +163,3 @@ pub(crate) fn resize_launcher(window: &mut Window, height: f32) {
         ));
     }
 }
-
-pub(crate) fn focus_plugin_window(state: &Rc<RefCell<AppState>>, plugin_id: &str, cx: &mut App) {
-    if let Some(plugin) = state.borrow().plugin_windows.get(plugin_id) {
-        let handle = plugin.handle;
-        let _ = handle.update(cx, |_, window, cx| {
-            platform::show(window, 900.0, 680.0);
-            cx.activate(true);
-        });
-    }
-}

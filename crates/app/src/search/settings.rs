@@ -1230,15 +1230,15 @@ mod tests {
         let icon = Some("data:image/png;base64,test".into());
         let contribution = source.contribute_with_icon("wifi", icon.clone());
         let row = contribution
-            .rows
+            .items
             .iter()
-            .find(|row| row.id == "settings:ms-settings:network-wifi")
+            .find(|item| item.id == "settings:ms-settings:network-wifi")
             .unwrap();
         assert_eq!(row.title, "Wi-Fi");
-        assert_eq!(row.subtitle, "Windows Settings");
-        assert_eq!(row.icon, icon);
-        assert!(contribution.actions.iter().any(|action| matches!(
-            action,
+        assert_eq!(row.subtitle.as_deref(), Some("Windows Settings"));
+        assert_eq!(row.icon.source(), icon);
+        assert!(contribution.items.iter().any(|item| matches!(
+            &item.action,
             RowAction::OpenSettings(uri) if uri == "ms-settings:network-wifi"
         )));
     }

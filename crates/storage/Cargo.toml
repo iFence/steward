@@ -8,4 +8,3 @@ rusqlite.workspace = true
 dirs.workspace = true
 anyhow.workspace = true
 semver.workspace = true
-steward-core-engine = { path = "../core-engine" }

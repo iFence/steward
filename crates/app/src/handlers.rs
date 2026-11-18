@@ -39,7 +39,6 @@ pub(crate) fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                     });
                 }
             }
-            WindowCommand::OpenSettings => open_settings(cx, state),
             WindowCommand::Resize { height } => {
                 state.borrow_mut().launcher_height = height;
                 if let Some(handle) = state.borrow().window {
@@ -150,9 +149,14 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
         match event {
             PluginRuntimeEvent::Healthy {
                 plugin_id,
+                session_id,
                 receipt,
                 requested_at,
+                first_frame_at,
             } => {
+                if !plugin_session_is_current(state, &plugin_id, session_id) {
+                    continue;
+                }
                 // RefCell borrows in an `if let` scrutinee live through both
                 // arms. Finish the nested borrow before reading services.
                 let accepted = state.borrow().search.borrow_mut().accept_receipt(&receipt);
@@ -173,22 +177,38 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     tracing::info!(plugin_id = %plugin_id, "plugin first frame healthy");
                     crate::metrics::duration(
                         "plugin_first_frame",
-                        requested_at.elapsed(),
+                        first_frame_at.saturating_duration_since(requested_at),
                         serde_json::json!({ "plugin_id": plugin_id }),
                     );
                 }
             }
             PluginRuntimeEvent::Failed {
                 plugin_id,
+                session_id,
                 request,
                 code,
                 error,
             } => {
+                if !plugin_session_is_current(state, &plugin_id, session_id) {
+                    continue;
+                }
                 cx.update(|cx| crate::plugin_window::close(cx, state, &plugin_id));
                 report_launch_failure(state, &request, code, &error);
             }
         }
     }
+}
+
+fn plugin_session_is_current(
+    state: &Rc<RefCell<AppState>>,
+    plugin_id: &str,
+    session_id: steward_plugin_contract::PluginSessionId,
+) -> bool {
+    state
+        .borrow()
+        .plugin_windows
+        .session_id(plugin_id)
+        .is_some_and(|current| current == session_id)
 }
 
 pub(crate) fn toggle_launcher(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {

@@ -36,7 +36,6 @@ impl std::error::Error for HotkeyRegistrationError {}
 
 #[derive(Debug, Clone)]
 struct RegisteredHotkey {
-    binding: HotkeyBinding,
     hotkey: HotKey,
 }
 
@@ -76,36 +75,16 @@ impl HotkeyRegistry {
         binding: &str,
     ) -> Result<HotKey, HotkeyRegistrationError> {
         let hotkey = self.validate(&action, binding)?;
-        let canonical =
-            HotkeyBinding::parse(binding).map_err(HotkeyRegistrationError::InvalidBinding)?;
         if let Some(previous) = self.by_action.get(&action) {
             self.by_id.remove(&previous.hotkey.id());
         }
         self.by_id.insert(hotkey.id(), action.clone());
-        self.by_action.insert(
-            action,
-            RegisteredHotkey {
-                binding: canonical,
-                hotkey,
-            },
-        );
+        self.by_action.insert(action, RegisteredHotkey { hotkey });
         Ok(hotkey)
-    }
-
-    pub(crate) fn unregister(&mut self, action: &ActionId) -> Option<HotKey> {
-        let registered = self.by_action.remove(action)?;
-        self.by_id.remove(&registered.hotkey.id());
-        Some(registered.hotkey)
     }
 
     pub(crate) fn resolve(&self, id: u32) -> Option<&ActionId> {
         self.by_id.get(&id)
-    }
-
-    pub(crate) fn binding(&self, action: &ActionId) -> Option<&str> {
-        self.by_action
-            .get(action)
-            .map(|registered| registered.binding.as_str())
     }
 }
 
@@ -147,6 +126,5 @@ mod tests {
 
         assert!(registry.resolve(old.id()).is_none());
         assert_eq!(registry.resolve(new.id()), Some(&action));
-        assert_eq!(registry.binding(&action), Some("control+alt+Comma"));
     }
 }

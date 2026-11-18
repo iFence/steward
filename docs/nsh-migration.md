@@ -367,6 +367,33 @@ Completed acceptance:
   Downloading the artifacts and rechecking their SHA-256 manifests and
   production signatures also passed locally.
 
+### Omission Audit (2026-11-18)
+
+Files:
+
+- `crates/app/src/plugin_window.rs`
+- `crates/app/src/plugin_runtime.rs`
+- `crates/app/src/services.rs`
+- `crates/app/src/launcher_model.rs`
+- `crates/app/src/search/mod.rs`
+- `crates/plugin-registry/src/manifest.rs`
+- `crates/storage/src/lib.rs`
+
+Results:
+
+- Plugin receipt acceptance requires an observed first NSH frame plus the
+  fatal-error grace period, with session IDs isolating timers and errors across
+  window reuse.
+- Calendar host calls use a bounded worker instead of one detached thread per
+  call.
+- Storage no longer depends on `core-engine`, launcher results use one
+  `LauncherItem` source model, plugin runtime coordination is separate from
+  `SearchState`, and manifest IDs/versions are strictly validated.
+- `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed; the test run reported 134 passed and 1
+  ignored.
+
 Pending release gates:
 
 - Record release cold start, RSS, summon p95, plugin first-frame p95, existing

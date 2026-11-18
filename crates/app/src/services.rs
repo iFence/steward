@@ -9,19 +9,20 @@ use std::sync::{
 
 use nsh_core::element::engine_context;
 use steward_core_engine::{AppEntry, Engine};
-use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginNotice};
-use steward_plugin_host::PluginHost;
-use steward_plugin_registry::{PluginMeta, Registry};
+use steward_plugin_contract::{LaunchRequest, PluginNotice};
 use steward_storage::Storage;
 use steward_ui_components::palette;
 use tokio::sync::oneshot;
 
 use crate::i18n::UiStrings;
+pub(crate) use crate::launcher_model::RowAction;
+pub(crate) use crate::plugin_runtime::PluginLaunchOutcome;
+use crate::plugin_runtime::PluginRuntimeState;
 use crate::search::{
     ApplicationSource, BuiltinSource, FileSearchCache, FileSearchSource, PluginSource,
     SearchSource, SettingsIndex, SettingsSource,
 };
-pub use crate::search::{RowAction, SearchReply, SearchRequest};
+pub use crate::search::{SearchReply, SearchRequest};
 use crate::updates::UpdatePort;
 
 #[derive(Debug, Clone)]
@@ -55,7 +56,6 @@ impl UiSettings {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct LauncherQueryPort {
     requests: crossbeam_channel::Sender<SearchRequest>,
     search_revision: Arc<AtomicU64>,
@@ -66,19 +66,16 @@ pub struct LauncherQueryPort {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct WindowCommandPort {
     window_commands: crossbeam_channel::Sender<WindowCommand>,
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct UiSettingsPort {
     settings: Arc<RwLock<UiSettings>>,
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct NoticePort {
     notice: Arc<RwLock<Option<PluginNotice>>>,
     search_revision: Arc<AtomicU64>,
@@ -139,18 +136,7 @@ impl AppServices {
         }
     }
 
-    pub fn query_port(&self) -> LauncherQueryPort {
-        self.query.clone()
-    }
-
-    pub fn command_port(&self) -> WindowCommandPort {
-        self.commands.clone()
-    }
-
-    pub fn settings_port(&self) -> UiSettingsPort {
-        self.settings.clone()
-    }
-
+    #[cfg(test)]
     pub fn notice_port(&self) -> NoticePort {
         self.notices.clone()
     }
@@ -168,19 +154,6 @@ impl AppServices {
         }
     }
 
-    pub async fn search(&self, generation: u64, query: String) -> Option<SearchReply> {
-        let (tx, rx) = oneshot::channel();
-        self.query
-            .requests
-            .send(SearchRequest {
-                generation,
-                query,
-                reply: tx,
-            })
-            .ok()?;
-        rx.await.ok()
-    }
-
     pub fn send_window_command(&self, command: WindowCommand) {
         let _ = self.commands.window_commands.send(command);
     }
@@ -191,14 +164,6 @@ impl AppServices {
             .read()
             .map(|settings| settings.locale.clone())
             .unwrap_or_else(|_| "en".into())
-    }
-
-    pub fn search_placeholder(&self) -> String {
-        self.settings
-            .settings
-            .read()
-            .map(|settings| settings.strings.search_placeholder.clone())
-            .unwrap_or_else(|_| "Search apps, files, settings, or type a command...".into())
     }
 
     pub fn accent(&self) -> String {
@@ -265,48 +230,9 @@ impl AppServices {
         }
     }
 
+    #[cfg(test)]
     pub fn search_revision(&self) -> u64 {
         self.query.search_revision.load(Ordering::Relaxed)
-    }
-
-    pub fn ui_strings(&self) -> UiStrings {
-        self.settings
-            .settings
-            .read()
-            .map(|settings| settings.strings.clone())
-            .unwrap_or_else(|_| UiStrings {
-                search_placeholder: "Search apps, files, settings, or type a command...".into(),
-                application: "Application".into(),
-                file_search_unavailable: "Windows Search is unavailable".into(),
-                file_search_repair: "Open Windows Search settings".into(),
-                settings: "Windows Settings".into(),
-                plugin: "Plugin".into(),
-                calculator: "Calculator".into(),
-                open_url: "Open URL".into(),
-                launcher_navigate: "Navigate".into(),
-                launcher_open: "Open".into(),
-                launcher_close: "Close".into(),
-                launcher_actions: "Actions".into(),
-                launcher_copy: "Copy".into(),
-                launcher_open_application: "Open Application".into(),
-                launcher_open_file: "Open File".into(),
-                launcher_open_settings: "Open Settings".into(),
-                launcher_open_plugin: "Open Plugin".into(),
-                launcher_open_location: "Open file location".into(),
-                launcher_copy_path: "Copy path".into(),
-                launcher_properties: "Properties".into(),
-                launcher_action_application_window: "Application Window".into(),
-                launcher_action_recent_files: "Open Files... / Recent".into(),
-                launcher_action_run_as_administrator: "Run as Administrator".into(),
-                launcher_action_run_as_different_user: "Run as Different User".into(),
-                launcher_action_show_in_file_explorer: "Show in File Explorer".into(),
-                launcher_action_search: "Search for actions...".into(),
-                launcher_action_no_results: "No matching actions".into(),
-            })
-    }
-
-    pub fn locale_revision(&self) -> u64 {
-        self.query.locale_revision.load(Ordering::Relaxed)
     }
 
     pub fn request_launcher_reset(&self) {
@@ -315,18 +241,10 @@ impl AppServices {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn launcher_reset_revision(&self) -> u64 {
-        self.query.launcher_reset_revision.load(Ordering::Relaxed)
-    }
-
     pub fn request_launcher_focus(&self) {
         self.query
             .launcher_focus_revision
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn launcher_focus_revision(&self) -> u64 {
-        self.query.launcher_focus_revision.load(Ordering::Relaxed)
     }
 
     pub fn set_launcher_scrim_alpha(&self, alpha: f32) {
@@ -338,10 +256,6 @@ impl AppServices {
         self.query
             .launcher_scrim_alpha
             .store(alpha.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn launcher_scrim_alpha(&self) -> f32 {
-        f32::from_bits(self.query.launcher_scrim_alpha.load(Ordering::Relaxed))
     }
 
     pub fn notice(&self) -> Option<PluginNotice> {
@@ -458,7 +372,6 @@ impl LauncherServices {
 pub enum WindowCommand {
     Hide,
     FocusLauncher,
-    OpenSettings,
     Resize { height: f32 },
     Activate(RowAction),
     ClosePlugin(String),
@@ -482,14 +395,10 @@ pub struct SearchState {
     file_search: FileSearchCache,
     storage: std::rc::Rc<std::cell::RefCell<Storage>>,
     icon_cache: HashMap<PathBuf, Option<String>>,
-    plugin_host: PluginHost,
-    registry: Registry,
+    plugins: PluginRuntimeState,
     app_scan: Option<crossbeam_channel::Receiver<Vec<AppEntry>>>,
-    plugin_scan: Option<crossbeam_channel::Receiver<Vec<PluginMeta>>>,
-    pending_launches: HashMap<String, PendingLaunch>,
     search_revision: Arc<AtomicU64>,
     next_app_scan: std::time::Instant,
-    next_plugin_scan: std::time::Instant,
 }
 
 impl SearchState {
@@ -499,19 +408,19 @@ impl SearchState {
         strings: UiStrings,
         locale: String,
     ) -> anyhow::Result<Self> {
-        let cached = storage.borrow().cached_apps().unwrap_or_default();
+        let cached = storage
+            .borrow()
+            .cached_apps()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|app| AppEntry {
+                name: app.name,
+                path: app.path,
+            })
+            .collect();
         let mut engine = Engine::new();
         engine.set_entries(cached);
-        let mut plugin_host =
-            PluginHost::new(steward_plugin_host::HostConfig::new(data_dir.clone()))?;
-        let registry = Registry::open_with_root(
-            &data_dir,
-            &std::env::var_os("STEWARD_PLUGINS_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| data_dir.join("plugins")),
-        )?;
-        let cached_plugins = registry.cached_plugins().unwrap_or_default();
-        plugin_host.set_plugins(&cached_plugins);
+        let plugins = PluginRuntimeState::new(&data_dir)?;
         Ok(Self {
             engine,
             strings,
@@ -520,24 +429,20 @@ impl SearchState {
             file_search: FileSearchCache::new(),
             storage,
             icon_cache: HashMap::new(),
-            plugin_host,
-            registry,
+            plugins,
             app_scan: None,
-            plugin_scan: None,
-            pending_launches: HashMap::new(),
             search_revision: Arc::new(AtomicU64::new(0)),
             next_app_scan: std::time::Instant::now(),
-            next_plugin_scan: std::time::Instant::now(),
         })
     }
 
     pub fn start(&mut self) {
         self.spawn_app_scan();
-        self.spawn_plugin_scan();
+        self.plugins.start();
     }
 
     pub fn add_trust_root(&mut self, key: &str) -> anyhow::Result<()> {
-        self.plugin_host.add_trust_root_base64(key)
+        self.plugins.add_trust_root(key)
     }
 
     pub fn revision_handle(&self) -> Arc<AtomicU64> {
@@ -553,71 +458,23 @@ impl SearchState {
         &mut self,
         request: LaunchRequest,
     ) -> Result<(), steward_plugin_host::PluginHostError> {
-        if let Some(pending) = self.pending_launches.get_mut(&request.plugin_id) {
-            pending.latest = request;
-            return Ok(());
-        }
-        let receiver = self.plugin_host.start_launch(request.clone())?;
-        self.pending_launches.insert(
-            request.plugin_id.clone(),
-            PendingLaunch {
-                requested_at: std::time::Instant::now(),
-                latest: request.clone(),
-                initial: request,
-                receiver,
-            },
-        );
-        Ok(())
+        self.plugins.start_launch(request)
     }
 
     pub fn accept_receipt(&mut self, receipt: &nsh_package::PackageReceipt) -> anyhow::Result<()> {
-        self.plugin_host.accept_receipt(receipt)
+        self.plugins.accept_receipt(receipt)
     }
 
     pub fn poll_launch(&mut self) -> Option<PluginLaunchOutcome> {
-        let mut finished = None;
-        for (plugin_id, pending) in &self.pending_launches {
-            let result = match pending.receiver.try_recv() {
-                Ok(result) => result,
-                Err(crossbeam_channel::TryRecvError::Empty) => continue,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    Err(steward_plugin_host::PluginHostError::WorkerExited)
-                }
-            };
-            finished = Some((
-                plugin_id.clone(),
-                pending.requested_at,
-                pending.initial.clone(),
-                pending.latest.clone(),
-                result,
-            ));
-            break;
-        }
-        let (plugin_id, requested_at, initial, latest, result) = finished?;
-        self.pending_launches.remove(&plugin_id);
-        Some(match result {
-            Ok(launch) => PluginLaunchOutcome::Ready {
-                requested_at,
-                initial,
-                latest,
-                launch: Box::new(launch),
-            },
-            Err(error) => PluginLaunchOutcome::Failed {
-                request: latest,
-                code: error.code(),
-                error: error.to_string(),
-            },
-        })
+        self.plugins.poll_launch()
     }
 
     pub fn handle(&mut self, request: SearchRequest) {
         self.file_search.set_query(request.query.trim());
-        let (items, rows, actions) = self.local_rows(&request.query);
+        let items = self.local_items(&request.query);
         let _ = request.reply.send(SearchReply {
             generation: request.generation,
             items,
-            rows,
-            actions,
         });
     }
 
@@ -632,7 +489,14 @@ impl SearchState {
                 match rx.try_recv() {
                     Ok(apps) => {
                         if self.engine.entries() != apps.as_slice() {
-                            let _ = self.storage.borrow_mut().mark_seen(&apps);
+                            let cached = apps
+                                .iter()
+                                .map(|app| steward_storage::CachedApp {
+                                    name: app.name.clone(),
+                                    path: app.path.clone(),
+                                })
+                                .collect::<Vec<_>>();
+                            let _ = self.storage.borrow_mut().mark_seen(&cached);
                             self.engine.set_entries(apps);
                             self.search_revision.fetch_add(1, Ordering::Relaxed);
                         }
@@ -650,46 +514,15 @@ impl SearchState {
                 self.next_app_scan = std::time::Instant::now() + std::time::Duration::from_secs(30);
             }
         }
-        let plugin_scan = self.plugin_scan.clone();
-        if let Some(rx) = plugin_scan {
-            let mut finished = false;
-            loop {
-                match rx.try_recv() {
-                    Ok(plugins) => {
-                        if self.plugin_host.set_plugins(&plugins) {
-                            self.search_revision.fetch_add(1, Ordering::Relaxed);
-                        }
-                        finished = true;
-                    }
-                    Err(crossbeam_channel::TryRecvError::Empty) => break,
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        finished = true;
-                        break;
-                    }
-                }
-            }
-            if finished {
-                self.plugin_scan = None;
-                self.next_plugin_scan =
-                    std::time::Instant::now() + std::time::Duration::from_secs(30);
-            }
+        if self.plugins.poll() {
+            self.search_revision.fetch_add(1, Ordering::Relaxed);
         }
         if self.app_scan.is_none() && std::time::Instant::now() >= self.next_app_scan {
             self.spawn_app_scan();
         }
-        if self.plugin_scan.is_none() && std::time::Instant::now() >= self.next_plugin_scan {
-            self.spawn_plugin_scan();
-        }
     }
 
-    fn local_rows(
-        &mut self,
-        query: &str,
-    ) -> (
-        Vec<crate::launcher_model::LauncherItem>,
-        Vec<steward_ui_components::LauncherRow>,
-        Vec<RowAction>,
-    ) {
+    fn local_items(&mut self, query: &str) -> Vec<crate::launcher_model::LauncherItem> {
         let trimmed = query.trim();
         let mut builtin = BuiltinSource {
             strings: &self.strings,
@@ -711,7 +544,7 @@ impl SearchState {
             unavailable_subtitle: &self.strings.file_search_repair,
         };
         let mut plugins = PluginSource {
-            host: &self.plugin_host,
+            host: self.plugins.host(),
             label: &self.strings.plugin,
         };
         let mut settings = SettingsSource {
@@ -723,10 +556,8 @@ impl SearchState {
             [&mut plugins, &mut settings, &mut files];
         let mut remaining = crate::search::collect(&mut remaining_sources, trimmed);
         contribution.items.append(&mut remaining.items);
-        contribution.rows.append(&mut remaining.rows);
-        contribution.actions.append(&mut remaining.actions);
         contribution.sort_for_query(trimmed);
-        (contribution.items, contribution.rows, contribution.actions)
+        contribution.items
     }
 
     fn spawn_app_scan(&mut self) {
@@ -739,45 +570,6 @@ impl SearchState {
         });
         self.app_scan = Some(rx);
     }
-
-    fn spawn_plugin_scan(&mut self) {
-        if self.plugin_scan.is_some() {
-            return;
-        }
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let data_dir = self.registry.data_dir().to_path_buf();
-        let root = self.registry.plugins_root().to_path_buf();
-        std::thread::spawn(move || {
-            if let Ok(mut registry) = Registry::open_with_root(&data_dir, &root) {
-                let _ = registry.scan();
-                let _ = tx.send(registry.cached_plugins().unwrap_or_default());
-            }
-        });
-        self.plugin_scan = Some(rx);
-    }
-}
-
-struct PendingLaunch {
-    requested_at: std::time::Instant,
-    initial: LaunchRequest,
-    latest: LaunchRequest,
-    receiver: crossbeam_channel::Receiver<
-        Result<steward_plugin_host::PluginLaunch, steward_plugin_host::PluginHostError>,
-    >,
-}
-
-pub enum PluginLaunchOutcome {
-    Ready {
-        requested_at: std::time::Instant,
-        initial: LaunchRequest,
-        latest: LaunchRequest,
-        launch: Box<steward_plugin_host::PluginLaunch>,
-    },
-    Failed {
-        request: LaunchRequest,
-        code: PluginErrorCode,
-        error: String,
-    },
 }
 
 #[cfg(test)]
@@ -903,19 +695,13 @@ mod tests {
             Result<steward_plugin_host::PluginLaunch, steward_plugin_host::PluginHostError>,
         >(1);
         drop(tx);
-        state.pending_launches.insert(
-            "com.example.test".into(),
-            PendingLaunch {
-                requested_at: std::time::Instant::now(),
-                initial: request("first"),
-                latest: request("first"),
-                receiver: rx,
-            },
-        );
+        state
+            .plugins
+            .insert_pending_launch_for_test("com.example.test", request("first"), rx);
         state.start_launch(request("second")).unwrap();
         assert_eq!(
-            state.pending_launches["com.example.test"].latest.command,
-            "second"
+            state.plugins.pending_launch_command("com.example.test"),
+            Some("second")
         );
         assert!(matches!(
             state.poll_launch(),
@@ -942,17 +728,14 @@ mod tests {
 
         #[cfg(target_os = "windows")]
         let _icon_guard = crate::app_icons::ICON_TEST_LOCK.lock().unwrap();
-        let (items, rows, actions) = state.local_rows("lanya");
+        let items = state.local_items("lanya");
 
-        assert!(rows
-            .iter()
-            .any(|row| row.id == "settings:ms-settings:bluetooth"));
         assert!(items.iter().any(|item| {
             item.id == "settings:ms-settings:bluetooth"
-                && item.action.as_str() == "settings:ms-settings:bluetooth"
+                && item.action_id.as_str() == "settings:ms-settings:bluetooth"
         }));
-        assert!(actions.iter().any(|action| matches!(
-            action,
+        assert!(items.iter().any(|item| matches!(
+            &item.action,
             RowAction::OpenSettings(uri) if uri == "ms-settings:bluetooth"
         )));
         std::fs::remove_dir_all(dir).ok();

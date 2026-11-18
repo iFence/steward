@@ -21,22 +21,6 @@ pub const LAUNCHER_STATUS_BAR_HEIGHT: f32 = 34.0;
 /// Vertical inset around the launcher content. The header's non-input area is
 /// the window's drag handle; the input box itself is not draggable.
 pub const LAUNCHER_MARGIN: f32 = 4.0;
-/// Width of a detached plugin-view widget window (logical px). A floating
-/// calendar / list panel is compact so it sits unobtrusively beside the bar.
-pub const PLUGIN_WIDGET_WIDTH: f32 = 560.0;
-/// Vertical padding around a detached plugin-view widget window.
-pub const PLUGIN_WIDGET_PADDING: f32 = 8.0;
-
-/// Fixed row height of a launcher result. Must match `results_list.rs` so the
-/// window resize stays in sync with the rendered list.
-pub const RESULT_ROW_HEIGHT: f32 = 42.0;
-/// Maximum number of results shown before the drop-down scrolls.
-pub const MAX_RESULT_ROWS: usize = 8;
-/// Maximum number of plugin rows merged into the drop-down on one query.
-/// Plugin views arrive asynchronously, so this cap keeps the list stable and
-/// bounded even when several plugins match.
-pub const MAX_PLUGIN_ROWS: usize = 4;
-
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub const MENU_SETTINGS: &str = "settings";
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -49,6 +33,7 @@ pub const MENU_QUIT: &str = "quit";
 /// session — while re-summoning then costs ~150 ms. Keeping the window hidden
 /// re-summons in ~10-30 ms at the same memory, so hide is the default.
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 pub const CLOSE_ON_HIDE: bool = false;
 
 /// The launcher's accent color when no theme color is configured (Tinycast's
@@ -63,7 +48,5 @@ pub const LANGUAGE_SETTING: &str = "language";
 /// Storage key for the persisted summon hotkey (a `HotKey::into_string()`
 /// string, e.g. `control+alt+Space`).
 pub const SUMMON_HOTKEY_SETTING: &str = "summon_hotkey";
-/// Storage key for the persisted settings-window hotkey (e.g. `control+comma`).
-pub const SETTINGS_HOTKEY_SETTING: &str = "settings_hotkey";
 /// Storage key for checking GitHub Releases when Steward starts.
 pub const CHECK_UPDATES_SETTING: &str = "check_updates_on_startup";

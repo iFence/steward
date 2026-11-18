@@ -101,9 +101,10 @@ mod tests {
             let contribution = source.contribute(query);
             assert_eq!(
                 contribution
-                    .rows
+                    .items
                     .first()
-                    .and_then(|row| row.icon.as_deref()),
+                    .and_then(|item| item.icon.source())
+                    .as_deref(),
                 Some(icon),
                 "{query} should produce a plugin row with the manifest icon"
             );

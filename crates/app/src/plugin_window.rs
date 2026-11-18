@@ -3,16 +3,18 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use gpui::{
-    px, size, App, AppContext, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions,
+    px, size, App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, Render,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
-use nsh_engine::HostChannel;
-use nsh_platform_gpui::AppOptions;
-use steward_plugin_contract::LaunchRequest;
+use nsh_engine::{HostChannel, HostReply};
+use nsh_package::PackageReceipt;
+use nsh_platform_gpui::{AppOptions, AppView};
+use steward_plugin_contract::{LaunchRequest, PluginSessionId};
 use steward_plugin_host::PluginLaunch;
 
 use crate::nsh_surface::{new_view, plugin_limits};
@@ -24,6 +26,94 @@ const PLUGIN_WINDOW_HEIGHT: f32 = 660.0;
 const PLUGIN_WINDOW_MIN_WIDTH: f32 = 720.0;
 const PLUGIN_WINDOW_MIN_HEIGHT: f32 = 600.0;
 const FIRST_FRAME_GRACE: Duration = Duration::from_millis(250);
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
+const HOLIDAY_QUEUE_DEPTH: usize = 16;
+static NEXT_PLUGIN_SESSION: AtomicU64 = AtomicU64::new(1);
+
+struct PluginFrameView {
+    app: Entity<AppView>,
+    plugin_id: String,
+    session_id: PluginSessionId,
+    receipt: PackageReceipt,
+    requested_at: std::time::Instant,
+    events: crossbeam_channel::Sender<PluginRuntimeEvent>,
+    fatal_error: Arc<Mutex<Option<String>>>,
+    first_frame_reported: Arc<AtomicBool>,
+    cancel_health: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
+}
+
+impl Render for PluginFrameView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.first_frame_reported.swap(true, Ordering::AcqRel) {
+            let first_frame_at = std::time::Instant::now();
+            let plugin_id = self.plugin_id.clone();
+            let session_id = self.session_id;
+            let receipt = self.receipt.clone();
+            let requested_at = self.requested_at;
+            let events = self.events.clone();
+            let fatal_error = self.fatal_error.clone();
+            let cancel_health = self.cancel_health.clone();
+            let healthy = self.healthy.clone();
+            cx.spawn(async move |_view, cx| {
+                cx.background_executor().timer(FIRST_FRAME_GRACE).await;
+                if cancel_health.load(Ordering::Acquire) {
+                    return;
+                }
+                let no_fatal_error = fatal_error
+                    .lock()
+                    .map(|fatal| fatal.is_none())
+                    .unwrap_or(false);
+                if no_fatal_error {
+                    healthy.store(true, Ordering::Release);
+                    let _ = events.send(PluginRuntimeEvent::Healthy {
+                        plugin_id,
+                        session_id,
+                        receipt,
+                        requested_at,
+                        first_frame_at,
+                    });
+                }
+            })
+            .detach();
+        }
+        self.app.clone()
+    }
+}
+
+struct HolidayRequest {
+    year: u16,
+    reply: HostReply,
+}
+
+fn start_holiday_worker(
+    cache_dir: std::path::PathBuf,
+) -> crossbeam_channel::Sender<HolidayRequest> {
+    let (tx, rx) = crossbeam_channel::bounded::<HolidayRequest>(HOLIDAY_QUEUE_DEPTH);
+    std::thread::Builder::new()
+        .name("steward-holiday-host".into())
+        .spawn(move || {
+            while let Ok(request) = rx.recv() {
+                match crate::holiday_schedule::load_year(request.year, &cache_dir) {
+                    Ok(schedule) => {
+                        request
+                            .reply
+                            .resolve(serde_json::to_value(schedule).unwrap_or_default());
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            year = request.year,
+                            %error,
+                            "calendar holiday schedule is unavailable"
+                        );
+                        request.reply.resolve(serde_json::json!({}));
+                    }
+                }
+            }
+        })
+        .expect("spawn holiday host worker");
+    tx
+}
 
 pub(crate) fn focus_and_send(
     cx: &mut App,
@@ -168,6 +258,7 @@ pub(crate) fn open_launch(
     });
     host.handle("steward.calendar.holidays", {
         let cache_dir = data_dir.join("calendar-holidays");
+        let worker = Arc::new(OnceLock::new());
         move |call| {
             let Some(year) = call.data().get("year").and_then(|value| value.as_u64()) else {
                 call.reject("steward.calendar.holidays requires an integer year");
@@ -180,18 +271,21 @@ pub(crate) fn open_launch(
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            let cache_dir = cache_dir.clone();
-            std::thread::spawn(move || {
-                match crate::holiday_schedule::load_year(year, &cache_dir) {
-                    Ok(schedule) => {
-                        reply.resolve(serde_json::to_value(schedule).unwrap_or_default());
-                    }
-                    Err(error) => {
-                        tracing::warn!(year, %error, "calendar holiday schedule is unavailable");
-                        reply.resolve(serde_json::json!({}));
-                    }
+            let sender = worker.get_or_init(|| start_holiday_worker(cache_dir.clone()));
+            let request = HolidayRequest { year, reply };
+            match sender.try_send(request) {
+                Ok(()) => {}
+                Err(crossbeam_channel::TrySendError::Full(request)) => {
+                    request
+                        .reply
+                        .reject("steward.calendar.holidays is busy; retry later");
                 }
-            });
+                Err(crossbeam_channel::TrySendError::Disconnected(request)) => {
+                    request
+                        .reply
+                        .reject("steward.calendar.holidays host worker is unavailable");
+                }
+            }
         }
     });
     host.handle("steward.window.close", {
@@ -217,6 +311,9 @@ pub(crate) fn open_launch(
     );
     let fatal_error = Arc::new(Mutex::new(None::<String>));
     let healthy = Arc::new(AtomicBool::new(false));
+    let first_frame_reported = Arc::new(AtomicBool::new(false));
+    let cancel_health = Arc::new(AtomicBool::new(false));
+    let session_id = NEXT_PLUGIN_SESSION.fetch_add(1, Ordering::Relaxed);
     let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -238,9 +335,11 @@ pub(crate) fn open_launch(
             let events = events.clone();
             let fatal_error = fatal_error.clone();
             let healthy = healthy.clone();
+            let first_frame_reported = first_frame_reported.clone();
+            let cancel_health = cancel_health.clone();
             let error_request = initial.clone();
             move |window, cx| {
-                cx.new(|cx| {
+                let app = cx.new(|cx| {
                     let options = AppOptions {
                         app_id,
                         title: window_plugin_id.clone(),
@@ -269,6 +368,7 @@ pub(crate) fn open_launch(
                                         *fatal = Some(message.clone());
                                         let _ = events.send(PluginRuntimeEvent::Failed {
                                             plugin_id: request.plugin_id.clone(),
+                                            session_id,
                                             request: request.clone(),
                                             code: if healthy.load(Ordering::Relaxed) {
                                                 steward_plugin_contract::PluginErrorCode::RuntimeError
@@ -285,6 +385,18 @@ pub(crate) fn open_launch(
                     view.run_package(&package);
                     view.focus_handle(cx).focus(window, cx);
                     view
+                });
+                cx.new(|_| PluginFrameView {
+                    app,
+                    plugin_id: window_plugin_id.clone(),
+                    session_id,
+                    receipt: receipt.clone(),
+                    requested_at,
+                    events: events.clone(),
+                    fatal_error: fatal_error.clone(),
+                    first_frame_reported: first_frame_reported.clone(),
+                    cancel_health: cancel_health.clone(),
+                    healthy: healthy.clone(),
                 })
             }
         },
@@ -294,6 +406,8 @@ pub(crate) fn open_launch(
         PluginWindow {
             handle: handle.into(),
             host,
+            session_id,
+            cancel_health: cancel_health.clone(),
         },
     );
     crate::metrics::value(
@@ -309,19 +423,25 @@ pub(crate) fn open_launch(
 
     let events = events.clone();
     let fatal_error_for_timer = fatal_error.clone();
-    let healthy_for_timer = healthy.clone();
+    let first_frame_for_timer = first_frame_reported.clone();
+    let cancel_health_for_timer = cancel_health.clone();
+    let plugin_id = plugin_id.clone();
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(FIRST_FRAME_GRACE).await;
-        if fatal_error_for_timer
-            .lock()
-            .map(|fatal| fatal.is_none())
-            .unwrap_or(false)
+        cx.background_executor().timer(FIRST_FRAME_TIMEOUT).await;
+        if !first_frame_for_timer.load(Ordering::Acquire)
+            && !cancel_health_for_timer.load(Ordering::Acquire)
+            && fatal_error_for_timer
+                .lock()
+                .map(|fatal| fatal.is_none())
+                .unwrap_or(false)
         {
-            healthy_for_timer.store(true, Ordering::Relaxed);
-            let _ = events.send(PluginRuntimeEvent::Healthy {
-                plugin_id,
-                receipt,
-                requested_at,
+            let message = "plugin did not render its first frame within 2 seconds".to_string();
+            let _ = events.send(PluginRuntimeEvent::Failed {
+                plugin_id: plugin_id.clone(),
+                session_id,
+                request: initial.clone(),
+                code: steward_plugin_contract::PluginErrorCode::FirstFrameFailed,
+                error: message.clone(),
             });
         }
     })
@@ -353,12 +473,12 @@ fn persist_plugin_storage(
 }
 
 pub(crate) fn close(cx: &mut App, state: &Rc<RefCell<AppState>>, plugin_id: &str) {
-    let handle = state
-        .borrow_mut()
-        .plugin_windows
-        .remove(plugin_id)
-        .map(|window| window.handle);
-    if let Some(handle) = handle {
+    let window = state.borrow_mut().plugin_windows.remove(plugin_id);
+    if let Some(window) = window {
+        window
+            .cancel_health
+            .store(true, std::sync::atomic::Ordering::Release);
+        let handle = window.handle;
         let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
     crate::metrics::value(

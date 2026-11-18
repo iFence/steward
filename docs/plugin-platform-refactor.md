@@ -60,12 +60,17 @@
 
 Evidence:
 
-- `cargo test --workspace`: 73 tests passed.
+- `cargo test --workspace`: 134 tests passed, 1 ignored.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - Launch work is owned by `plugin-host::launcher` and started through
   `PluginHost::start_launch`; the UI thread receives a bounded worker channel.
-- Receipt acceptance is emitted by the plugin window after `run_package` and a
-  250 ms no-fatal-error grace period.
+- A wrapper around the NSH `AppView` observes its actual first render. Receipt
+  acceptance is emitted only after that frame and a 250 ms no-fatal-error grace
+  period; a two-second watchdog reports `first_frame_failed` when no frame is
+  rendered. Session IDs prevent timers or errors from an old window affecting a
+  reopened plugin window.
+- Calendar host requests use one lazily-created, bounded worker per plugin
+  window instead of one detached thread per call.
 - Direct local equivalents `eslint` and `prettier --check` passed, and all
   three plugin `tsc -p` checks passed.
 - `pnpm` script execution was blocked by the host PowerShell execution policy;
@@ -110,13 +115,22 @@ Evidence:
 Evidence:
 
 - `cargo tree -p steward-plugin-host` contains no `steward-core-engine`.
+- `cargo tree -p steward-storage` contains no matcher, pinyin, or Windows
+  application-scanner dependencies.
 - Shared search and contract crates are workspace members with unit tests.
 - Route regexes are compiled during indexing and query results are capped.
 - `events.rs` schedules handlers; domain commands live in `handlers.rs`.
 - `PluginWindowManager` owns window lookup, insertion, removal, and close
   cleanup.
+- `PluginRuntimeState` owns plugin catalog scans, route updates, trust roots,
+  pending launches, and launch polling; `SearchState` is limited to launcher
+  search and app cache coordination.
+- Search contributions and replies carry one `LauncherItem` per result, with its
+  `RowAction` attached. Rows and actions are derived only at the UI boundary.
+- Plugin manifest validation enforces path-safe reverse-domain IDs and semantic
+  versions before route metadata reaches SQLite.
 - Storage delegates settings, application cache, clipboard, and schema logic
-  to separate internal modules without changing its public API.
+  to separate internal modules without depending on `steward-core-engine`.
 
 ## Verification
 
