@@ -23,6 +23,7 @@ impl SearchSource for PluginSource<'_> {
             ..
         } in self.host.query(query).into_iter().take(MAX_ROUTE_RESULTS)
         {
+            let icon = icon.or_else(|| Some(crate::icons::owned(crate::icons::PLUGIN)));
             contribution.push(
                 FeatureId::Plugin,
                 LauncherSection::Plugins,
@@ -69,7 +70,7 @@ mod tests {
         let plugin_dir = data_dir.join("plugins").join("calendar");
         let mut host = steward_plugin_host::PluginHost::new(HostConfig::new(data_dir.clone()))
             .expect("create plugin host");
-        host.set_plugins(&[PluginMeta {
+        let mut meta = PluginMeta {
             manifest: PluginManifest {
                 schema_version: SCHEMA_VERSION,
                 id: "it.aspirin.calendar".into(),
@@ -91,7 +92,8 @@ mod tests {
             package: plugin_dir.join(PACKAGE_FILE),
             icon: Some(icon.into()),
             scanned_at: 0,
-        }]);
+        };
+        host.set_plugins(std::slice::from_ref(&meta));
 
         for query in ["calendar", "日历", "rili", "rl"] {
             let mut source = PluginSource {
@@ -109,6 +111,24 @@ mod tests {
                 "{query} should produce a plugin row with the manifest icon"
             );
         }
+
+        meta.manifest.icon = None;
+        meta.icon = None;
+        host.set_plugins(&[meta]);
+        let mut source = PluginSource {
+            host: &host,
+            label: "Plugin",
+        };
+        let contribution = source.contribute("calendar");
+        assert_eq!(
+            contribution
+                .items
+                .first()
+                .and_then(|item| item.icon.source())
+                .as_deref(),
+            Some(crate::icons::PLUGIN),
+            "plugins without a manifest icon should use the fallback icon"
+        );
 
         drop(host);
         std::fs::remove_dir_all(&data_dir).ok();

@@ -171,10 +171,11 @@ fn settings_icon() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         crate::app_icons::settings_icon_data_url()
+            .or_else(|| Some(crate::icons::owned(crate::icons::SETTINGS)))
     }
     #[cfg(not(target_os = "windows"))]
     {
-        None
+        Some(crate::icons::owned(crate::icons::SETTINGS))
     }
 }
 

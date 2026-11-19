@@ -155,6 +155,7 @@ fn file_icon(icon_cache: &mut HashMap<PathBuf, Option<String>>, path: &Path) -> 
     let icon = crate::app_icons::app_icon_data_url(path);
     #[cfg(not(target_os = "windows"))]
     let icon = None;
+    let icon = icon.or_else(|| Some(crate::icons::owned(crate::icons::FILE)));
     icon_cache.insert(path.to_path_buf(), icon.clone());
     icon
 }

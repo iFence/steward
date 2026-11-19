@@ -28,6 +28,11 @@ least 75% opaque so panel text stays legible while some backdrop blur remains,
 and it adapts up to 90% opacity when the sampled backdrop is bright. The
 settings window remains fully opaque.
 
+Every launcher result has an icon. Applications, files, and Windows Settings
+use their native Windows shell icons when available. Plugins use the inline SVG
+from `plugin.json`, with a generic plugin fallback for older manifests. Built-in
+calculator and URL actions use Steward-owned SVG icons.
+
 ## Process and Runtime Model
 
 ```text

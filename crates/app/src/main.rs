@@ -12,6 +12,7 @@ mod holiday_schedule;
 mod hotkey_registry;
 mod hotkeys;
 mod i18n;
+mod icons;
 mod instance;
 mod launch;
 mod launcher_model;

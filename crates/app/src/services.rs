@@ -740,4 +740,32 @@ mod tests {
         )));
         std::fs::remove_dir_all(dir).ok();
     }
+
+    #[test]
+    fn builtin_commands_always_have_icons() {
+        let dir = std::env::temp_dir().join(format!(
+            "steward-command-icons-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = Rc::new(RefCell::new(Storage::open_at(&dir).unwrap()));
+        let mut state = SearchState::new(dir.clone(), storage, ui_strings(), "en".into()).unwrap();
+
+        let calculator = state.local_items("1+1");
+        assert_eq!(
+            calculator[0].icon.source(),
+            Some(crate::icons::CALCULATOR.to_owned())
+        );
+
+        let browser = state.local_items("https://example.com");
+        assert_eq!(
+            browser[0].icon.source(),
+            Some(crate::icons::OPEN_URL.to_owned())
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

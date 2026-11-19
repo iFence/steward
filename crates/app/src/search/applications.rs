@@ -54,6 +54,7 @@ impl ApplicationSource<'_> {
         let icon = crate::app_icons::app_icon_data_url(path);
         #[cfg(not(target_os = "windows"))]
         let icon = None;
+        let icon = icon.or_else(|| Some(crate::icons::owned(crate::icons::APPLICATION)));
         self.icon_cache.insert(path.to_path_buf(), icon.clone());
         icon
     }

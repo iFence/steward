@@ -29,6 +29,9 @@ Conventions:
 - **Launcher result priority**: equally strong application and plugin matches
   now appear before file results, while a clearly stronger file match can still
   rank above weaker application or plugin matches.
+- **Consistent launcher icons**: applications, files, Windows Settings,
+  plugins, calculator results, and URL actions now always show an icon. UI
+  Showcase has its own plugin icon, and links use Steward's browser SVG.
 
 ### ✨ New Features
 

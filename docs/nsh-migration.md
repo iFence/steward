@@ -389,9 +389,13 @@ Results:
 - Storage no longer depends on `core-engine`, launcher results use one
   `LauncherItem` source model, plugin runtime coordination is separate from
   `SearchState`, and manifest IDs/versions are strictly validated.
+- Every launcher result now has an icon: native Windows shell icons with
+  product fallbacks for applications, files, and settings; manifest SVG with a
+  generic fallback for plugins; and Steward-owned SVG icons for calculator and
+  URL actions. UI Showcase now ships an inline SVG icon.
 - `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, and
-  `cargo test --workspace` passed; the test run reported 134 passed and 1
+  `cargo test --workspace` passed; the test run reported 137 passed and 1
   ignored.
 
 Pending release gates:
@@ -477,8 +481,6 @@ release measurements. NSH-4 remains open until the gates above are measured.
   behavior, and process-level window opening. Interactive settings controls,
   IME, and input-driven hotkey replacement still need a Windows UI acceptance
   pass.
-- Launcher result rows currently use a generic glyph instead of restoring
-  extracted Windows application icons and rendering plugin SVG icons.
 
 ## Rollback
 

@@ -60,7 +60,7 @@
 
 Evidence:
 
-- `cargo test --workspace`: 134 tests passed, 1 ignored.
+- `cargo test --workspace`: 137 tests passed, 1 ignored.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - Launch work is owned by `plugin-host::launcher` and started through
   `PluginHost::start_launch`; the UI thread receives a bounded worker channel.
@@ -71,6 +71,9 @@ Evidence:
   reopened plugin window.
 - Calendar host requests use one lazily-created, bounded worker per plugin
   window instead of one detached thread per call.
+- Launcher application, file, settings, plugin, calculator, and URL results all
+  resolve to an icon; missing native or manifest icons fall back to
+  Steward-owned SVGs.
 - Direct local equivalents `eslint` and `prettier --check` passed, and all
   three plugin `tsc -p` checks passed.
 - `pnpm` script execution was blocked by the host PowerShell execution policy;

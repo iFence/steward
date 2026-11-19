@@ -1,6 +1,7 @@
 //! Compact launcher result list built from NSH host elements.
 
 use nsh_core::prelude::*;
+use nsh_core::element::ImageSrc;
 
 use crate::palette;
 
@@ -36,6 +37,14 @@ pub enum PressedKey {
     Chrome,
 }
 
+fn row_image_source(icon: String) -> ImageSrc {
+    if icon.trim_start().starts_with("<svg") {
+        ImageSrc::svg_markup(&icon)
+    } else {
+        ImageSrc::from(icon)
+    }
+}
+
 pub fn result_list(
     rows: Signal<Vec<LauncherRow>>,
     selected: Signal<usize>,
@@ -53,7 +62,8 @@ pub fn result_list(
             rows.with(|rows| row_at(rows, index))
         });
         let has_icon = move || row.with(|row| row.icon.is_some());
-        let icon_src = move || row.with(|row| row.icon.clone().unwrap_or_default());
+        let icon_src =
+            move || row.with(|row| row_image_source(row.icon.clone().unwrap_or_default()));
         let subtitle_is_trailing =
             move || row.with(|row| row.subtitle_placement == SubtitlePlacement::Trailing);
         let activate = on_activate.clone();
@@ -136,10 +146,11 @@ mod tests {
     use std::time::Duration;
 
     use nsh_core::prelude::*;
+    use nsh_core::element::ImageSrc;
     use nsh_engine::{EngineConfig, Root};
     use nsh_testing::Headless;
 
-    use super::{result_list, row_at, LauncherRow};
+    use super::{result_list, row_at, row_image_source, LauncherRow};
 
     #[test]
     fn an_out_of_range_result_row_is_empty() {
@@ -148,6 +159,16 @@ mod tests {
         assert!(row.title.is_empty());
         assert!(row.subtitle.is_empty());
         assert_eq!(row.icon, None);
+    }
+
+    #[test]
+    fn raw_svg_icons_are_encoded_as_svg_markup() {
+        let icon = r#"<svg viewBox="0 0 1 1"><rect width="1" height="1"/></svg>"#;
+        assert_eq!(row_image_source(icon.into()), ImageSrc::svg_markup(icon));
+        assert_eq!(
+            row_image_source("data:image/png;base64,test".into()),
+            ImageSrc::from("data:image/png;base64,test")
+        );
     }
 
     #[component]

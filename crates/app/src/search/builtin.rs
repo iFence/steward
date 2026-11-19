@@ -18,14 +18,24 @@ impl SearchSource for BuiltinSource<'_> {
             contribution.push(
                 FeatureId::Calculator,
                 LauncherSection::Commands,
-                row("calc", &self.strings.calculator, &text, None),
+                row(
+                    "calc",
+                    &self.strings.calculator,
+                    &text,
+                    Some(crate::icons::owned(crate::icons::CALCULATOR)),
+                ),
                 RowAction::CopyText(text),
             );
         } else if steward_core_engine::try_openable(query).is_some() {
             contribution.push(
                 FeatureId::Url,
                 LauncherSection::Commands,
-                row("url", &self.strings.open_url, query, None),
+                row(
+                    "url",
+                    &self.strings.open_url,
+                    query,
+                    Some(crate::icons::owned(crate::icons::OPEN_URL)),
+                ),
                 RowAction::OpenUrl(query.to_owned()),
             );
         }

@@ -31,7 +31,7 @@ Fields:
 | `id` | string | yes | Reverse-domain id; must match `nsh.json`. |
 | `name` | string | yes | Display name. |
 | `version` | string | yes | Must match the package app version. |
-| `icon` | string | no | Inline SVG launcher icon. |
+| `icon` | string | recommended | Inline SVG launcher icon. Official plugins must provide it; older manifests receive Steward's generic plugin fallback. |
 | `package` | string | yes | Must be `plugin.nshpkg`. |
 | `commands` | array | yes | At least one command. |
 
