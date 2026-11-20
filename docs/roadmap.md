@@ -12,6 +12,7 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 | M1 application launcher MVP | complete |
 | NSH migration (NSH-0 to NSH-3) | complete |
 | NSH release hardening (NSH-4) | in progress |
+| Plugin process isolation (Phase 3) | in progress |
 | Windows support polish (M4) | next |
 | Plugin ecosystem v1 (M5) | planned |
 | AI capability and MCP layers (M6-M8) | planned |
@@ -32,7 +33,7 @@ Steward
   |     +-- settings and hotkeys
   |     +-- plugin route catalog
   |
-  +-- NSH plugin windows
+  +-- NSH plugin host processes (one per open window)
   |     +-- signed plugin.nshpkg
   |     +-- TSX application and QuickJS VM
   |     +-- typed Steward host bridge
@@ -116,7 +117,8 @@ adapters or sidecars. They must not add a permanent Node runtime to the shell.
 ## Priorities
 
 1. Finish NSH-4 and make Windows installation trustworthy.
-2. Improve plugin authoring and package management.
-3. Add AI-callable capabilities with explicit consent and diagnostics.
-4. Add MCP and external ecosystem adapters only where they preserve the
+2. Finish plugin process isolation, resource containment, and restart policy.
+3. Improve plugin authoring and package management.
+4. Add AI-callable capabilities with explicit consent and diagnostics.
+5. Add MCP and external ecosystem adapters only where they preserve the
    launcher's latency and memory goals.

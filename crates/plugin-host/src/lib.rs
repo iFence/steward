@@ -139,6 +139,19 @@ impl PluginHost {
         Ok(rx)
     }
 
+    /// Validates and loads a plugin package synchronously.
+    ///
+    /// The desktop shell uses [`Self::start_launch`] so package I/O stays off
+    /// its UI thread. A dedicated plugin-host process calls this method on its
+    /// own main thread before creating the NSH window.
+    pub fn prepare_launch(
+        &self,
+        request: LaunchRequest,
+    ) -> std::result::Result<PluginLaunch, PluginHostError> {
+        let metadata = self.launch_metadata(&request)?;
+        launcher::load(metadata, self.trust.roots(), &self.config.data_dir)
+    }
+
     pub fn accept_receipt(&mut self, receipt: &PackageReceipt) -> Result<()> {
         self.trust
             .accept_receipt(receipt)

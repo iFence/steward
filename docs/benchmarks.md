@@ -77,11 +77,14 @@ release build:
 | Official plugin first frame p95 | 500 ms or less |
 | Existing plugin focus p95 | 50 ms or less |
 | Hidden plugin VMs | zero |
+| Hidden plugin host processes | zero |
 
 Also record:
 
 - executable and MSI size;
-- idle RSS with zero, one, and three open plugin windows;
+- shell RSS and aggregate RSS with zero, one, and three open plugin windows;
+- plugin host process count while launcher-only, after opening each window, and
+  after closing all windows;
 - route-search latency at 100, 500, and 1000 synthetic installed plugins.
 
 ## Method
@@ -93,7 +96,8 @@ NSH plugin measurements:
 2. Record process start, tray readiness, and first launcher summon.
 3. Install signed packages and record first-frame time for each plugin.
 4. Invoke the same plugin command again and record focus-plus-command latency.
-5. Close all plugin windows and verify no hidden plugin VM remains.
+5. Close all plugin windows and verify no hidden plugin VM or plugin host
+   process remains.
 
 Store raw output and machine details alongside any future table updates.
 

@@ -374,7 +374,6 @@ pub enum WindowCommand {
     FocusLauncher,
     Resize { height: f32 },
     Activate(RowAction),
-    ClosePlugin(String),
     SetLanguage(String),
     SetAccent(String),
     SetAutostart(bool),

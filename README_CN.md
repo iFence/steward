@@ -37,7 +37,7 @@ VM。插件命令会在完整 NSH 窗口中打开已签名的 TSX 应用，并�
 steward/
 ├── Cargo.toml
 ├── crates/
-│   ├── app/                 GPUI Fast 外壳、托盘、热键、插件窗口
+│   ├── app/                 GPUI Fast 外壳与隔离的插件宿主进程
 │   ├── core-engine/         应用搜索与匹配
 │   ├── plugin-host/         签名包校验与路由目录
 │   ├── plugin-registry/     plugin.json v2 元数据缓存
@@ -63,7 +63,7 @@ steward/
 安装匹配版本的 NSH CLI：
 
 ```powershell
-cargo install --locked --version 0.5.1 nsh-cli
+cargo install --locked --version 0.6.1 nsh-cli
 ```
 
 构建与运行：

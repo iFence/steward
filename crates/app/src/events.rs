@@ -27,8 +27,8 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
     cx.spawn(async move |cx| loop {
         state.borrow_mut().search.borrow_mut().poll();
         handlers::drain_plugin_launches(cx, &state);
+        crate::plugin_window::poll_processes(&state);
         handlers::drain_plugin_events(cx, &state);
-        handlers::drain_clipboard(&state);
         handlers::drain_requests(&state);
         handlers::drain_update_state(cx, &state);
         handlers::drain_commands(cx, &state);

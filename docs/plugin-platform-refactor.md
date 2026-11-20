@@ -1,9 +1,8 @@
 # Steward Plugin Platform Refactor
 
-> Status: implementation tracked here. This document covers phases 1 and 2 of
-> the plugin-platform architecture work. Process isolation, marketplace
-> admission, host API negotiation, and user-managed capability grants remain
-> phase 3 and phase 4 work.
+> Status: implementation tracked here. Phases 1 and 2 are complete. Phase 3
+> process isolation is in progress; marketplace admission, host API
+> negotiation, and user-managed capability grants remain phase 4 work.
 
 ## Invariants
 
@@ -13,8 +12,9 @@
 - Search continues to use `nucleo`; this work does not add a second matcher.
 - The current `plugin.json` schema, launch parameters, and TypeScript helper
   surface remain compatible.
-- Phases 1 and 2 do not make third-party plugins safe to admit. Plugin VMs
-  remain in the Steward process until phase 3.
+- The shell never owns a plugin VM.
+- Third-party plugins remain inadmissible until process isolation, resource
+  containment, capability review, and marketplace policy are complete.
 
 ## Status
 
@@ -22,7 +22,7 @@
 |---|---|
 | Phase 1: launch and diagnostics hardening | Complete |
 | Phase 2: responsibility and dependency split | Complete |
-| Phase 3: one process per plugin window | Not started |
+| Phase 3: one process per plugin window | In progress |
 | Phase 4: third-party marketplace admission | Not started |
 
 ## Phase 1: Launch and Diagnostics
@@ -135,6 +135,50 @@ Evidence:
 - Storage delegates settings, application cache, clipboard, and schema logic
   to separate internal modules without depending on `steward-core-engine`.
 
+## Phase 3: One Process Per Plugin Window
+
+### Process boundary
+
+- [x] `P3-PROCESS-1`: the shell starts one `steward-app
+  --plugin-host-process` child per open plugin and keeps no NSH `AppView`.
+- [x] `P3-PROCESS-2`: parent/child messages are versioned, session-scoped
+  NDJSON with separate control and lifecycle event directions.
+- [x] `P3-PROCESS-3`: the child independently reloads the cached route
+  metadata, verifies the signed package against the same trust roots, applies
+  the release capability policy, and only then creates its NSH window.
+- [x] `P3-PROCESS-4`: the parent accepts the package receipt only after the
+  child reports an actual render and the existing 250 ms fatal-error grace
+  period.
+- [x] `P3-PROCESS-5`: repeated commands, focus changes, theme changes, and
+  close requests cross the process boundary without creating another VM.
+- [x] `P3-PROCESS-6`: child exit and protocol failures become structured
+  launcher notices; closing a child is reaped by the shell.
+- [ ] `P3-PROCESS-7`: enforce process memory/CPU/handle limits with a Windows
+  Job Object and define restart/backoff policy.
+- [ ] `P3-PROCESS-8`: add process-isolation release measurements and a
+  signed-package crash/upgrade acceptance run on a clean Windows VM.
+
+### Isolation boundary
+
+The child has its own GPUI application loop, NSH engine, QuickJS VM, host
+channel, renderer, and process failure domain. It still runs as the same
+Windows user and is not an OS security sandbox. Signed packages, release
+capability policy, NSH engine quotas, and the parent/child protocol remain the
+application-level controls; Job Object containment and OS-level sandboxing are
+separate follow-up work.
+
+### Evidence
+
+- `cargo fmt --all --check` and
+  `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo test --workspace` passed with 139 tests and 1 intentionally ignored
+  Windows Search integration test.
+- A real isolated child loaded the development-signed Calendar package,
+  emitted `rendered` and `healthy` with the expected camelCase protocol shape,
+  accepted `close`, and exited with code 0.
+- An isolated child with no matching package emitted a flushed `failed`
+  (`not_found`) event and exited cleanly, covering startup-error propagation.
+
 ## Verification
 
 ```text
@@ -153,6 +197,8 @@ nsh test packages/plugins/ui-showcase
 ## Decision Log
 
 - 2026-11-08: phases 1 and 2 intentionally retain the in-process NSH runtime.
+- 2026-11-20: phase 3 starts one `--plugin-host-process` child per open plugin;
+  this supersedes the in-process runtime decision for plugin windows.
 - 2026-11-08: no schema or plugin API migration is part of this work.
 - 2026-11-08: the application keeps one SQLite file during the storage split;
   repository ownership is separated inside the crate.

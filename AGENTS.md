@@ -15,14 +15,17 @@ Steward app process
   +-- GPUI Fast window
         |
         +-- NSH Rust launcher/settings root (no JavaScript VM)
+
+Steward plugin host process (one per open plugin window)
+  |
+  +-- NSH plugin window (one QuickJS VM)
         |
-        +-- NSH plugin window (one QuickJS VM per open plugin)
-              |
-              +-- signed plugin.nshpkg
+        +-- signed plugin.nshpkg
 ```
 
-- `steward-app` owns the tray, global hotkey, windows, search services, and
-  plugin-window lifecycle.
+- `steward-app` owns the tray, global hotkey, shell windows, search services,
+  and plugin-host process lifecycle. The same executable runs each plugin
+  window in `--plugin-host-process` mode.
 - The launcher and settings are NSH Rust surfaces. They do not start QuickJS.
 - Official plugins are TSX applications built and signed by the pinned NSH
   CLI. `plugin.json` is route metadata and points at `plugin.nshpkg`.
@@ -38,7 +41,7 @@ Steward app process
 
   | crate | role |
   |---|---|
-  | `app` | GPUI Fast entry, NSH shell, tray, hotkeys, and plugin windows |
+  | `app` | GPUI Fast entry, NSH shell, tray, hotkeys, and isolated plugin host |
   | `core-engine` | application search, fuzzy matching, and ranking |
   | `search` | shared pinyin haystacks and matcher vocabulary |
   | `plugin-contract` | versioned launcher and host DTOs |
@@ -61,6 +64,8 @@ Steward app process
 - Cold start and route search may scale with installed plugin metadata, but
   must not start with the number of installed VMs. Hidden plugin VMs must be
   zero.
+- Each open plugin gets one child process. A child crash must not terminate the
+  launcher, tray, hotkey, or other plugins.
 - Each open plugin gets the limits in `docs/nsh-migration.md`: 64 MiB heap,
   1 MiB stack, 2 s load budget, 250 ms call budget, and 20,000 UI nodes.
 - Plugin capabilities are deny-by-default. Release capability policy is
@@ -72,11 +77,11 @@ Steward app process
   `[workspace.dependencies]`.
 - Use `nucleo` for fuzzy matching, `rusqlite` for SQLite, `serde` for JSON,
   and NSH crates for UI/runtime behavior.
-- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.16`, and `gpui-kit` to
+- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.17`, and `gpui-kit` to
   `=0.10.0`.
-- Pin the published NSH crates to `=0.5.1`. Keep the compatibility patch in
-  `vendor/nsh-platform-gpui` until a published NSH release supports GPUI Fast
-  0.1.16 directly. Update `docs/nsh-migration.md` before changing these pins.
+- Pin the published NSH crates to `=0.6.1`. Use the published
+  `nsh-platform-gpui` crate directly. Update `docs/nsh-migration.md` before
+  changing these pins.
 - Keep the runtime footprint small. Do not add a second matcher, database
   abstraction, JSON implementation, or JavaScript runtime.
 

@@ -2,9 +2,9 @@
 
 Steward includes and links the following Apache-2.0 projects:
 
-- Native Shell (`longbridge/nsh`), pinned at version 0.5.1
+- Native Shell (`longbridge/nsh`), pinned at version 0.6.1
 - Native Shell's required dependencies, including `gpui-fast` and
-  `gpui-fast-platform` 0.1.16, and `gpui-kit` 0.10.0
+  `gpui-fast-platform` 0.1.17, and `gpui-kit` 0.10.0
 
 The Apache License 2.0 text is distributed with the application at
 `assets/licenses/Apache-2.0.txt`.

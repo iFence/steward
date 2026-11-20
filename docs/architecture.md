@@ -18,7 +18,7 @@ The product's performance target is:
 
 - fast summon and query response independent of installed plugin count;
 - no plugin VM until a plugin window opens;
-- one VM per open plugin, destroyed with its window;
+- one plugin host process and VM per open plugin, destroyed with its window;
 - explicit memory, stack, call, load, and UI-node limits.
 
 ## Launcher Surface
@@ -51,7 +51,8 @@ steward-app.exe
         |     +-- GPUI Kit Root + Settings
         |     +-- language, accent, autostart, hotkeys, update status
         |
-        +-- plugin window (one per plugin ID)
+        +-- plugin host process (one per open plugin window)
+              +-- steward-app --plugin-host-process
               +-- nsh-platform-gpui AppView
               +-- one QuickJS VM
               +-- signed plugin.nshpkg
@@ -59,7 +60,17 @@ steward-app.exe
 ```
 
 The shell is Rust and contains no JavaScript VM. A plugin VM is created only
-inside `crates/app/src/plugin_window.rs` when a verified package opens.
+inside an isolated plugin host process started by
+`crates/app/src/plugin_window.rs`. The shell and child communicate through
+versioned, session-scoped NDJSON control and lifecycle messages. The child
+independently verifies the package before creating its NSH window. The shell
+accepts the receipt only after the child reports a real first render and the
+fatal-error grace period completes.
+
+This boundary isolates renderer and VM crashes from the launcher, but it is not
+yet an OS security sandbox: children run as the current Windows user. Signed
+package checks, the release capability ceiling, NSH quotas, Windows Job Object
+containment, and restart policy remain separate controls.
 
 GUI startup is guarded by a session-scoped Windows named mutex before storage,
 search workers, tray, or windows are initialized. A secondary launch signals a
@@ -87,10 +98,10 @@ to plugins.
 
 | Crate | Responsibility |
 |---|---|
-| `steward-app` | GPUI Fast application, windows, tray, hotkey, search events, Windows Search file queries, plugin windows |
+| `steward-app` | GPUI Fast shell, tray, hotkey, search, and isolated plugin host process entry |
 | `steward-core-engine` | application matching, calculator, URL detection |
 | `steward-search` | shared pinyin haystacks and fuzzy-search vocabulary |
-| `steward-plugin-contract` | versioned launch, notice, error, and session DTOs |
+| `steward-plugin-contract` | versioned launch, process protocol, notice, error, and session DTOs |
 | `steward-plugin-registry` | strict `plugin.json` v2 parser and SQLite route cache |
 | `steward-plugin-host` | catalog/route facade, package trust, capability policy, asynchronous launch preparation |
 | `steward-storage` | SQLite settings, usage, app cache, and clipboard rows |
@@ -103,11 +114,13 @@ application's supported schema is rejected instead of being rewritten.
 
 The application splits launcher search into built-in, application, indexed
 file, Windows Settings, and plugin sources. A narrow launcher service exposes
-only the query, command, settings, and notice ports needed by the NSH shell;
-settings and plugin windows continue to share the application-service
-composition root.
+only the query, command, settings, and notice ports needed by the NSH shell.
+Settings remain in the shell process; each plugin window has its own process
+and host-channel composition root.
 
-There is no plugin-runtime executable and no custom IPC protocol crate.
+There is no separate plugin-runtime executable. The shipped `steward-app.exe`
+starts in plugin-host child mode, and `steward-plugin-contract` owns the
+versioned parent/child message types.
 
 ## Search and Launch Flow
 

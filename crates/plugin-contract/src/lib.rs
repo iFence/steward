@@ -46,6 +46,64 @@ impl From<&LaunchRequest> for PluginLaunchParams {
     }
 }
 
+/// First message sent from the Steward shell to a plugin-host process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginProcessStart {
+    pub protocol_version: u16,
+    pub session_id: PluginSessionId,
+    pub request: LaunchRequest,
+}
+
+/// A command sent from the Steward shell to an already-running plugin host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginProcessCommand {
+    pub protocol_version: u16,
+    pub session_id: PluginSessionId,
+    pub action: PluginProcessAction,
+}
+
+/// Process-level actions that do not require an NSH host call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type",
+    deny_unknown_fields
+)]
+pub enum PluginProcessAction {
+    Command { command: String, input: String },
+    Theme { accent: String, dark: bool },
+    Focus,
+    Close,
+}
+
+/// A lifecycle event sent from a plugin host process to the Steward shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type",
+    deny_unknown_fields
+)]
+pub enum PluginProcessEvent {
+    Rendered {
+        protocol_version: u16,
+        session_id: PluginSessionId,
+    },
+    Healthy {
+        protocol_version: u16,
+        session_id: PluginSessionId,
+    },
+    Failed {
+        protocol_version: u16,
+        session_id: PluginSessionId,
+        code: PluginErrorCode,
+        error: String,
+    },
+}
+
 /// Stable failure category used by logs and launcher notices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,5 +178,57 @@ mod tests {
             "unexpected": 1
         });
         assert!(serde_json::from_value::<LaunchRequest>(value).is_err());
+    }
+
+    #[test]
+    fn process_protocol_roundtrips() {
+        let request = LaunchRequest {
+            plugin_id: "com.example.test".into(),
+            command: "run".into(),
+            title: "Test".into(),
+            input: "hello".into(),
+            locale: "en".into(),
+            accent: "#863bff".into(),
+            dark: true,
+        };
+        let start = PluginProcessStart {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 7,
+            request,
+        };
+        let command = PluginProcessCommand {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 7,
+            action: PluginProcessAction::Command {
+                command: "open".into(),
+                input: "item".into(),
+            },
+        };
+        let event = PluginProcessEvent::Healthy {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 7,
+        };
+
+        assert_eq!(
+            serde_json::from_str::<PluginProcessStart>(&serde_json::to_string(&start).unwrap())
+                .unwrap(),
+            start
+        );
+        assert_eq!(
+            serde_json::from_str::<PluginProcessCommand>(&serde_json::to_string(&command).unwrap())
+                .unwrap(),
+            command
+        );
+        assert_eq!(
+            serde_json::from_str::<PluginProcessEvent>(&serde_json::to_string(&event).unwrap())
+                .unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn process_actions_use_a_tagged_shape() {
+        let value = serde_json::to_value(PluginProcessAction::Focus).unwrap();
+        assert_eq!(value, serde_json::json!({ "type": "focus" }));
     }
 }

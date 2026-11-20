@@ -6,7 +6,8 @@
 > Milestone changes must update this file with the changed files, verification
 > commands, results, deviations, and any remaining release gates.
 >
-> Phases 1 and 2 of the follow-up plugin-platform work are tracked in
+> Phases 1 and 2 of the follow-up plugin-platform work are complete. Phase 3
+> process isolation is in progress and tracked in
 > [plugin-platform-refactor.md](plugin-platform-refactor.md).
 
 ## Why NSH
@@ -35,8 +36,8 @@ application runtime:
 |---|---|---|
 | UI capability | Full native TSX UI instead of a fixed view vocabulary | Larger runtime/API surface to learn |
 | Maintenance | Reuses NSH components, bundler, package format, and tests | NSH is young; exact revisions and compatibility checks matter |
-| Memory | Launcher starts no JavaScript VM; only open plugin windows allocate VMs | In-process VMs still cost 64 MiB each plus application assets |
-| Isolation | Per-VM heap/stack/time/node quotas, signed packages, capability grants | Not OS-process isolation; a host/runtime bug remains in-process |
+| Memory | Launcher starts no JavaScript VM; only open plugin windows allocate VMs | Each plugin host process still costs a 64 MiB VM allowance plus application assets |
+| Isolation | One process and VM per open plugin, plus per-VM quotas and signed packages | Runs as the current Windows user; Job Object limits are still pending |
 | Distribution | Standard signed package with certificate, revocation, and rollback checks | Production key ceremony and secret provisioning are required |
 | Migration | Direct cutover removes two protocols and the old runtime | Existing plugins and plugin storage are not compatible |
 | Performance | Route discovery is metadata-only and does not start a VM | Plugin first-frame performance depends on NSH startup and is still a release gate |
@@ -46,14 +47,13 @@ application runtime:
 1. Steward's launcher is an NSH Rust root rendered by `nsh-platform-gpui`;
    the settings window is a GPUI Kit view with `Root` and `Settings`.
 2. The product uses GPUI Fast directly and pins:
-   - `gpui-fast = =0.1.16`
-   - `gpui-fast-platform = =0.1.16`
+   - `gpui-fast = =0.1.17`
+   - `gpui-fast-platform = =0.1.17`
    - `gpui-kit = =0.10.0` with its `gpui-fast` feature, so NSH and the
      settings components share one GPUI backend.
-3. NSH crates are pinned to published version `0.5.1`. The
-   `nsh-platform-gpui` crate is patched locally because its published
-   `0.5.1` source duplicates two `IntoElement` implementations that GPUI Fast
-   0.1.16 now supplies through its `Element` blanket implementation.
+3. NSH crates are pinned to published version `0.6.1`. The published
+   `nsh-platform-gpui` crate works with GPUI Fast's blanket `IntoElement`
+   implementation, so Steward does not vendor a compatibility patch.
 4. Each plugin command opens one full NSH application window. A second command
    for the same plugin ID focuses the existing window and emits
    `steward.command`.
@@ -84,7 +84,8 @@ Windows app process
         +-- GPUI Kit settings
         |     +-- Settings pages, groups, items, and fields
         |
-        +-- NSH plugin window (one per plugin ID)
+        +-- NSH plugin host process (one per open plugin window)
+              +-- steward-app --plugin-host-process
               +-- signed plugin.nshpkg
               +-- one QuickJS VM
               +-- host bridge: clipboard history, close, command, theme
@@ -221,6 +222,20 @@ Evidence:
   change events. `nsh test` passed for all three plugins, and
   `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build` passed
   with the isolated NSH CLI 0.5.1.
+- Dependency refresh (2026-11-20): NSH crates and CLI moved from 0.5.1 to
+  0.6.1, GPUI Fast and its platform crate moved from 0.1.16 to 0.1.17, and the
+  local `nsh-platform-gpui` compatibility patch was removed because upstream
+  0.6.1 contains the required `IntoElement` fix. `KeyOptions` gained the
+  required `for_focus` field; Steward's launcher keys are ordinary view
+  bindings, so `bind_launcher_key` sets `for_focus: false`.
+- The 0.6.1 validation passed with one copy each of `nsh-platform-gpui` and
+  `gpui-fast`: `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `pnpm lint`, `pnpm format:check`,
+  `pnpm typecheck`, and `pnpm build`.
+- NSH 0.6.1 `nsh check` passed for all three official plugins. `nsh test`
+  passed Calendar (13 tests), Clipboard History (1 test), and UI Showcase
+  (1 test). The matching 0.6.1 `nsh-gpui-host` built successfully.
 
 ### NSH-2: Steward shell
 
@@ -408,6 +423,44 @@ Pending release gates:
 - Execute the automated plus manual matrix in `docs/windows-acceptance.md` on a
   clean Windows 11 23H2+ x64 VM.
 
+### Plugin Process Isolation (2026-11-20, in progress)
+
+Files:
+
+- `crates/app/src/main.rs`
+- `crates/app/src/events.rs`
+- `crates/app/src/plugin_window.rs`
+- `crates/app/src/state.rs`
+- `crates/app/src/clipboard_history.rs`
+- `crates/plugin-contract/src/lib.rs`
+- `crates/plugin-host/src/lib.rs`
+- `docs/plugin-platform-refactor.md`
+- `docs/architecture.md`
+- `docs/roadmap.md`
+
+Results:
+
+- The shell starts `steward-app --plugin-host-process` once per open plugin and
+  no longer owns an NSH `AppView` or plugin VM.
+- Parent/child control and lifecycle messages are versioned and session-scoped;
+  the child independently verifies the signed package before creating a window.
+- The receipt remains unaccepted until the child emits a real render followed
+  by a successful fatal-error grace period.
+- Command, focus, theme, and close actions are routed to the existing child.
+  Unexpected pre-health or nonzero exits are surfaced as structured notices.
+- `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed. An isolated Calendar child emitted
+  `rendered` then `healthy` and exited 0 after `close`; a missing-package child
+  flushed `failed/not_found`.
+
+Remaining:
+
+- Add Windows Job Object memory/CPU/handle limits and restart/backoff policy.
+- Measure process count, aggregate RSS, first-frame latency, and crash
+  containment for all three official plugins.
+- Run signed-package install/upgrade/crash acceptance on a clean Windows VM.
+
 ## Verification Commands
 
 Rust:
@@ -458,12 +511,10 @@ release measurements. NSH-4 remains open until the gates above are measured.
 
 ## Accepted Deviations
 
-- `nsh-platform-gpui` 0.5.1 is vendored with a two-impl compatibility patch
-  because the published crate conflicts with GPUI Fast 0.1.16's blanket
-  `IntoElement` implementation. Remove the patch when NSH publishes the same
-  fix.
-- Plugin VMs are in-process NSH engines, not separate OS processes. Signed
-  packages, capability grants, and hard engine quotas mitigate the risk.
+- Plugin VMs and NSH windows run in one child process per open plugin. Child
+  crashes no longer tear down the launcher; signed packages, the capability
+  ceiling, and hard engine quotas remain mandatory. Children still run as the
+  current Windows user until OS-level containment is added.
 - `STEWARD_SHOW_ON_START`, `STEWARD_SHOW_SETTINGS`, `STEWARD_SMOKE_PLUGIN`,
   `STEWARD_SMOKE_COMMAND`, and `STEWARD_SMOKE_TITLE` are developer-only smoke
   hooks. `STEWARD_DATA_DIR` consistently redirects app data, plugin data, and

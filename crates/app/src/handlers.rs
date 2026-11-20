@@ -48,9 +48,6 @@ pub(crate) fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                 }
             }
             WindowCommand::Activate(action) => activate(cx, state, action),
-            WindowCommand::ClosePlugin(plugin_id) => {
-                cx.update(|cx| crate::plugin_window::close(cx, state, &plugin_id));
-            }
             WindowCommand::SetLanguage(locale) => set_language(cx, state, &locale),
             WindowCommand::SetAccent(accent) => set_accent(state, &accent),
             WindowCommand::SetAutostart(enabled) => {
@@ -300,22 +297,6 @@ pub(crate) fn open_settings(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
     cx.update(|cx| {
         crate::window::open_settings_window(cx, state.clone(), services, data_dir);
     });
-}
-
-pub(crate) fn drain_clipboard(state: &Rc<RefCell<AppState>>) {
-    let receiver = state.borrow().clipboard_rx.borrow().clone();
-    let Some(receiver) = receiver else {
-        return;
-    };
-    let mut latest = None;
-    while let Ok(entries) = receiver.try_recv() {
-        latest = Some(entries);
-    }
-    if let Some(entries) = latest {
-        if let Ok(mut current) = state.borrow().clipboard_entries.lock() {
-            *current = entries;
-        }
-    }
 }
 
 fn set_language(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, locale: &str) {

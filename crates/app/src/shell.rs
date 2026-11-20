@@ -1249,6 +1249,7 @@ fn bind_launcher_key(key: &'static str, repeat: bool, handler: Rc<dyn Fn(&str)>)
             when: When::Always,
             repeat,
             pass_through: false,
+            for_focus: false,
         },
         move |key| handler(key),
     );

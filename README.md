@@ -39,7 +39,7 @@ least-privilege capabilities.
 steward/
 ├── Cargo.toml
 ├── crates/
-│   ├── app/                 GPUI Fast shell, tray, hotkeys, plugin windows
+│   ├── app/                 GPUI Fast shell and isolated plugin host processes
 │   ├── core-engine/         application search and matching
 │   ├── plugin-host/         signed package verification and route catalog
 │   ├── plugin-registry/     plugin.json v2 metadata cache
@@ -65,7 +65,7 @@ Prerequisites:
 Install the matching NSH CLI:
 
 ```powershell
-cargo install --locked --version 0.5.1 nsh-cli
+cargo install --locked --version 0.6.1 nsh-cli
 ```
 
 Build and run:

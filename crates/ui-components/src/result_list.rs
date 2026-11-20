@@ -1,7 +1,7 @@
 //! Compact launcher result list built from NSH host elements.
 
-use nsh_core::prelude::*;
 use nsh_core::element::ImageSrc;
+use nsh_core::prelude::*;
 
 use crate::palette;
 
@@ -145,8 +145,8 @@ fn row_at(rows: &[LauncherRow], index: usize) -> LauncherRow {
 mod tests {
     use std::time::Duration;
 
-    use nsh_core::prelude::*;
     use nsh_core::element::ImageSrc;
+    use nsh_core::prelude::*;
     use nsh_engine::{EngineConfig, Root};
     use nsh_testing::Headless;
 

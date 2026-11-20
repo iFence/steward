@@ -37,7 +37,7 @@ mod window;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gpui::App;
 use gpui_platform::application;
@@ -51,6 +51,10 @@ use crate::state::AppState;
 
 fn main() {
     let process_started = std::time::Instant::now();
+    if plugin_window::is_plugin_host_process() {
+        plugin_window::run_plugin_host();
+        return;
+    }
     if std::env::args().any(|arg| arg == "--sync-autostart") {
         autostart::sync_autostart_path();
         return;
@@ -155,10 +159,7 @@ fn main() {
     if services.check_updates_on_startup() {
         services.update_port().check_for_updates(false);
     }
-    let (clipboard_tx, clipboard_rx) = crossbeam_channel::unbounded();
-    let clipboard_watcher =
-        clipboard_history::ClipboardWatcher::spawn(data_dir.clone(), clipboard_tx);
-    let clipboard_entries = Arc::new(Mutex::new(Vec::new()));
+    let clipboard_watcher = clipboard_history::ClipboardWatcher::spawn(data_dir.clone());
 
     let state = Rc::new(RefCell::new(AppState {
         data_dir: data_dir.clone(),
@@ -171,8 +172,6 @@ fn main() {
         search,
         requests: request_rx,
         commands: command_rx,
-        clipboard_entries,
-        clipboard_rx: RefCell::new(Some(clipboard_rx)),
         tray: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
@@ -226,7 +225,7 @@ fn main() {
             );
             metrics::value(
                 "hidden_plugin_vm_count",
-                state.borrow().plugin_windows.values().count() as u64,
+                0,
                 serde_json::json!({ "phase": "tray_ready" }),
             );
             if let Ok(plugin_id) = std::env::var("STEWARD_SMOKE_PLUGIN") {
@@ -280,19 +279,6 @@ fn main() {
                 {
                     closed_state.borrow_mut().settings_window = None;
                 }
-                closed_state
-                    .borrow_mut()
-                    .plugin_windows
-                    .retain(|_, window| {
-                        if window.handle.window_id() == window_id {
-                            window
-                                .cancel_health
-                                .store(true, std::sync::atomic::Ordering::Release);
-                            false
-                        } else {
-                            true
-                        }
-                    });
             })
             .detach();
         }

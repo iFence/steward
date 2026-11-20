@@ -18,7 +18,6 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::Sender;
 use steward_storage::Storage;
 use tracing::error;
 
@@ -28,6 +27,13 @@ pub(crate) struct ClipboardEntry {
     pub id: String,
     pub text: String,
     pub copied_at: i64,
+}
+
+/// Reads the snapshot exposed to plugin host processes.
+pub(crate) fn entries_for_plugin(data_dir: &std::path::Path) -> Vec<ClipboardEntry> {
+    Storage::open_at(data_dir)
+        .map(|storage| recent_entries(&storage))
+        .unwrap_or_default()
 }
 
 /// How often the clipboard is polled.
@@ -44,13 +50,12 @@ const MAX_TEXT_LEN: usize = 100_000;
 pub(crate) struct ClipboardWatcher;
 
 impl ClipboardWatcher {
-    /// Start the watcher against `data_dir` (host `%APPDATA%/Steward`). Newest
-    /// entries are pushed to `tx`.
-    pub(crate) fn spawn(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>) -> Self {
+    /// Start the watcher against `data_dir` (host `%APPDATA%/Steward`).
+    pub(crate) fn spawn(data_dir: PathBuf) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         // Detached: dropping the `JoinHandle` lets the thread keep running for
         // the app's lifetime; on process exit it is killed by the OS.
-        let _handle = thread::spawn(move || run_watcher(data_dir, tx, stop_flag));
+        let _handle = thread::spawn(move || run_watcher(data_dir, stop_flag));
         Self
     }
 }
@@ -58,7 +63,7 @@ impl ClipboardWatcher {
 /// The watcher thread body. Owns the clipboard and a private SQLite connection
 /// (rusqlite `Connection` is `Send`, so it can be moved here and used only by
 /// this thread; WAL lets it coexist with the app's storage connection).
-fn run_watcher(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>, stop: Arc<AtomicBool>) {
+fn run_watcher(data_dir: PathBuf, stop: Arc<AtomicBool>) {
     let storage = match Storage::open_at(&data_dir) {
         Ok(storage) => storage,
         Err(error) => {
@@ -66,8 +71,6 @@ fn run_watcher(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>, stop: Arc<Ato
             return;
         }
     };
-    // Seed the host with whatever history already exists (cold start).
-    let _ = tx.send(recent_entries(&storage));
 
     let mut clipboard = match arboard::Clipboard::new() {
         Ok(clipboard) => clipboard,
@@ -96,7 +99,6 @@ fn run_watcher(data_dir: PathBuf, tx: Sender<Vec<ClipboardEntry>>, stop: Arc<Ato
                 } else if let Err(error) = storage.trim_clipboard(CLIPBOARD_HISTORY_LIMIT) {
                     error!(error = %format!("{error:#}"), "clipboard watcher trim failed");
                 }
-                let _ = tx.send(recent_entries(&storage));
             }
         }
         thread::sleep(POLL_INTERVAL);
