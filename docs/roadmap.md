@@ -14,7 +14,7 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 | NSH release hardening (NSH-4) | blocked: clean VM and production artifacts |
 | Plugin process isolation (Phase 3) | blocked: clean VM acceptance |
 | Windows support polish (M4) | blocked: clean-VM and interactive IME/display acceptance |
-| Plugin ecosystem v1 (M5) | planned |
+| Plugin ecosystem v1 (M5) | complete |
 | AI capability and MCP layers (M6-M8) | planned |
 | External runtime compatibility (M9-M10) | later |
 
@@ -111,12 +111,18 @@ configuration.
 
 ## M5 - Plugin Ecosystem v1
 
-- plugin scaffolding CLI;
-- package inspection and signature status UI;
-- install, update, remove, and rollback flows;
-- a local marketplace index;
-- publisher identity and revocation operations;
-- automated package policy checks.
+- [x] plugin scaffolding CLI;
+- [x] package inspection and signature status UI;
+- [x] install, update, remove, and rollback flows;
+- [x] a local marketplace index;
+- [x] publisher identity and revocation operations;
+- [x] automated package policy checks.
+
+Implementation and operating guidance are recorded in
+[plugin-ecosystem.md](plugin-ecosystem.md). M5 is local-first: a public
+third-party marketplace and admission service are not part of this milestone.
+Rollback remains subject to NSH's anti-downgrade rule after a newer build is
+accepted as healthy.
 
 ## M6 - AI Capability System
 

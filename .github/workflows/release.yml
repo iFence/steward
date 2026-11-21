@@ -173,6 +173,10 @@ jobs:
         shell: pwsh
         run: ./scripts/verify-release-plugins.ps1
 
+      - name: Check Steward package policy
+        shell: pwsh
+        run: ./scripts/check-plugin-policies.ps1
+
       - name: Generate plugin checksums
         shell: pwsh
         run: |

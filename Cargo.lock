@@ -8586,6 +8586,7 @@ dependencies = [
  "steward-plugin-contract",
  "steward-plugin-host",
  "steward-plugin-registry",
+ "steward-plugin-store",
  "steward-storage",
  "steward-ui-components",
  "tokio",
@@ -8609,6 +8610,18 @@ dependencies = [
  "steward-search",
  "widestring",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "steward-plugin-cli"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "dirs 6.0.0",
+ "nsh-package",
+ "serde",
+ "serde_json",
+ "steward-plugin-store",
 ]
 
 [[package]]
@@ -8648,6 +8661,23 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "steward-plugin-store"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "nsh-core",
+ "nsh-engine",
+ "nsh-package",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "steward-plugin-registry",
+ "zip",
 ]
 
 [[package]]

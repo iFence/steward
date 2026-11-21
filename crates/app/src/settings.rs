@@ -21,6 +21,7 @@ use gpui_kit::{
 
 use crate::{
     i18n::Localization,
+    plugin_management::{PluginManagementPort, PluginManagementSnapshot},
     services::{AppServices, WindowCommand},
     updates::UpdateState,
 };
@@ -71,6 +72,7 @@ impl StewardSettings {
         let hotkey = services.summon_hotkey();
         let check_updates_on_startup = services.check_updates_on_startup();
         let hotkey_focus = cx.focus_handle();
+        services.plugin_management().refresh();
 
         Self {
             services,
@@ -163,6 +165,9 @@ impl Render for StewardSettings {
         let hotkey_field = view.clone();
         let hotkey_recording_label =
             SharedString::from(self.i18n.translate("settings-hotkey-recording"));
+        let plugin_port = services.plugin_management();
+        let plugin_snapshot = plugin_port.snapshot();
+        let plugin_i18n = self.i18n.clone();
         Settings::new(SharedString::from(format!(
             "steward-settings-{}",
             self.language
@@ -310,6 +315,16 @@ impl Render for StewardSettings {
                             })
                     }),
                 ))),
+            SettingPage::new(self.i18n.translate("settings-plugins"))
+                .icon(Icon::new(IconName::Puzzle))
+                .group(SettingGroup::new().item(SettingItem::render({
+                    let port = plugin_port;
+                    let snapshot = plugin_snapshot;
+                    let i18n = plugin_i18n;
+                    move |_options, _window, cx| {
+                        render_plugins(port.clone(), snapshot.clone(), i18n.clone(), cx)
+                    }
+                }))),
             SettingPage::new(self.i18n.translate("settings-about"))
                 .resettable(false)
                 .icon(Icon::new(IconName::Info))
@@ -321,6 +336,365 @@ impl Render for StewardSettings {
                     }
                 }))),
         ])
+    }
+}
+
+fn render_plugins(
+    port: PluginManagementPort,
+    snapshot: PluginManagementSnapshot,
+    i18n: Rc<Localization>,
+    cx: &mut App,
+) -> impl IntoElement {
+    let refresh_port = port.clone();
+    let sync_port = port.clone();
+    let busy = snapshot.busy;
+    let mut content = v_flex()
+        .gap_3()
+        .w_full()
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    Button::new("plugins-refresh")
+                        .label(i18n.translate("settings-plugin-refresh"))
+                        .outline()
+                        .compact()
+                        .loading(busy)
+                        .disabled(busy)
+                        .on_click(move |_, _, _| refresh_port.refresh()),
+                )
+                .child(
+                    Button::new("plugins-sync-marketplace")
+                        .label(i18n.translate("settings-plugin-sync-marketplace"))
+                        .outline()
+                        .compact()
+                        .disabled(busy)
+                        .on_click(move |_, _, _| sync_port.sync_marketplace()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(i18n.translate("settings-plugins-description")),
+        );
+
+    if let Some(message) = &snapshot.message {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().primary)
+                .child(message.clone()),
+        );
+    }
+    if let Some(error) = &snapshot.error {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().danger)
+                .child(error.clone()),
+        );
+    }
+    for error in &snapshot.catalog.marketplace_errors {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().danger)
+                .child(error.clone()),
+        );
+    }
+    if let Some(revocations) = &snapshot.catalog.revocations {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "{} {}",
+                    i18n.translate("settings-plugin-revocations"),
+                    revocations.sequence
+                )),
+        );
+    }
+
+    content = content.child(
+        div()
+            .text_size(px(14.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(i18n.translate("settings-plugin-installed")),
+    );
+    if snapshot.catalog.installed.is_empty() {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(i18n.translate("settings-plugin-no-plugins")),
+        );
+    }
+    for plugin in &snapshot.catalog.installed {
+        let plugin_id = plugin.manifest.id.clone();
+        let (status, status_color) = match &plugin.inspection {
+            Some(inspection) if inspection.trusted && inspection.policy.passed => (
+                i18n.translate("settings-plugin-trusted"),
+                cx.theme().primary,
+            ),
+            Some(inspection) if inspection.trusted => (
+                i18n.translate("settings-plugin-policy-failed"),
+                cx.theme().danger,
+            ),
+            Some(inspection) if inspection.signature_valid => (
+                i18n.translate("settings-plugin-untrusted"),
+                cx.theme().danger,
+            ),
+            _ => (
+                i18n.translate("settings-plugin-invalid-signature"),
+                cx.theme().danger,
+            ),
+        };
+        let publisher = plugin
+            .inspection
+            .as_ref()
+            .and_then(|inspection| inspection.publisher_key_id.clone())
+            .unwrap_or_else(|| i18n.translate("settings-plugin-unknown-publisher"));
+        let package_sha = plugin
+            .inspection
+            .as_ref()
+            .map(|inspection| {
+                inspection
+                    .package_sha256
+                    .chars()
+                    .take(16)
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let update = snapshot
+            .catalog
+            .marketplace
+            .entries
+            .iter()
+            .filter(|entry| entry.id == plugin.manifest.id)
+            .max_by(|left, right| {
+                compare_versions(&left.version, &right.version)
+                    .then_with(|| left.build.cmp(&right.build))
+            })
+            .filter(|entry| compare_versions(&entry.version, &plugin.manifest.version).is_gt())
+            .cloned();
+        let update_port = port.clone();
+        let remove_port = port.clone();
+        let rollback_port = port.clone();
+        let update_id = plugin_id.clone();
+        let rollback_id = plugin_id.clone();
+        let remove_id = plugin_id.clone();
+        let rollback_version = plugin
+            .history
+            .first()
+            .map(|history| history.version.as_str())
+            .unwrap_or_default();
+        let mut actions = h_flex().gap_2();
+        if update.is_some() {
+            actions = actions.child(
+                Button::new(format!("plugin-update-{plugin_id}"))
+                    .label(i18n.translate("settings-plugin-update"))
+                    .primary()
+                    .compact()
+                    .disabled(busy)
+                    .on_click(move |_, _, _| update_port.update(update_id.clone())),
+            );
+        }
+        if !rollback_version.is_empty() {
+            let label = format!(
+                "{} {rollback_version}",
+                i18n.translate("settings-plugin-rollback")
+            );
+            actions = actions.child(
+                Button::new(format!("plugin-rollback-{plugin_id}"))
+                    .label(label)
+                    .outline()
+                    .compact()
+                    .disabled(busy)
+                    .on_click(move |_, _, _| rollback_port.rollback(rollback_id.clone())),
+            );
+        }
+        actions = actions.child(
+            Button::new(format!("plugin-remove-{plugin_id}"))
+                .label(i18n.translate("settings-plugin-remove"))
+                .outline()
+                .compact()
+                .disabled(busy)
+                .on_click(move |_, _, _| remove_port.remove(remove_id.clone())),
+        );
+        content = content.child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .p_3()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted)
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(format!(
+                                            "{} {}",
+                                            plugin.manifest.name, plugin.manifest.version
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{}: {publisher}",
+                                            i18n.translate("settings-plugin-publisher")
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(status_color)
+                                .child(status),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "{}: {}",
+                            i18n.translate("settings-plugin-package-hash"),
+                            if package_sha.is_empty() {
+                                "-"
+                            } else {
+                                package_sha.as_str()
+                            }
+                        )),
+                )
+                .when_some(plugin.error.clone(), |this, error| {
+                    this.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(cx.theme().danger)
+                            .child(error),
+                    )
+                })
+                .when(
+                    plugin
+                        .inspection
+                        .as_ref()
+                        .is_some_and(|inspection| !inspection.policy.warnings.is_empty()),
+                    |this| {
+                        this.child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "{} {}",
+                                    i18n.translate("settings-plugin-policy-review"),
+                                    plugin
+                                        .inspection
+                                        .as_ref()
+                                        .map(|inspection| inspection.policy.warnings.len())
+                                        .unwrap_or(0)
+                                )),
+                        )
+                    },
+                )
+                .child(actions),
+        );
+    }
+
+    content = content.child(
+        div()
+            .text_size(px(14.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(i18n.translate("settings-plugin-marketplace")),
+    );
+    let installed_ids = snapshot
+        .catalog
+        .installed
+        .iter()
+        .map(|plugin| plugin.manifest.id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut available = snapshot
+        .catalog
+        .marketplace
+        .entries
+        .iter()
+        .filter(|entry| !installed_ids.contains(entry.id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    available.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| compare_versions(&right.version, &left.version))
+    });
+    if available.is_empty() {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(i18n.translate("settings-plugin-marketplace-empty")),
+        );
+    }
+    for entry in available {
+        let install_port = port.clone();
+        let plugin_id = entry.id.clone();
+        content = content.child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .p_3()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(format!("{} {}", entry.name, entry.version)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "{} {}",
+                                    i18n.translate("settings-plugin-publisher"),
+                                    entry.publisher_key_id
+                                )),
+                        ),
+                )
+                .child(
+                    Button::new(format!("plugin-install-{plugin_id}"))
+                        .label(i18n.translate("settings-plugin-install"))
+                        .primary()
+                        .compact()
+                        .disabled(busy)
+                        .on_click(move |_, _, _| install_port.install(plugin_id.clone())),
+                ),
+        );
+    }
+
+    content
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        _ => left.cmp(right),
     }
 }
 
@@ -621,7 +995,7 @@ fn component_locale(language: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::Modifiers;
+    use gpui::{AssetSource as _, Modifiers};
 
     #[test]
     fn recorded_keystroke_becomes_a_persistable_hotkey() {
@@ -675,6 +1049,15 @@ mod tests {
         };
 
         assert_eq!(hotkey_from_keystroke(&keystroke).as_deref(), Some("F8"));
+    }
+
+    #[test]
+    fn plugin_page_lucide_icon_is_bundled() {
+        assert_eq!(IconName::Puzzle.path(), "icons/puzzle.svg");
+        assert!(gpui_kit::assets::AllAssets
+            .load("icons/puzzle.svg")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

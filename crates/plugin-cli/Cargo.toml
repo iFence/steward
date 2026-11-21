@@ -1,0 +1,18 @@
+[package]
+name = "steward-plugin-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "steward-plugin"
+path = "src/main.rs"
+
+[dependencies]
+steward-plugin-store = { path = "../plugin-store" }
+anyhow.workspace = true
+dirs.workspace = true
+nsh-package.workspace = true
+serde.workspace = true
+serde_json.workspace = true

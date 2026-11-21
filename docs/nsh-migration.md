@@ -2,7 +2,8 @@
 
 > Status: NSH-0 through NSH-3 complete; NSH-4 implementation complete, blocked
 > on clean-VM and production-artifact acceptance. M4 implementation is complete
-> and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run.
+> and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run. M5 plugin
+> ecosystem v1 is complete.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -576,6 +577,71 @@ Remaining blocked:
 
 - Blocked: run signed-package install/upgrade/crash acceptance on a clean
   Windows VM.
+
+### M5: Plugin Ecosystem v1 (2026-11-21, implementation complete)
+
+Files:
+
+- `Cargo.toml`
+- `crates/plugin-store/*`
+- `crates/plugin-cli/*`
+- `crates/app/src/plugin_management.rs`
+- `crates/app/src/settings.rs`
+- `crates/app/src/services.rs`
+- `crates/app/src/plugin_runtime.rs`
+- `crates/app/src/main.rs`
+- `crates/app/i18n/*/main.ftl`
+- `scripts/check-plugin-policies.ps1`
+- `.github/workflows/release.yml`
+- `docs/plugin-ecosystem.md`
+- `docs/architecture.md`
+- `docs/roadmap.md`
+- `Changelog.md`
+- `Changelog-zh-CN.md`
+
+Acceptance:
+
+- [x] `steward-plugin new` scaffolds an NSH TSX plugin with manifest, package,
+  capability, TypeScript, and build metadata.
+- [x] package inspection reports signature validity, trusted-root status,
+  manifest/package identity, build, minimum runtime, package hash, publisher
+  release-key ID, and release-policy review items.
+- [x] Settings > Plugins shows installed signature/trust state and exposes
+  install/update/remove/rollback operations through a background worker.
+- [x] installs and updates require the two-file distribution contract and a
+  newer semantic version/build; activation uses staged writes and preserves up
+  to five verified rollback versions.
+- [x] rollback re-verifies the retained package and remains fail-closed under
+  NSH's accepted-build anti-downgrade rule.
+- [x] local marketplace archives are verified before indexing; artifact and
+  package hashes plus publisher key ID are checked again at installation.
+- [x] publisher identity is the certified NSH release-key ID, and root-signed
+  revocation lists can be created and applied to the shared persistent trust
+  store.
+- [x] package policy checks run in Rust tests and against every
+  production-signed archive in the release workflow.
+
+Implementation is local-first. A hosted public marketplace, publisher
+registration service, and automatic public-marketplace admission policy remain
+later platform work.
+
+Local verification (2026-11-21):
+
+- `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed. The workspace run reported 152 passed and 2
+  intentionally ignored tests.
+- The new plugin-store integration suite passed 6/6: scaffold generation,
+  signature/publisher/policy inspection, install/update/rollback history,
+  local marketplace installation, revocation enforcement, and rejection of
+  extra archive files.
+- `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build` passed.
+- `nsh test` passed Calendar (13), Clipboard History (1), and UI Showcase (1).
+- `steward-plugin new` produced the complete scaffold, and `nsh check App.tsx`
+  passed against that generated output.
+- `scripts/check-plugin-policies.ps1` passed PowerShell parser validation. Its
+  production-archive run remains part of the release workflow because the
+  current checkout has no production-signed plugin archives.
 
 ## Verification Commands
 

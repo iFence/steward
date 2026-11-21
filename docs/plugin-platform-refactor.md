@@ -26,6 +26,12 @@
 | Phase 3: one process per plugin window | Blocked on clean-VM acceptance |
 | Phase 4: third-party marketplace admission | Not started |
 
+M5 local ecosystem infrastructure is complete: package scaffolding,
+inspection UI, staged lifecycle operations, rollback history, a local
+marketplace index, publisher identity, revocation application, and automated
+policy checks. It does not yet admit public third-party publishers into a
+hosted marketplace; that admission policy remains Phase 4 work.
+
 ## Phase 1: Launch and Diagnostics
 
 ### Plugin lifecycle

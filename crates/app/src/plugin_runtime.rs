@@ -42,6 +42,11 @@ impl PluginRuntimeState {
         self.spawn_plugin_scan();
     }
 
+    pub(crate) fn refresh_now(&mut self) {
+        self.next_plugin_scan = Instant::now();
+        self.spawn_plugin_scan();
+    }
+
     pub(crate) fn host(&self) -> &PluginHost {
         &self.host
     }

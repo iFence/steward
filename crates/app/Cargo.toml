@@ -40,6 +40,7 @@ steward-ui-components = { path = "../ui-components" }
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-plugin-host = { path = "../plugin-host" }
 steward-plugin-contract = { path = "../plugin-contract" }
+steward-plugin-store = { path = "../plugin-store" }
 serde_json.workspace = true
 serde.workspace = true
 url.workspace = true

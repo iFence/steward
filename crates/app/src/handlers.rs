@@ -99,6 +99,16 @@ pub(crate) fn drain_update_state(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>
     cx.update(|cx| cx.refresh_windows());
 }
 
+pub(crate) fn drain_plugin_management_state(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
+    let revision = state.borrow().services.plugin_management().revision();
+    if state.borrow().last_plugin_management_revision == revision {
+        return;
+    }
+    state.borrow_mut().last_plugin_management_revision = revision;
+    state.borrow_mut().search.borrow_mut().refresh_plugins();
+    cx.update(|cx| cx.refresh_windows());
+}
+
 pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
     loop {
         let outcome = state.borrow_mut().search.borrow_mut().poll_launch();

@@ -105,20 +105,18 @@ calendar/
   plugin.nshpkg
 ```
 
-Extract the archive into `%APPDATA%\Steward\plugins`:
+Either install the archive from Settings > Plugins, or use the CLI:
 
 ```powershell
-$plugins = Join-Path $env:APPDATA "Steward\plugins"
-New-Item -ItemType Directory -Force -Path $plugins | Out-Null
-Expand-Archive -LiteralPath .\steward-plugin-calendar-0.2.0.zip `
-  -DestinationPath $plugins -Force
+cargo run -p steward-plugin-cli --bin steward-plugin -- `
+  install .\steward-plugin-calendar-0.2.0.zip
 ```
 
 The resulting layout should be:
 
 ```text
 %APPDATA%\Steward\plugins\
-  calendar\
+  it.aspirin.calendar\
     plugin.json
     plugin.nshpkg
 ```
@@ -130,10 +128,13 @@ Open the launcher and type one of the plugin commands:
 - Clipboard History: `clipboard-history`
 - UI Showcase: `uishowcase`
 
-There is currently no in-app plugin marketplace or installer. Installation is
-the extraction above; do not copy only `plugin.nshpkg` or flatten the plugin
-files into the `plugins` root. Only a signed package whose manifest and package
-ID/version match can be opened.
+Settings > Plugins shows signature/trust status and provides install, update,
+remove, and rollback actions. For a local marketplace, place verified zips in
+`%APPDATA%\Steward\marketplace\packages` and choose **Sync Local Marketplace**.
+Do not copy only `plugin.nshpkg` or flatten plugin files into the `plugins`
+root; only a trusted package whose manifest and package ID/version match can be
+installed or opened. See [plugin ecosystem](docs/plugin-ecosystem.md) for CLI,
+policy, publisher, and revocation workflows.
 
 ## Plugin development
 
@@ -184,6 +185,7 @@ git push origin v0.3.2
 - [NSH migration plan and status](docs/nsh-migration.md)
 - [NSH plugin API](docs/nsh-plugin-api.md)
 - [Plugin development and local testing (Chinese)](docs/plugin-development-zh-CN.md)
+- [Plugin ecosystem, CLI, marketplace, and policy](docs/plugin-ecosystem.md)
 - [Plugin manifest v2](docs/plugin-manifest-spec.md)
 - [Performance benchmarks](docs/benchmarks.md)
 - [Roadmap](docs/roadmap.md)
@@ -203,6 +205,8 @@ git push origin v0.3.2
   clean-VM acceptance
 - [ ] M4 Windows support polish: implementation complete; blocked on clean-VM,
   mixed-DPI, and interactive IME acceptance
+- [x] M5 plugin ecosystem v1: scaffolding, inspection UI, local marketplace,
+  publisher/revocation flows, lifecycle policies, and automated checks
 
 ## Acknowledgements
 

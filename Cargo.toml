@@ -5,7 +5,9 @@ members = [
     "crates/core-engine",
     "crates/plugin-contract",
     "crates/plugin-host",
+    "crates/plugin-store",
     "crates/plugin-registry",
+    "crates/plugin-cli",
     "crates/search",
     "crates/storage",
     "crates/ui-components",
@@ -53,6 +55,7 @@ ureq = "3"
 url = "2"
 semver = "1"
 sha2 = "0.10"
+zip = { version = "9.6", default-features = false, features = ["deflate"] }
 
 # i18n (Fluent — Zed's localization stack)
 i18n-embed = { version = "0.16", features = ["desktop-requester", "fluent-system"] }

@@ -1,0 +1,303 @@
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+
+use nsh_package::{build as build_package, certify, Contents, SecretKey};
+use steward_plugin_store::{
+    create_revocation_list, scaffold_plugin, PluginOperationKind, PluginStore, PluginStoreConfig,
+    ScaffoldOptions,
+};
+
+struct Signer {
+    root: SecretKey,
+    release: SecretKey,
+    certificate: nsh_package::Certificate,
+    root_base64: String,
+}
+
+impl Signer {
+    fn new() -> Self {
+        let root = SecretKey::generate().unwrap();
+        let release = SecretKey::generate().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let certificate = certify(
+            &root,
+            &release.public(),
+            &["com.example.*".into()],
+            now.saturating_sub(60),
+            now + 3_600,
+        );
+        Self {
+            root_base64: root.public().to_base64(),
+            root,
+            release,
+            certificate,
+        }
+    }
+
+    fn package(&self, version: &str, build: u64, capabilities: serde_json::Value) -> Vec<u8> {
+        build_package(
+            &Contents {
+                app: nsh_package::App {
+                    id: "com.example.test".into(),
+                    name: "Test Plugin".into(),
+                    version: version.into(),
+                    build,
+                },
+                capabilities: Some(capabilities),
+                source: "mount(() => null);".into(),
+                bytecode: None,
+                source_map: None,
+                assets: Vec::new(),
+                min_runtime: None,
+            },
+            &self.release,
+            &self.certificate,
+        )
+        .unwrap()
+    }
+
+    fn zip(&self, directory: &Path, version: &str, build: u64) -> PathBuf {
+        self.zip_with_capabilities(
+            directory,
+            version,
+            build,
+            serde_json::json!({ "host": ["steward.*"] }),
+        )
+    }
+
+    fn zip_with_capabilities(
+        &self,
+        directory: &Path,
+        version: &str,
+        build: u64,
+        capabilities: serde_json::Value,
+    ) -> PathBuf {
+        std::fs::create_dir_all(directory).unwrap();
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "id": "com.example.test",
+            "name": "Test Plugin",
+            "version": version,
+            "package": "plugin.nshpkg",
+            "commands": [{
+                "name": "test",
+                "title": "Test Plugin",
+                "trigger": { "type": "command" }
+            }]
+        });
+        let path = directory.join(format!("test-{version}.zip"));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.add_directory("test/", options).unwrap();
+        zip.start_file("test/plugin.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec_pretty(&manifest).unwrap())
+            .unwrap();
+        zip.start_file("test/plugin.nshpkg", options).unwrap();
+        zip.write_all(&self.package(version, build, capabilities))
+            .unwrap();
+        zip.finish().unwrap();
+        path
+    }
+}
+
+fn store(root: &Path, signer: &Signer) -> PluginStore {
+    PluginStore::open(PluginStoreConfig::new(
+        root.join("data"),
+        root.join("data").join("plugins"),
+        vec![signer.root_base64.clone()],
+    ))
+    .unwrap()
+}
+
+fn temp_root(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "steward-plugin-store-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[test]
+fn scaffold_writes_a_buildable_two_file_ready_plugin() {
+    let root = temp_root("scaffold");
+    let report = scaffold_plugin(ScaffoldOptions {
+        id: "com.example.scaffold".into(),
+        name: "Scaffold".into(),
+        version: "0.1.0".into(),
+        command: None,
+        directory: root.join("com.example.scaffold"),
+    })
+    .unwrap();
+    assert_eq!(report.plugin_id, "com.example.scaffold");
+    for name in [
+        "plugin.json",
+        "nsh.json",
+        "package.json",
+        "tsconfig.json",
+        "App.tsx",
+        "README.md",
+        ".gitignore",
+    ] {
+        assert!(report.directory.join(name).is_file(), "missing {name}");
+    }
+    let manifest: steward_plugin_registry::PluginManifest =
+        serde_json::from_slice(&std::fs::read(report.directory.join("plugin.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest.commands[0].name, "scaffold");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn inspection_reports_signature_publisher_and_policy_review() {
+    let root = temp_root("inspect");
+    let signer = Signer::new();
+    let zip = signer.zip_with_capabilities(
+        &root,
+        "1.0.0",
+        1,
+        serde_json::json!({
+            "network": { "hosts": ["example.com"] },
+            "process": { "execute": ["powershell.exe"] }
+        }),
+    );
+    let inspection = store(&root, &signer).inspect(&zip).unwrap();
+    assert!(inspection.signature_valid);
+    assert!(inspection.trusted);
+    assert_eq!(
+        inspection.publisher_key_id.as_deref(),
+        Some(signer.release.public().id().as_str())
+    );
+    assert_eq!(inspection.app_id, "com.example.test");
+    assert!(inspection.policy.passed);
+    assert!(inspection
+        .policy
+        .denied_capabilities
+        .contains(&"network".into()));
+    assert!(inspection
+        .policy
+        .denied_capabilities
+        .contains(&"process".into()));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn install_update_and_rollback_restore_verified_history() {
+    let root = temp_root("lifecycle");
+    let signer = Signer::new();
+    let store = store(&root, &signer);
+    let v1 = signer.zip(&root, "1.0.0", 1);
+    let v2 = signer.zip(&root, "1.1.0", 2);
+
+    assert!(store.update(&v1).is_err());
+    let installed = store.install(&v1).unwrap();
+    assert_eq!(installed.action, PluginOperationKind::Install);
+    let updated = store.install(&v2).unwrap();
+    assert_eq!(updated.action, PluginOperationKind::Update);
+    assert_eq!(updated.previous_version.as_deref(), Some("1.0.0"));
+
+    let history = store.history("com.example.test").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].version, "1.0.0");
+
+    let rolled_back = store.rollback("com.example.test", None).unwrap();
+    assert_eq!(rolled_back.action, PluginOperationKind::Rollback);
+    assert_eq!(rolled_back.version, "1.0.0");
+    let installed = store.list_installed();
+    assert_eq!(installed[0].manifest.version, "1.0.0");
+    assert_eq!(
+        store.history("com.example.test").unwrap()[0].version,
+        "1.1.0"
+    );
+
+    let removed = store.remove("com.example.test").unwrap();
+    assert_eq!(removed.action, PluginOperationKind::Remove);
+    assert!(store.list_installed().is_empty());
+    assert_eq!(
+        store.history("com.example.test").unwrap()[0].version,
+        "1.0.0"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn marketplace_indexes_and_installs_verified_local_archives() {
+    let root = temp_root("marketplace");
+    let signer = Signer::new();
+    let store = store(&root, &signer);
+    let zip = signer.zip(&root, "2.0.0", 2);
+    let destination = store
+        .marketplace_dir()
+        .join("packages")
+        .join(zip.file_name().unwrap());
+    std::fs::copy(zip, destination).unwrap();
+
+    let report = store.sync_marketplace().unwrap();
+    assert_eq!(report.entries, 1);
+    let index = store.marketplace().unwrap();
+    assert_eq!(index.entries[0].id, "com.example.test");
+    assert_eq!(index.publishers[0].key_id, signer.release.public().id());
+
+    let installed = store.install_from_marketplace("com.example.test").unwrap();
+    assert_eq!(installed.version, "2.0.0");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn applied_revocation_rejects_the_release_key() {
+    let root = temp_root("revocation");
+    let signer = Signer::new();
+    let store = store(&root, &signer);
+    let zip = signer.zip(&root, "1.0.0", 1);
+    let root_key = root.join("root.secret");
+    std::fs::write(&root_key, signer.root.to_base64()).unwrap();
+    let revocation = root.join("revocations.json");
+    create_revocation_list(
+        &root_key,
+        None,
+        1,
+        &[signer.release.public().id()],
+        &[],
+        &revocation,
+    )
+    .unwrap();
+    let applied = store.apply_revocations(&revocation).unwrap();
+    assert_eq!(applied.sequence, 1);
+
+    let inspection = store.inspect(&zip).unwrap();
+    assert!(inspection.signature_valid);
+    assert!(!inspection.trusted);
+    assert!(inspection
+        .trust_error
+        .as_deref()
+        .is_some_and(|error| error.contains("revoked")));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn archive_contract_rejects_extra_files() {
+    let root = temp_root("archive-contract");
+    let file = std::fs::File::create(root.join("bad.zip")).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    zip.add_directory("test/", options).unwrap();
+    zip.start_file("test/plugin.json", options).unwrap();
+    zip.write_all(b"{}").unwrap();
+    zip.start_file("test/extra.txt", options).unwrap();
+    zip.write_all(b"unexpected").unwrap();
+    zip.finish().unwrap();
+    let signer = Signer::new();
+    let error = store(&root, &signer)
+        .inspect(&root.join("bad.zip"))
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("unsupported file"));
+    std::fs::remove_dir_all(root).ok();
+}

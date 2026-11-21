@@ -22,6 +22,7 @@ mod metrics;
 mod nsh_surface;
 mod platform;
 mod plugin_containment;
+mod plugin_management;
 mod plugin_runtime;
 mod plugin_window;
 mod search;
@@ -152,7 +153,7 @@ fn main() {
         )
         .expect("failed to initialize launcher search"),
     ));
-    load_trust_roots(&search);
+    let trust_roots = load_trust_roots(&search);
     search.borrow_mut().start();
     let search_revision = search.borrow().revision_handle();
 
@@ -172,6 +173,14 @@ fn main() {
         ),
         search_revision,
     ));
+    let plugins_root = std::env::var_os("STEWARD_PLUGINS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("plugins"));
+    let plugin_store = steward_plugin_store::PluginStore::open(
+        steward_plugin_store::PluginStoreConfig::new(data_dir.clone(), plugins_root, trust_roots),
+    )
+    .expect("failed to initialize local plugin store");
+    services.set_plugin_management(plugin_management::PluginManagementPort::spawn(plugin_store));
     if services.check_updates_on_startup() {
         services.update_port().check_for_updates(false);
     }
@@ -196,12 +205,13 @@ fn main() {
         plugin_events: plugin_event_tx,
         plugin_events_rx: plugin_event_rx,
         last_update_revision: 0,
+        last_plugin_management_revision: 0,
         _clipboard_watcher: clipboard_watcher,
         _log_guard: log_guard,
         _instance: instance,
     }));
 
-    application().with_assets(gpui_kit::assets::Assets).run({
+    application().with_assets(gpui_kit::assets::AllAssets).run({
         let state = state.clone();
         let i18n = i18n.clone();
         let services = services.clone();
@@ -315,18 +325,26 @@ fn main() {
     });
 }
 
-fn load_trust_roots(search: &Rc<RefCell<SearchState>>) {
+fn load_trust_roots(search: &Rc<RefCell<SearchState>>) -> Vec<String> {
     let mut roots =
         serde_json::from_str::<Vec<String>>(include_str!("../../../assets/nsh/trust-roots.json"))
             .expect("assets/nsh/trust-roots.json must be a JSON string array");
     if let Ok(root) = std::env::var("STEWARD_NSH_TRUST_ROOT") {
         roots.push(root);
     }
-    for root in roots {
-        if let Err(error) = search.borrow_mut().add_trust_root(root.trim()) {
-            warn!(error = %format!("{error:#}"), "ignoring invalid NSH trust root");
-        }
-    }
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            let root = root.trim().to_owned();
+            match search.borrow_mut().add_trust_root(&root) {
+                Ok(()) => Some(root),
+                Err(error) => {
+                    warn!(error = %format!("{error:#}"), "ignoring invalid NSH trust root");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, serde::Deserialize)]

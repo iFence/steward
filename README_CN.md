@@ -125,9 +125,18 @@ Steward 会在启动时以及运行期间每 30 秒扫描一次该目录。打�
 - Clipboard History：`clipboard-history`
 - UI Showcase：`uishowcase`
 
-目前没有应用内插件市场或安装器，安装就是上述解压操作。不要只复制
-`plugin.nshpkg`，也不要把插件文件直接平铺到 `plugins` 根目录。只有 manifest
-与包内 ID/版本一致且签名有效的插件才能打开。
+也可以在“设置 > 插件”中安装归档，或使用 CLI：
+
+```powershell
+cargo run -p steward-plugin-cli --bin steward-plugin -- `
+  install .\steward-plugin-calendar-0.2.0.zip
+```
+
+“设置 > 插件”会显示签名与信任状态，并提供安装、更新、移除和回滚。将已验证的 zip
+放入 `%APPDATA%\Steward\marketplace\packages` 后，可选择“同步本地市场”。
+不要只复制 `plugin.nshpkg`，也不要把插件文件直接平铺到 `plugins` 根目录。
+只有 manifest 与包内 ID/版本一致且签名受信的插件才能安装或打开。详见
+[插件生态](docs/plugin-ecosystem.md)。
 
 ## 插件开发
 
@@ -197,6 +206,7 @@ git push origin v0.3.2
 - [ ] 插件进程隔离（Phase 3）：实现完成；阻塞于干净 VM 验收
 - [ ] M4 Windows 支持收尾：实现完成；阻塞于干净 VM、混合 DPI 和交互式 IME
   验收
+- [x] M5 插件生态 v1：脚手架、检查 UI、本地市场、签名/吊销、生命周期策略与自动检查
 
 ## 致谢
 

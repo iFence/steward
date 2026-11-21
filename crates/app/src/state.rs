@@ -161,6 +161,7 @@ pub(crate) struct AppState {
     pub plugin_events: crossbeam_channel::Sender<PluginRuntimeEvent>,
     pub plugin_events_rx: crossbeam_channel::Receiver<PluginRuntimeEvent>,
     pub last_update_revision: u64,
+    pub last_plugin_management_revision: u64,
     pub _clipboard_watcher: crate::clipboard_history::ClipboardWatcher,
     pub _log_guard: Option<crate::logging::LoggingGuard>,
     pub _instance: Option<crate::instance::InstanceGuard>,

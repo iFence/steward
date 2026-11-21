@@ -10,6 +10,24 @@ Conventions:
 
 ## Unreleased
 
+### Plugin Ecosystem
+
+- **Plugin management**: Settings now has a Plugins page showing installed
+  package versions, signature/trust status, publisher key IDs, package hashes,
+  policy review items, rollback history, and local marketplace entries.
+- **Safe package lifecycle**: install, update, remove, and rollback operations
+  use staged writes and a managed five-version history. Updates require a newer
+  semantic version and NSH build; rollback remains subject to NSH's
+  anti-downgrade rule.
+- **Local marketplace**: verified plugin zips can be indexed from
+  `%APPDATA%\Steward\marketplace\packages` and installed or updated in-app.
+- **Publisher and revocation operations**: the new `steward-plugin` CLI can
+  inspect publisher identity, create or apply root-signed revocation lists, and
+  scaffold NSH plugins.
+- **Automated policy checks**: package inspection reports the release
+  capability ceiling, and the release workflow checks every production plugin
+  archive with Steward's installability policy in addition to `nsh verify`.
+
 ### Security and Reliability
 
 - **Contained plugin processes**: each open plugin now runs under a Windows Job

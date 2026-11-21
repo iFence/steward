@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 
 use crate::i18n::UiStrings;
 pub(crate) use crate::launcher_model::RowAction;
+use crate::plugin_management::PluginManagementPort;
 pub(crate) use crate::plugin_runtime::PluginLaunchOutcome;
 use crate::plugin_runtime::PluginRuntimeState;
 use crate::search::{
@@ -94,6 +95,7 @@ pub struct AppServices {
     settings: UiSettingsPort,
     notices: NoticePort,
     updates: UpdatePort,
+    plugin_management: Arc<RwLock<PluginManagementPort>>,
 }
 
 #[derive(Clone)]
@@ -133,6 +135,7 @@ impl AppServices {
                 search_revision,
             },
             updates: UpdatePort::default(),
+            plugin_management: Arc::new(RwLock::new(PluginManagementPort::default())),
         }
     }
 
@@ -143,6 +146,19 @@ impl AppServices {
 
     pub fn update_port(&self) -> UpdatePort {
         self.updates.clone()
+    }
+
+    pub fn plugin_management(&self) -> PluginManagementPort {
+        self.plugin_management
+            .read()
+            .map(|port| port.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_plugin_management(&self, port: PluginManagementPort) {
+        if let Ok(mut current) = self.plugin_management.write() {
+            *current = port;
+        }
     }
 
     pub fn launcher(&self) -> LauncherServices {
@@ -458,6 +474,10 @@ impl SearchState {
         request: LaunchRequest,
     ) -> Result<(), steward_plugin_host::PluginHostError> {
         self.plugins.start_launch(request)
+    }
+
+    pub fn refresh_plugins(&mut self) {
+        self.plugins.refresh_now();
     }
 
     pub fn accept_receipt(&mut self, receipt: &nsh_package::PackageReceipt) -> anyhow::Result<()> {

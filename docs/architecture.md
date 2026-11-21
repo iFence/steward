@@ -139,6 +139,8 @@ to plugins.
 | `steward-plugin-contract` | versioned launch, process protocol, notice, error, and session DTOs |
 | `steward-plugin-registry` | strict `plugin.json` v2 parser and SQLite route cache |
 | `steward-plugin-host` | catalog/route facade, package trust, capability policy, asynchronous launch preparation |
+| `steward-plugin-store` | package inspection, local lifecycle/history, marketplace index, publisher and revocation operations |
+| `steward-plugin-cli` | `steward-plugin` scaffolding, inspection, policy, and lifecycle CLI |
 | `steward-storage` | SQLite settings, usage, app cache, and clipboard rows |
 | `steward-ui-components` | NSH Rust launcher rows and palette |
 
@@ -266,6 +268,23 @@ trusted root accepts the package certificate.
 contains only the top-level plugin directory, `plugin.json`, and the verified
 `plugin.nshpkg`. `scripts/package-msi.ps1` packages the app; no plugin runtime
 or file-index helper executable is installed.
+
+## Plugin Management
+
+The Settings > Plugins page and `steward-plugin` CLI share
+`steward-plugin-store`. The store enforces the two-file archive contract,
+re-verifies packages through NSH, checks manifest/package identity and build,
+records publisher key identity, applies Steward's release-policy review, and
+performs staged install/update/remove/rollback operations. Managed history and
+store state live beside the installed plugins; the route cache is refreshed
+after each mutation.
+
+The local marketplace is an index over operator-provided archives under
+`<data-dir>/marketplace/packages`. An index entry records artifact and package
+hashes, version/build, and publisher key ID, but package trust is always checked
+again when it is installed. Root-signed NSH revocation lists can be applied to
+the same persistent trust store used by plugin launch. See
+[plugin-ecosystem.md](plugin-ecosystem.md).
 
 ## Verification and Operations
 
