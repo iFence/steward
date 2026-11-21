@@ -123,6 +123,11 @@ pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppSta
                     )
                 });
                 if let Err(error) = result {
+                    record_failed_launch(
+                        state,
+                        &latest.plugin_id,
+                        steward_plugin_contract::PluginErrorCode::LoadFailed,
+                    );
                     report_launch_failure(
                         state,
                         &latest,
@@ -135,7 +140,10 @@ pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppSta
                 request,
                 code,
                 error,
-            } => report_launch_failure(state, &request, code, &error),
+            } => {
+                record_failed_launch(state, &request.plugin_id, code);
+                report_launch_failure(state, &request, code, &error);
+            }
         }
     }
 }
@@ -154,6 +162,7 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                 if !plugin_session_is_current(state, &plugin_id, session_id) {
                     continue;
                 }
+                state.borrow_mut().plugin_windows.record_healthy(&plugin_id);
                 // RefCell borrows in an `if let` scrutinee live through both
                 // arms. Finish the nested borrow before reading services.
                 let accepted = state.borrow().search.borrow_mut().accept_receipt(&receipt);
@@ -189,11 +198,55 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                 if !plugin_session_is_current(state, &plugin_id, session_id) {
                     continue;
                 }
+                record_plugin_process_failure(state, &plugin_id, session_id, code);
                 cx.update(|cx| crate::plugin_window::close(cx, state, &plugin_id));
+                report_launch_failure(state, &request, code, &error);
+            }
+            PluginRuntimeEvent::Exited {
+                plugin_id,
+                session_id,
+                request,
+                code,
+                error,
+            } => {
+                // poll_processes removes an exited host before emitting this
+                // event. Only reject it if a newer session has already replaced
+                // the removed process for the same plugin.
+                if state
+                    .borrow()
+                    .plugin_windows
+                    .session_id(&plugin_id)
+                    .is_some_and(|current| current != session_id)
+                {
+                    continue;
+                }
+                record_plugin_process_failure(state, &plugin_id, session_id, code);
                 report_launch_failure(state, &request, code, &error);
             }
         }
     }
+}
+
+fn record_plugin_process_failure(
+    state: &Rc<RefCell<AppState>>,
+    plugin_id: &str,
+    session_id: steward_plugin_contract::PluginSessionId,
+    code: steward_plugin_contract::PluginErrorCode,
+) {
+    let retry_delay = state
+        .borrow_mut()
+        .plugin_windows
+        .record_failure(plugin_id, std::time::Instant::now());
+    crate::metrics::value(
+        "plugin_process_failure",
+        1,
+        serde_json::json!({
+            "plugin_id": plugin_id,
+            "session_id": session_id,
+            "error_code": code.as_str(),
+            "retry_delay_ms": retry_delay.as_millis() as u64,
+        }),
+    );
 }
 
 fn plugin_session_is_current(
@@ -438,12 +491,37 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 );
                 return;
             }
+            let retry_after = state
+                .borrow_mut()
+                .plugin_windows
+                .retry_after(&request.plugin_id, std::time::Instant::now());
+            if let Some(retry_after) = retry_after {
+                crate::metrics::value(
+                    "plugin_launch_backoff",
+                    retry_after.as_millis() as u64,
+                    serde_json::json!({
+                        "plugin_id": request.plugin_id.clone(),
+                        "command": request.command.clone(),
+                    }),
+                );
+                report_launch_failure(
+                    state,
+                    &request,
+                    steward_plugin_contract::PluginErrorCode::RuntimeError,
+                    &format!(
+                        "restart backoff active; retry in {} ms",
+                        retry_after.as_millis()
+                    ),
+                );
+                return;
+            }
             if let Err(error) = state
                 .borrow_mut()
                 .search
                 .borrow_mut()
                 .start_launch(request.clone())
             {
+                record_failed_launch(state, &request.plugin_id, error.code());
                 report_launch_failure(state, &request, error.code(), &error.to_string());
             }
         }
@@ -470,6 +548,26 @@ fn report_launch_failure(
         plugin_id: Some(request.plugin_id.clone()),
         code,
     });
+}
+
+fn record_failed_launch(
+    state: &Rc<RefCell<AppState>>,
+    plugin_id: &str,
+    code: steward_plugin_contract::PluginErrorCode,
+) {
+    let retry_delay = state
+        .borrow_mut()
+        .plugin_windows
+        .record_failure(plugin_id, std::time::Instant::now());
+    crate::metrics::value(
+        "plugin_launch_failure",
+        1,
+        serde_json::json!({
+            "plugin_id": plugin_id,
+            "error_code": code.as_str(),
+            "retry_delay_ms": retry_delay.as_millis() as u64,
+        }),
+    );
 }
 
 fn normalize_accent(value: &str) -> Option<String> {

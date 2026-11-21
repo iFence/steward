@@ -69,8 +69,15 @@ fatal-error grace period completes.
 
 This boundary isolates renderer and VM crashes from the launcher, but it is not
 yet an OS security sandbox: children run as the current Windows user. Signed
-package checks, the release capability ceiling, NSH quotas, Windows Job Object
-containment, and restart policy remain separate controls.
+package checks, the release capability ceiling, and NSH quotas remain separate
+application-level controls. Each child is also assigned to a Windows Job Object
+with a 256 MiB process/job memory limit, a 50% hard CPU-rate cap, one active
+process, and kill-on-close lifetime ownership. The shell polls the child's
+handle count and terminates the job above 1,024 handles. Unexpected exits never
+enter an automatic restart loop; a later user launch is gated by per-plugin
+2/4/8/16/30-second exponential backoff until a healthy first frame resets it.
+This is still not an OS security sandbox and does not restrict filesystem,
+network, registry, or token access.
 
 GUI startup is guarded by a session-scoped Windows named mutex before storage,
 search workers, tray, or windows are initialized. A secondary launch signals a

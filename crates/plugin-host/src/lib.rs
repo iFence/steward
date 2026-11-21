@@ -188,3 +188,122 @@ impl PluginHost {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+    use steward_plugin_registry::Registry;
+
+    #[test]
+    #[ignore = "release performance benchmark"]
+    fn synthetic_plugin_route_scaling() {
+        for count in [100, 500, 1_000] {
+            let root = std::env::temp_dir().join(format!(
+                "steward-route-bench-{count}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let data_dir = root.join("data");
+            let plugins_dir = root.join("plugins");
+            write_synthetic_plugins(&plugins_dir, count);
+
+            let scan_started = Instant::now();
+            let mut registry = Registry::open_with_root(&data_dir, &plugins_dir).unwrap();
+            let report = registry.scan().unwrap();
+            let scan_elapsed = scan_started.elapsed();
+            assert_eq!(report.plugins, count);
+            drop(registry);
+
+            let cache_started = Instant::now();
+            let registry = Registry::open_with_root(&data_dir, &plugins_dir).unwrap();
+            let plugins = registry.cached_plugins().unwrap();
+            let cache_elapsed = cache_started.elapsed();
+            assert_eq!(plugins.len(), count);
+
+            let index_started = Instant::now();
+            let mut host = PluginHost::new(HostConfig::new(data_dir.clone())).unwrap();
+            assert!(host.set_plugins(&plugins));
+            let index_elapsed = index_started.elapsed();
+            assert_eq!(host.route_count(), count);
+
+            let exact = query_p95(&host, "cmd0");
+            let prefix = query_p95(&host, "p1 item");
+            let regex = query_p95(&host, "bench2");
+            println!(
+                "plugins={count} scan_ms={:.2} cache_ms={:.2} index_ms={:.2} \
+                 exact_p95_us={:.2} prefix_p95_us={:.2} regex_p95_us={:.2}",
+                millis(scan_elapsed),
+                millis(cache_elapsed),
+                millis(index_elapsed),
+                micros(exact),
+                micros(prefix),
+                micros(regex),
+            );
+            std::fs::remove_dir_all(root).ok();
+        }
+    }
+
+    fn write_synthetic_plugins(root: &Path, count: usize) {
+        for index in 0..count {
+            let id = format!("com.bench.plugin{index:04}");
+            let dir = root.join(&id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let trigger = match index % 3 {
+                0 => serde_json::json!({ "type": "command" }),
+                1 => serde_json::json!({ "type": "prefix", "value": format!("p{index} ") }),
+                _ => serde_json::json!({ "type": "regex", "value": format!("^bench{index}\\b") }),
+            };
+            let manifest = serde_json::json!({
+                "schemaVersion": 2,
+                "id": id,
+                "name": format!("Bench {index}"),
+                "version": "1.0.0",
+                "package": "plugin.nshpkg",
+                "commands": [{
+                    "name": format!("cmd{index}"),
+                    "title": format!("Bench {index}"),
+                    "trigger": trigger,
+                }],
+            });
+            std::fs::write(
+                dir.join("plugin.json"),
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(dir.join("plugin.nshpkg"), b"synthetic route fixture").unwrap();
+        }
+    }
+
+    fn query_p95(host: &PluginHost, query: &str) -> Duration {
+        for _ in 0..20 {
+            assert!(!host.query(query).is_empty());
+        }
+        let mut samples = Vec::with_capacity(200);
+        for _ in 0..200 {
+            let started = Instant::now();
+            let hits = host.query(query);
+            samples.push(started.elapsed());
+            assert!(!hits.is_empty());
+        }
+        samples.sort_unstable();
+        let index = samples
+            .len()
+            .saturating_mul(95)
+            .div_ceil(100)
+            .saturating_sub(1);
+        samples[index]
+    }
+
+    fn millis(duration: Duration) -> f64 {
+        duration.as_secs_f64() * 1_000.0
+    }
+
+    fn micros(duration: Duration) -> f64 {
+        duration.as_secs_f64() * 1_000_000.0
+    }
+}

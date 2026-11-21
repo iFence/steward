@@ -1,13 +1,15 @@
 # Steward NSH Migration Plan
 
-> Status: NSH-0 through NSH-3 complete; NSH-4 in progress.
+> Status: NSH-0 through NSH-3 complete; NSH-4 implementation complete, blocked
+> on clean-VM and production-artifact acceptance.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
 > commands, results, deviations, and any remaining release gates.
 >
 > Phases 1 and 2 of the follow-up plugin-platform work are complete. Phase 3
-> process isolation is in progress and tracked in
+> process isolation implementation is complete and blocked on clean-VM
+> acceptance, tracked in
 > [plugin-platform-refactor.md](plugin-platform-refactor.md).
 
 ## Why NSH
@@ -37,7 +39,7 @@ application runtime:
 | UI capability | Full native TSX UI instead of a fixed view vocabulary | Larger runtime/API surface to learn |
 | Maintenance | Reuses NSH components, bundler, package format, and tests | NSH is young; exact revisions and compatibility checks matter |
 | Memory | Launcher starts no JavaScript VM; only open plugin windows allocate VMs | Each plugin host process still costs a 64 MiB VM allowance plus application assets |
-| Isolation | One process and VM per open plugin, plus per-VM quotas and signed packages | Runs as the current Windows user; Job Object limits are still pending |
+| Isolation | One process and VM per open plugin, per-VM quotas, Job Object resource limits, and signed packages | Runs as the current Windows user; not yet an OS filesystem/network sandbox |
 | Distribution | Standard signed package with certificate, revocation, and rollback checks | Production key ceremony and secret provisioning are required |
 | Migration | Direct cutover removes two protocols and the old runtime | Existing plugins and plugin storage are not compatible |
 | Performance | Route discovery is metadata-only and does not start a VM | Plugin first-frame performance depends on NSH startup and is still a release gate |
@@ -170,7 +172,7 @@ Host events:
 | NSH-1 | complete | GPUI Fast/NSH dependency and embedding proof |
 | NSH-2 | complete | NSH Rust launcher and search; GPUI Kit settings |
 | NSH-3 | complete | Registry, host, SDK, and official plugin cutover |
-| NSH-4 | in progress | Packaging, CI, docs, production trust, and release measurements |
+| NSH-4 | blocked | Implementation and local Release measurements complete; clean-VM and production-artifact acceptance unavailable |
 
 ### NSH-0: Migration record
 
@@ -375,6 +377,10 @@ Completed acceptance:
   over 20 close/summon samples. See `docs/benchmarks.md` for limitations.
 - The Windows acceptance matrix and automated trust, package, lifecycle, and
   performance scripts are checked in.
+- Release hardening follow-up (2026-11-21): CI and release packaging now use
+  the pinned NSH CLI `0.6.1` instead of the stale `0.5.1`; CI checks
+  `cargo fmt --all --check` and `pnpm format:check`; and cargo-wix is pinned to
+  `0.3.9` for reproducible MSI builds.
 - Build and Release run `44029877843` completed successfully on commit
   `f91f19436c6cead116b0eb3a1fd22ed5ddb64a7e`. The workflow used the published
   NSH CLI 0.5.1, rebuilt and production-signed all three official plugins,
@@ -413,27 +419,32 @@ Results:
   `cargo test --workspace` passed; the test run reported 137 passed and 1
   ignored.
 
-Pending release gates:
+Blocked release gates:
 
-- Record release cold start, RSS, summon p95, plugin first-frame p95, existing
-  plugin focus p95, and hidden-VM count.
 - Install the generated release MSI on a clean Windows machine.
 - Perform a signed package installation smoke test using the production trust
   root.
 - Execute the automated plus manual matrix in `docs/windows-acceptance.md` on a
   clean Windows 11 23H2+ x64 VM.
 
-### Plugin Process Isolation (2026-11-20, in progress)
+### Plugin Process Isolation (2026-11-20, implementation complete, blocked)
 
 Files:
 
 - `crates/app/src/main.rs`
 - `crates/app/src/events.rs`
+- `crates/app/src/handlers.rs`
+- `crates/app/src/plugin_containment.rs`
 - `crates/app/src/plugin_window.rs`
 - `crates/app/src/state.rs`
 - `crates/app/src/clipboard_history.rs`
 - `crates/plugin-contract/src/lib.rs`
 - `crates/plugin-host/src/lib.rs`
+- `scripts/bench-plugins.ps1`
+- `scripts/bench-plugin-set.ps1`
+- `scripts/test-plugin-isolation.ps1`
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
 - `docs/plugin-platform-refactor.md`
 - `docs/architecture.md`
 - `docs/roadmap.md`
@@ -448,18 +459,54 @@ Results:
   by a successful fatal-error grace period.
 - Command, focus, theme, and close actions are routed to the existing child.
   Unexpected pre-health or nonzero exits are surfaced as structured notices.
+- Every child is assigned to a Windows Job Object before receiving its start
+  message. The job enforces 256 MiB process/job memory, a 50% hard CPU-rate cap,
+  one active process, and kill-on-close. The shell checks the child's handle
+  count every 500 ms and terminates the job above 1,024 handles.
+- Unexpected exits do not auto-restart. A subsequent user launch is gated by
+  per-plugin 2/4/8/16/30-second exponential backoff, reset by a healthy first
+  frame or after five minutes without a new failure.
+- Container metrics include the child PID, configured limits, peak host RSS,
+  aggregate shell plus host RSS, peak handle count, and orphan-process checks.
+- `scripts/bench-plugin-set.ps1` opens all three official plugins in one shell
+  so aggregate RSS and the zero/one/three-host process-count gate can be
+  recorded without estimating three independent runs.
+- `scripts/test-plugin-isolation.ps1` records forced-crash containment and the
+  rejected immediate retry. The Release run passed locally with a temporary
+  signed Calendar package: the shell survived, host count returned to zero, and
+  the retry was rejected with 695 ms remaining in the first backoff.
+- A 32 MiB test-only memory limit terminated the Calendar host while leaving
+  the shell alive and host count at zero, with failure code `resource_limit`.
+- Release measurements (2026-11-21, local development sandbox) recorded 447 ms
+  cold start, Calendar/Clipboard/UI Showcase first-frame p95 of
+  332.17/328.14/340.63 ms, sub-millisecond focus p95, zero hidden VMs/hosts,
+  and 387.95 MiB aggregate peak RSS with all three plugin windows open. The
+  final 20-sample summon run measured 60 ms p95, above the 50 ms gate, so this
+  remains a clean-VM gate rather than an accepted local result.
+- Release route scaling passed at 100/500/1000 synthetic plugins: cached
+  metadata reads were 2.45/3.74/4.62 ms, route builds 2.07/6.59/13.81 ms, and
+  all exact/prefix/regex query p95 values stayed below 0.17 ms.
+- `cargo test -p steward-app --bin steward-app --no-fail-fast` passed with 79
+  tests (78 passed, 1 intentionally ignored), including a real Windows Job
+  Object child-lifetime test and restart-backoff unit tests.
+- `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed; the workspace run reported 144 tests with
+  the Windows Search integration test and release route benchmark intentionally
+  ignored.
+- `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build` passed
+  with NSH CLI 0.6.1. The three plugin test suites were also run from clean
+  temporary copies and passed: Calendar 13, Clipboard History 1, UI Showcase 1.
 - `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, and
   `cargo test --workspace` passed. An isolated Calendar child emitted
   `rendered` then `healthy` and exited 0 after `close`; a missing-package child
   flushed `failed/not_found`.
 
-Remaining:
+Remaining blocked:
 
-- Add Windows Job Object memory/CPU/handle limits and restart/backoff policy.
-- Measure process count, aggregate RSS, first-frame latency, and crash
-  containment for all three official plugins.
-- Run signed-package install/upgrade/crash acceptance on a clean Windows VM.
+- Blocked: run signed-package install/upgrade/crash acceptance on a clean
+  Windows VM.
 
 ## Verification Commands
 
@@ -490,6 +537,20 @@ Packaging:
 ./scripts/package-msi.ps1
 ```
 
+Process isolation and release measurements:
+
+```text
+./scripts/bench-resident.ps1 -Samples 20
+./scripts/bench-plugins.ps1 -Plugin calendar -Iterations 20
+./scripts/bench-plugin-set.ps1
+./scripts/test-plugin-isolation.ps1 -Plugin calendar
+./scripts/test-plugin-isolation.ps1 -Plugin calendar -MemoryLimitMiB 32
+cargo test -p steward-plugin-host --release synthetic_plugin_route_scaling -- --ignored --nocapture
+```
+
+Pass `-PackagePath` and `-TrustRootFile` to the plugin scripts when measuring
+production-signed artifacts from outside the development workspace.
+
 The repository-level `.cargo/config.toml` selects the `rsproxy` registry so
 plain Cargo commands can resolve dependency versions that the local global
 mirror has not synchronized yet. Pass Cargo's `--config` options to override
@@ -516,9 +577,13 @@ release measurements. NSH-4 remains open until the gates above are measured.
   ceiling, and hard engine quotas remain mandatory. Children still run as the
   current Windows user until OS-level containment is added.
 - `STEWARD_SHOW_ON_START`, `STEWARD_SHOW_SETTINGS`, `STEWARD_SMOKE_PLUGIN`,
-  `STEWARD_SMOKE_COMMAND`, and `STEWARD_SMOKE_TITLE` are developer-only smoke
-  hooks. `STEWARD_DATA_DIR` consistently redirects app data, plugin data, and
-  clipboard storage for isolated tests.
+  `STEWARD_SMOKE_COMMAND`, `STEWARD_SMOKE_TITLE`, and
+  `STEWARD_SMOKE_PLUGINS_JSON` are developer-only smoke hooks.
+  `STEWARD_PLUGIN_MEMORY_LIMIT_MIB`, `STEWARD_PLUGIN_CPU_RATE_PERCENT`, and
+  `STEWARD_PLUGIN_HANDLE_LIMIT` are clamped developer-only containment test
+  overrides; production defaults are 256 MiB, 50%, and 1,024 handles.
+  `STEWARD_DATA_DIR` consistently redirects app data, plugin data, and clipboard
+  storage for isolated tests.
 - No migration commit or tag is created by this working-tree implementation.
   Milestone evidence is tied to the listed files and test results.
 

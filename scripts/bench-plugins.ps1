@@ -108,6 +108,17 @@ function Get-P95($Values) {
     return [double]$sorted[[math]::Max(0, $index)]
 }
 
+function Wait-ProcessGone([int]$ProcessId, [int]$TimeoutMs = 5000) {
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($stopwatch.ElapsedMilliseconds -lt $TimeoutMs) {
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    return $false
+}
+
 try {
     $env:STEWARD_DATA_DIR = $dataDir
     $env:STEWARD_PLUGINS_DIR = $pluginRoot
@@ -138,6 +149,9 @@ try {
 
     $firstFrame = @()
     $focus = @()
+    $pluginRss = @()
+    $aggregateRss = @()
+    $pluginHandles = @()
     $env:STEWARD_SMOKE_PLUGIN = [string]$manifest.id
     $env:STEWARD_SMOKE_COMMAND = $command
     $env:STEWARD_SMOKE_TITLE = [string]$manifest.name
@@ -149,6 +163,7 @@ try {
         Remove-Item -LiteralPath $metricsPath -ErrorAction SilentlyContinue
         $env:STEWARD_METRICS_PATH = $metricsPath
         $process = Start-Process -FilePath $Exe -PassThru
+        $childPid = 0
         try {
             $ready = Wait-Events $metricsPath @("plugin_first_frame", "plugin_focus")
             if (-not $ready) {
@@ -161,9 +176,34 @@ try {
                     Select-Object -First 1).duration_ms
             $focus += (Read-Metric $metricsPath "plugin_focus" |
                     Select-Object -First 1).duration_ms
+
+            $containment = Read-Metric $metricsPath "plugin_host_containment" |
+                Select-Object -First 1
+            if ($null -eq $containment -or $containment.backend -ne "windows_job_object") {
+                throw "iteration $i did not report Windows Job Object containment"
+            }
+            $childPid = [int]$containment.value
+            $hostCount = Read-Metric $metricsPath "plugin_host_process_count" |
+                Select-Object -Last 1
+            if ($null -eq $hostCount -or $hostCount.value -ne 1) {
+                throw "iteration $i expected exactly one plugin host process"
+            }
+
+            $parentProcess = Get-Process -Id $process.Id -ErrorAction Stop
+            $childProcess = Get-Process -Id $childPid -ErrorAction Stop
+            $parentProcess.Refresh()
+            $childProcess.Refresh()
+            $pluginRss += [math]::Round($childProcess.PeakWorkingSet64 / 1MB, 2)
+            $aggregate = $parentProcess.PeakWorkingSet64 + $childProcess.PeakWorkingSet64
+            $aggregateRss += [math]::Round($aggregate / 1MB, 2)
+            $pluginHandles += [int]$childProcess.HandleCount
         } finally {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             $process.WaitForExit(5000) | Out-Null
+            if ($childPid -ne 0 -and -not (Wait-ProcessGone $childPid)) {
+                Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
+                throw "iteration $i left plugin host process $childPid alive after the shell exited"
+            }
         }
     }
 
@@ -172,10 +212,20 @@ try {
         command = $command
         iterations = $Iterations
         hiddenPluginVms = 0
+        hiddenPluginHostProcesses = 0
         firstFrameP95Ms = [math]::Round((Get-P95 $firstFrame), 2)
         focusP95Ms = [math]::Round((Get-P95 $focus), 2)
+        pluginHostPeakRssP95MB = [math]::Round((Get-P95 $pluginRss), 2)
+        aggregatePeakRssP95MB = [math]::Round((Get-P95 $aggregateRss), 2)
+        pluginHostPeakHandles = ($pluginHandles | Measure-Object -Maximum).Maximum
+        memoryLimitMiB = [math]::Round($containment.memory_limit_bytes / 1MB, 0)
+        cpuRatePercent = $containment.cpu_rate_percent
+        handleLimit = $containment.handle_limit
         firstFrameSamplesMs = @($firstFrame)
         focusSamplesMs = @($focus)
+        pluginHostPeakRssSamplesMB = @($pluginRss)
+        aggregatePeakRssSamplesMB = @($aggregateRss)
+        pluginHostHandleSamples = @($pluginHandles)
     }
     $summaryPath = Join-Path $runDir "summary.json"
     $summary | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $summaryPath

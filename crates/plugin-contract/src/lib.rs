@@ -116,6 +116,7 @@ pub enum PluginErrorCode {
     ReadFailed,
     LoadFailed,
     FirstFrameFailed,
+    ResourceLimit,
     RuntimeError,
 }
 
@@ -130,6 +131,7 @@ impl PluginErrorCode {
             Self::ReadFailed => "read_failed",
             Self::LoadFailed => "load_failed",
             Self::FirstFrameFailed => "first_frame_failed",
+            Self::ResourceLimit => "resource_limit",
             Self::RuntimeError => "runtime_error",
         }
     }

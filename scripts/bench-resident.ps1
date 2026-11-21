@@ -38,9 +38,15 @@ if (-not $DataDir) {
 }
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $DataDir = (Resolve-Path -LiteralPath $DataDir).Path
+$oldDataDir = $env:STEWARD_DATA_DIR
+$oldPluginsDir = $env:STEWARD_PLUGINS_DIR
+$oldMetricsPath = $env:STEWARD_METRICS_PATH
 $env:STEWARD_DATA_DIR = $DataDir
 $env:STEWARD_PLUGINS_DIR = Join-Path $DataDir "plugins"
 New-Item -ItemType Directory -Force -Path $env:STEWARD_PLUGINS_DIR | Out-Null
+$metricsPath = Join-Path $DataDir "metrics.jsonl"
+Remove-Item -LiteralPath $metricsPath -ErrorAction SilentlyContinue
+$env:STEWARD_METRICS_PATH = $metricsPath
 
 Add-Type @"
 using System;
@@ -170,6 +176,17 @@ function Get-P95($Values) {
     return [double]$sorted[[math]::Max(0, $index)]
 }
 
+function Get-MetricValues([string]$Event) {
+    if (-not (Test-Path -LiteralPath $metricsPath)) {
+        return @()
+    }
+    return @(
+        Get-Content -LiteralPath $metricsPath |
+            ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.event -eq $Event }
+    )
+}
+
 # Stop any existing dev instances so hotkey/tray registration is clean.
 Get-Process steward-app -ErrorAction SilentlyContinue | Stop-Process -Force
 
@@ -182,6 +199,14 @@ try {
     if ($bootMs -lt 0) { throw "tray window not found within timeout" }
     Start-Sleep -Milliseconds 300  # let hotkey registration + cache read settle
     $resident = Get-MemoryMB $proc
+    $hiddenVm = Get-MetricValues "hidden_plugin_vm_count" | Select-Object -Last 1
+    $hiddenHosts = Get-MetricValues "plugin_host_process_count" | Select-Object -Last 1
+    if ($null -eq $hiddenVm -or $hiddenVm.value -ne 0) {
+        throw "tray-ready hidden plugin VM count must be zero"
+    }
+    if ($null -eq $hiddenHosts -or $hiddenHosts.value -ne 0) {
+        throw "tray-ready hidden plugin host process count must be zero"
+    }
 
 [void][Win32Bench]::SendMessageW((Find-HotkeyWindow $appPid), 0x0312, [IntPtr]$SummonHotkeyId, [IntPtr]0)  # WM_HOTKEY
 $firstMs = Wait-Until {
@@ -249,7 +274,28 @@ if ($firstMs -lt 0) {
 "RSS after dismiss         : $($afterClose.WorkingSetMB) MB working set / $($afterClose.PrivateMB) MB private"
 "second summon -> visible  : $secondMs ms"
     "summon p95 ($Samples samples): $summonP95Ms ms"
+
+    $summary = [ordered]@{
+        executable = $Exe
+        executableSha256 = (Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash.ToLowerInvariant()
+        coldStartToTrayReadyMs = $bootMs
+        residentWorkingSetMB = $resident.WorkingSetMB
+        residentPrivateMB = $resident.PrivateMB
+        launcherWorkingSetMB = $open.WorkingSetMB
+        launcherPrivateMB = $open.PrivateMB
+        firstSummonMs = $firstMs
+        summonP95Ms = $summonP95Ms
+        summonSamplesMs = @($summonSamples)
+        hiddenPluginVmsAtTrayReady = $hiddenVm.value
+        hiddenPluginHostProcessesAtTrayReady = $hiddenHosts.value
+    }
+    $summaryPath = Join-Path $DataDir "summary.json"
+    $summary | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 -LiteralPath $summaryPath
+    Write-Host "Resident benchmark evidence: $summaryPath"
 } finally {
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     $p.WaitForExit(5000) | Out-Null
+    $env:STEWARD_DATA_DIR = $oldDataDir
+    $env:STEWARD_PLUGINS_DIR = $oldPluginsDir
+    $env:STEWARD_METRICS_PATH = $oldMetricsPath
 }

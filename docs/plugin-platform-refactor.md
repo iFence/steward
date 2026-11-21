@@ -1,8 +1,9 @@
 # Steward Plugin Platform Refactor
 
 > Status: implementation tracked here. Phases 1 and 2 are complete. Phase 3
-> process isolation is in progress; marketplace admission, host API
-> negotiation, and user-managed capability grants remain phase 4 work.
+> process isolation implementation is complete and blocked on clean-VM
+> acceptance; marketplace admission, host API negotiation, and user-managed
+> capability grants remain phase 4 work.
 
 ## Invariants
 
@@ -22,7 +23,7 @@
 |---|---|
 | Phase 1: launch and diagnostics hardening | Complete |
 | Phase 2: responsibility and dependency split | Complete |
-| Phase 3: one process per plugin window | In progress |
+| Phase 3: one process per plugin window | Blocked on clean-VM acceptance |
 | Phase 4: third-party marketplace admission | Not started |
 
 ## Phase 1: Launch and Diagnostics
@@ -153,10 +154,10 @@ Evidence:
   close requests cross the process boundary without creating another VM.
 - [x] `P3-PROCESS-6`: child exit and protocol failures become structured
   launcher notices; closing a child is reaped by the shell.
-- [ ] `P3-PROCESS-7`: enforce process memory/CPU/handle limits with a Windows
+- [x] `P3-PROCESS-7`: enforce process memory/CPU/handle limits with a Windows
   Job Object and define restart/backoff policy.
-- [ ] `P3-PROCESS-8`: add process-isolation release measurements and a
-  signed-package crash/upgrade acceptance run on a clean Windows VM.
+- [ ] `P3-PROCESS-8`: blocked; Release measurements are complete, but the
+  signed-package crash/upgrade acceptance run requires a clean Windows VM.
 
 ### Isolation boundary
 
@@ -164,20 +165,58 @@ The child has its own GPUI application loop, NSH engine, QuickJS VM, host
 channel, renderer, and process failure domain. It still runs as the same
 Windows user and is not an OS security sandbox. Signed packages, release
 capability policy, NSH engine quotas, and the parent/child protocol remain the
-application-level controls; Job Object containment and OS-level sandboxing are
-separate follow-up work.
+application-level controls. Every child is additionally assigned to a Windows
+Job Object before its start message is written:
+
+- 256 MiB process and job memory;
+- 50% hard CPU-rate cap;
+- one active process with kill-on-job-close;
+- a 1,024-handle ceiling, checked every 500 ms and enforced by terminating the
+  job.
+
+Resource-limit exits use the `resource_limit` failure code. Unexpected exits do
+not restart automatically, which prevents crash loops from consuming the full
+desktop. The next user-initiated launch is delayed per plugin by 2, 4, 8, 16,
+then 30 seconds; a healthy first frame resets the sequence, while a five-minute
+failure-free window also clears stale failures. The remaining boundary is an
+actual OS security sandbox: children still inherit the current user's
+filesystem, network, registry, and token access.
 
 ### Evidence
 
 - `cargo fmt --all --check` and
   `cargo clippy --workspace --all-targets -- -D warnings` passed.
 - `cargo test --workspace` passed with 139 tests and 1 intentionally ignored
-  Windows Search integration test.
+  Windows Search integration test before the resource-limit tests; the current
+  workspace run passes 144 tests with the Windows Search integration test and
+  the release route benchmark intentionally ignored.
 - A real isolated child loaded the development-signed Calendar package,
   emitted `rendered` and `healthy` with the expected camelCase protocol shape,
   accepted `close`, and exited with code 0.
 - An isolated child with no matching package emitted a flushed `failed`
   (`not_found`) event and exited cleanly, covering startup-error propagation.
+- The Job Object test assigns a real child process, verifies its handle query,
+  and confirms that closing the job terminates the child.
+- `scripts/test-plugin-isolation.ps1` records a forced child crash, verifies
+  the shell survives, and verifies the repeated launch is rejected by backoff.
+- `scripts/bench-plugins.ps1` now records the plugin-host PID, containment
+  limits, peak host RSS, aggregate shell plus host RSS, and peak handle count.
+- The optimized Release build passed 20-sample measurements for all official
+  plugins: first-frame p95 was 332.17/328.14/340.63 ms, focus p95 stayed below
+  0.7 ms, host peak handles stayed at or below 438, and hidden VMs/hosts were
+  zero.
+- Opening all three plugins in one Release shell produced exactly three host
+  processes and 387.95 MiB aggregate peak RSS. Terminating the shell left zero
+  orphaned hosts.
+- The Release forced-crash run survived, emitted `runtime_error`, returned the
+  host count to zero, and rejected the repeated launch with 695 ms remaining in
+  the 2-second first backoff.
+- A test-only 32 MiB memory cap terminated the plugin host, kept the shell
+  alive, returned host count to zero, and emitted `resource_limit`.
+
+`P3-PROCESS-8` remains open only for clean Windows VM installation/upgrade and
+production-root acceptance; its development-machine Release measurements are
+recorded in `benchmarks.md`.
 
 ## Verification
 

@@ -185,7 +185,10 @@ git push origin v0.3.2
 - [x] NSH-1: GPUI Fast and NSH embedding
 - [x] NSH-2: NSH Rust launcher and GPUI Kit settings
 - [x] NSH-3: NSH plugin windows and official plugin migration
-- [ ] NSH-4: production keys, release benchmarks, and final acceptance
+- [ ] NSH-4: implementation and local release measurements complete; blocked on
+  clean-VM and production-artifact acceptance
+- [ ] Plugin process isolation (Phase 3): implementation complete; blocked on
+  clean-VM acceptance
 
 ## Acknowledgements
 

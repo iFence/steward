@@ -102,3 +102,22 @@ MSI 生命周期日志：
 
 只有当全部自动用例通过，且人工用例偏差已在
 [nsh-migration.md](nsh-migration.md) 中登记并接受后，才能退出 P0。
+
+## Phase 3 Process Isolation Acceptance
+
+Run these checks with the same production-signed MSI, executable, plugin
+archives, and trust root as P0.
+
+| ID | Check | Command | Pass criteria |
+|---|---|---|---|
+| P3-A01 | Job Object assignment | `pwsh scripts/bench-plugins.ps1 -Plugin calendar -Iterations 20 -PackagePath <calendar nshpkg> -TrustRootFile <root>` | Containment backend is `windows_job_object`; memory limit is 256 MiB; CPU cap is 50%; active-process limit is 1; handle limit is 1,024 |
+| P3-A02 | Plugin performance and RSS | Same as P3-A01 | First-frame p95 is at most 500 ms, focus p95 is at most 50 ms, and summary contains peak host and aggregate RSS |
+| P3-A03 | All official plugins | Repeat P3-A01 and P3-A02 for Calendar, Clipboard History, and UI Showcase; then run `pwsh scripts/bench-plugin-set.ps1 -TrustRootFile <root>` | Every plugin opens once, the three-window run reports exactly three host processes and aggregate RSS, and no host process survives shell closure |
+| P3-A04 | Crash containment and backoff | `pwsh scripts/test-plugin-isolation.ps1 -Exe <release exe> -PackagePath <calendar nshpkg> -TrustRootFile <root>` | The shell survives the forced host crash, host count returns to zero, and the immediate repeated launch is rejected by backoff |
+| P3-A05 | Memory-limit enforcement | `pwsh scripts/test-plugin-isolation.ps1 -Exe <release exe> -PackagePath <calendar nshpkg> -TrustRootFile <root> -MemoryLimitMiB 32` | Host terminates with `resource_limit`; the shell remains alive and host count returns to zero |
+| P3-A06 | Clean-VM lifecycle | Run the P0 MSI lifecycle plus the signed install/upgrade/crash matrix | Install, launch, upgrade, repair, first-frame, crash, and uninstall pass on a clean Windows 11 23H2+ x64 VM |
+
+Store each `summary.json`, raw metrics JSONL, MSI log, executable SHA-256, plugin
+archive SHA-256, trust-root SHA-256, VM image identifier, and machine details
+under the release evidence directory. Do not mark Phase 3 complete from a
+development-machine run alone.

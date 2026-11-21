@@ -33,7 +33,7 @@ jobs:
         shell: pwsh
         run: ./scripts/verify-trust-roots.ps1
       - name: fmt
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
@@ -52,11 +52,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - name: Install pinned NSH CLI
-        run: cargo install --locked nsh-cli --version 0.5.1
+        run: cargo install --locked nsh-cli --version 0.6.1
       - name: install
         run: pnpm install --frozen-lockfile
       - name: lint
         run: pnpm lint
+      - name: format
+        run: pnpm format:check
       - name: typecheck
         run: pnpm typecheck
       - name: build

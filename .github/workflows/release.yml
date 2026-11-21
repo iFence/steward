@@ -70,7 +70,7 @@ jobs:
         shell: pwsh
         run: |
           choco install wixtoolset -y --no-progress
-          cargo install cargo-wix
+          cargo install --locked cargo-wix --version 0.3.9
 
       - name: Build MSI installer
         shell: pwsh
@@ -120,7 +120,7 @@ jobs:
           cache: pnpm
 
       - name: Install pinned NSH CLI
-        run: cargo install --locked nsh-cli --version 0.5.1
+        run: cargo install --locked nsh-cli --version 0.6.1
 
       - name: install
         run: pnpm install --frozen-lockfile

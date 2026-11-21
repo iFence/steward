@@ -11,8 +11,8 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 | M0 core foundation | complete |
 | M1 application launcher MVP | complete |
 | NSH migration (NSH-0 to NSH-3) | complete |
-| NSH release hardening (NSH-4) | in progress |
-| Plugin process isolation (Phase 3) | in progress |
+| NSH release hardening (NSH-4) | blocked: clean VM and production artifacts |
+| Plugin process isolation (Phase 3) | blocked: clean VM acceptance |
 | Windows support polish (M4) | next |
 | Plugin ecosystem v1 (M5) | planned |
 | AI capability and MCP layers (M6-M8) | planned |
@@ -46,7 +46,7 @@ Steward
 
 ## NSH-4 Release Hardening
 
-Required before v0.3.0 is considered release-complete:
+Required before the NSH release is considered complete:
 
 - [x] complete the production Ed25519 root-key ceremony;
 - [x] provision the CI release key and certificate;
@@ -56,10 +56,36 @@ Required before v0.3.0 is considered release-complete:
 - [x] add capability grant, revocation, and audit storage;
 - [x] add automated trust, signed-package, performance, and MSI lifecycle
   acceptance tooling;
-- [ ] measure release cold start, RSS, summon latency, plugin first frame, plugin
+- [x] measure release cold start, RSS, summon latency, plugin first frame, plugin
   focus, and hidden VM count;
-- [ ] install the MSI on a clean Windows machine;
-- [ ] install and launch all official plugins through the production trust root.
+- [ ] blocked: install the MSI on a clean Windows machine;
+- [ ] blocked: install and launch all official plugins through the production
+  trust root.
+
+Local Release evidence is recorded in [benchmarks.md](benchmarks.md). The final
+local summon run measured 60 ms p95, above the 50 ms gate, so measurement is
+complete but the performance gate remains open. Implementation is complete;
+acceptance is blocked because the current environment has no clean Windows VM,
+elevated installer lifecycle, or production-signed plugin artifacts.
+
+## Plugin Process Isolation (Phase 3)
+
+- [x] run one `--plugin-host-process` child per open plugin window;
+- [x] keep launcher and settings windows free of plugin VMs;
+- [x] verify signed packages independently in each child;
+- [x] route command, focus, theme, and close actions across the process
+  boundary;
+- [x] surface exit and protocol failures without taking down the launcher;
+- [x] enforce Windows Job Object memory, CPU, process-count, and handle limits;
+- [x] implement per-plugin restart/backoff policy;
+- [x] measure first frame, focus, host count, aggregate RSS, crash containment,
+  memory-limit enforcement, and route scaling on a Release build;
+- [ ] blocked: run signed-package install/upgrade/crash acceptance on a clean
+  Windows VM;
+- [ ] blocked: complete production-root plugin installation acceptance.
+
+The implementation and local Release measurements are complete. Phase 3 is
+blocked only on clean-VM and production-artifact acceptance.
 
 ## M4 - Windows Support Polish
 

@@ -24,6 +24,7 @@ use steward_plugin_host::{HostConfig, PluginHost, PluginLaunch};
 use steward_plugin_registry::Registry;
 
 use crate::nsh_surface::{new_view, plugin_limits};
+use crate::plugin_containment::PluginProcessContainment;
 use crate::state::{AppState, PluginRuntimeEvent};
 
 const PLUGIN_PROCESS_ARG: &str = "--plugin-host-process";
@@ -40,9 +41,11 @@ static NEXT_PLUGIN_SESSION: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PluginProcess {
     child: Child,
     input: ChildStdin,
+    containment: PluginProcessContainment,
     session_id: PluginSessionId,
     healthy: Arc<AtomicBool>,
     failure_reported: Arc<AtomicBool>,
+    pipe_closed: Arc<AtomicBool>,
     request: LaunchRequest,
 }
 
@@ -60,6 +63,10 @@ impl PluginProcess {
         self.session_id
     }
 
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     fn send(&mut self, action: PluginProcessAction) -> std::io::Result<()> {
         let command = PluginProcessCommand {
             protocol_version: PROTOCOL_VERSION,
@@ -70,40 +77,75 @@ impl PluginProcess {
     }
 
     fn poll_exit(&mut self) -> PluginProcessExit {
+        if let Some(error) = self.containment.poll_limit_violation() {
+            crate::metrics::value(
+                "plugin_host_resource_violation",
+                1,
+                serde_json::json!({
+                    "plugin_id": self.request.plugin_id.clone(),
+                    "child_pid": self.pid(),
+                    "error": error,
+                }),
+            );
+            return self.fail_once(PluginErrorCode::ResourceLimit, error);
+        }
+        if self.pipe_closed.load(Ordering::Acquire)
+            && !self.failure_reported.load(Ordering::Acquire)
+        {
+            let _ = self.child.kill();
+            let status = self.child.wait().ok();
+            let (resource_limit, error) =
+                self.containment.describe_exit(status, "event pipe closed");
+            let code = if resource_limit {
+                PluginErrorCode::ResourceLimit
+            } else if self.healthy.load(Ordering::Acquire) {
+                PluginErrorCode::RuntimeError
+            } else {
+                PluginErrorCode::FirstFrameFailed
+            };
+            return self.fail_once(code, error);
+        }
         let status = match self.child.try_wait() {
             Ok(None) => return PluginProcessExit::Running,
             Ok(Some(status)) => status,
             Err(error) => {
-                if !self.failure_reported.swap(true, Ordering::AcqRel) {
-                    return PluginProcessExit::Failed {
-                        code: PluginErrorCode::RuntimeError,
-                        error: format!("inspect plugin host process: {error}"),
-                    };
-                }
-                return PluginProcessExit::Clean;
+                return self.fail_once(
+                    PluginErrorCode::RuntimeError,
+                    format!("inspect plugin host process: {error}"),
+                );
             }
         };
-        if self.healthy.load(Ordering::Acquire) {
-            if status.success() || self.failure_reported.load(Ordering::Acquire) {
-                return PluginProcessExit::Clean;
-            }
-            if !self.failure_reported.swap(true, Ordering::AcqRel) {
-                return PluginProcessExit::Failed {
-                    code: PluginErrorCode::RuntimeError,
-                    error: format!("plugin host process exited unexpectedly with {status}"),
-                };
-            }
+        if self.failure_reported.load(Ordering::Acquire) {
             return PluginProcessExit::Clean;
         }
-        if !self.failure_reported.swap(true, Ordering::AcqRel) {
-            return PluginProcessExit::Failed {
-                code: PluginErrorCode::FirstFrameFailed,
-                error: format!(
-                    "plugin host process exited before reporting a healthy first frame ({status})"
-                ),
+        if self.healthy.load(Ordering::Acquire) {
+            if status.success() {
+                return PluginProcessExit::Clean;
+            }
+            let (resource_limit, error) =
+                self.containment.describe_exit(Some(status), "process exit");
+            let code = if resource_limit {
+                PluginErrorCode::ResourceLimit
+            } else {
+                PluginErrorCode::RuntimeError
             };
+            return self.fail_once(code, error);
         }
-        PluginProcessExit::Clean
+        let (resource_limit, error) = self.containment.describe_exit(Some(status), "process exit");
+        let code = if resource_limit {
+            PluginErrorCode::ResourceLimit
+        } else {
+            PluginErrorCode::FirstFrameFailed
+        };
+        self.fail_once(code, error)
+    }
+
+    fn fail_once(&self, code: PluginErrorCode, error: String) -> PluginProcessExit {
+        if self.failure_reported.swap(true, Ordering::AcqRel) {
+            PluginProcessExit::Clean
+        } else {
+            PluginProcessExit::Failed { code, error }
+        }
     }
 }
 
@@ -776,6 +818,7 @@ pub(crate) fn open_launch(
         launch.package.receipt.clone(),
         events,
     )?;
+    let child_pid = process.pid();
     state
         .borrow_mut()
         .plugin_windows
@@ -783,7 +826,11 @@ pub(crate) fn open_launch(
     crate::metrics::value(
         "plugin_host_process_count",
         state.borrow().plugin_windows.values().count() as u64,
-        serde_json::json!({ "plugin_id": initial.plugin_id.clone() }),
+        serde_json::json!({
+            "plugin_id": initial.plugin_id.clone(),
+            "child_pid": child_pid,
+            "phase": "opened",
+        }),
     );
     crate::metrics::value(
         "hidden_plugin_vm_count",
@@ -811,6 +858,15 @@ fn spawn_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
+    let child_pid = child.id();
+    let containment = match PluginProcessContainment::attach(child_pid) {
+        Ok(containment) => containment,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     let mut input = child
         .stdin
         .take()
@@ -830,6 +886,21 @@ fn spawn_process(
 
     let healthy = Arc::new(AtomicBool::new(false));
     let failure_reported = Arc::new(AtomicBool::new(false));
+    let pipe_closed = Arc::new(AtomicBool::new(false));
+    let policy = containment.policy();
+    crate::metrics::value(
+        "plugin_host_containment",
+        child_pid as u64,
+        serde_json::json!({
+            "plugin_id": request.plugin_id.clone(),
+            "backend": containment.backend(),
+            "memory_limit_bytes": policy.memory_limit_bytes,
+            "cpu_rate_percent": policy.cpu_rate_percent,
+            "active_process_limit": policy.active_process_limit,
+            "handle_limit": policy.handle_limit,
+            "handle_poll_interval_ms": policy.handle_poll_interval_ms,
+        }),
+    );
     spawn_event_reader(
         output,
         ProcessEventContext {
@@ -841,14 +912,17 @@ fn spawn_process(
             events,
             healthy: healthy.clone(),
             failure_reported: failure_reported.clone(),
+            pipe_closed: pipe_closed.clone(),
         },
     );
     Ok(PluginProcess {
         child,
         input,
+        containment,
         session_id,
         healthy,
         failure_reported,
+        pipe_closed,
         request,
     })
 }
@@ -862,6 +936,7 @@ struct ProcessEventContext {
     events: crossbeam_channel::Sender<PluginRuntimeEvent>,
     healthy: Arc<AtomicBool>,
     failure_reported: Arc<AtomicBool>,
+    pipe_closed: Arc<AtomicBool>,
 }
 
 fn spawn_event_reader(output: std::process::ChildStdout, context: ProcessEventContext) {
@@ -874,6 +949,7 @@ fn spawn_event_reader(output: std::process::ChildStdout, context: ProcessEventCo
         events,
         healthy,
         failure_reported,
+        pipe_closed,
     } = context;
     std::thread::Builder::new()
         .name(format!("steward-plugin-events-{session_id}"))
@@ -984,21 +1060,8 @@ fn spawn_event_reader(output: std::process::ChildStdout, context: ProcessEventCo
                     }
                 }
             }
-            if !healthy.load(Ordering::Acquire) && !failure_reported.load(Ordering::Acquire) {
-                let error = if rendered_at.is_some() {
-                    "plugin host exited after rendering but before becoming healthy"
-                } else {
-                    "plugin host exited before rendering its first frame"
-                };
-                report_protocol_failure(
-                    &events,
-                    &plugin_id,
-                    &request,
-                    session_id,
-                    &failure_reported,
-                    PluginErrorCode::FirstFrameFailed,
-                    error.into(),
-                );
+            if !failure_reported.load(Ordering::Acquire) {
+                pipe_closed.store(true, Ordering::Release);
             }
         })
         .expect("spawn plugin event reader");
@@ -1042,7 +1105,7 @@ pub(crate) fn poll_processes(state: &Rc<RefCell<AppState>>) {
     }
     let event_sender = state.borrow().plugin_events.clone();
     for (request, session_id, code, error) in exited {
-        let _ = event_sender.send(PluginRuntimeEvent::Failed {
+        let _ = event_sender.send(PluginRuntimeEvent::Exited {
             plugin_id: request.plugin_id.clone(),
             session_id,
             request,

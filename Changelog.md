@@ -8,6 +8,17 @@ Conventions:
 - The content below the heading is what appears in the GitHub Release body and the in-app update dialog
 - End each version section with `---` or by starting the next version heading
 
+## Unreleased
+
+### Security and Reliability
+
+- **Contained plugin processes**: each open plugin now runs under a Windows Job
+  Object with memory, CPU, process-count, and handle limits. Unexpected plugin
+  exits leave the launcher running, and repeated launches use a short backoff
+  instead of entering a crash loop.
+
+---
+
 ## v0.3.2
 
 ### 🚀 Improvements

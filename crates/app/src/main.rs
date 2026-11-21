@@ -20,6 +20,7 @@ mod logging;
 mod metrics;
 mod nsh_surface;
 mod platform;
+mod plugin_containment;
 mod plugin_runtime;
 mod plugin_window;
 mod search;
@@ -228,39 +229,31 @@ fn main() {
                 0,
                 serde_json::json!({ "phase": "tray_ready" }),
             );
-            if let Ok(plugin_id) = std::env::var("STEWARD_SMOKE_PLUGIN") {
-                let command =
-                    std::env::var("STEWARD_SMOKE_COMMAND").unwrap_or_else(|_| plugin_id.clone());
-                let title =
-                    std::env::var("STEWARD_SMOKE_TITLE").unwrap_or_else(|_| command.clone());
+            metrics::value(
+                "plugin_host_process_count",
+                state.borrow().plugin_windows.values().count() as u64,
+                serde_json::json!({ "phase": "tray_ready" }),
+            );
+            let smoke_requests = smoke_plugin_requests();
+            for request in &smoke_requests {
                 state.borrow().services.send_window_command(
-                    crate::services::WindowCommand::Activate(
-                        crate::services::RowAction::OpenPlugin {
-                            plugin_id: plugin_id.clone(),
-                            command: command.clone(),
-                            title: title.clone(),
-                            input: String::new(),
-                        },
-                    ),
+                    crate::services::WindowCommand::Activate(smoke_plugin_action(request)),
                 );
-                if std::env::var_os("STEWARD_SMOKE_REPEAT").is_some() {
-                    let services = services.clone();
-                    let delay = std::env::var("STEWARD_SMOKE_REPEAT_DELAY_MS")
-                        .ok()
-                        .and_then(|value| value.parse::<u64>().ok())
-                        .unwrap_or(2_000);
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            if !smoke_requests.is_empty() && std::env::var_os("STEWARD_SMOKE_REPEAT").is_some() {
+                let services = services.clone();
+                let delay = std::env::var("STEWARD_SMOKE_REPEAT_DELAY_MS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(2_000);
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                    for request in smoke_requests {
                         services.send_window_command(crate::services::WindowCommand::Activate(
-                            crate::services::RowAction::OpenPlugin {
-                                plugin_id,
-                                command,
-                                title,
-                                input: String::new(),
-                            },
+                            smoke_plugin_action(&request),
                         ));
-                    });
-                }
+                    }
+                });
             }
 
             let closed_state = state.clone();
@@ -296,5 +289,45 @@ fn load_trust_roots(search: &Rc<RefCell<SearchState>>) {
         if let Err(error) = search.borrow_mut().add_trust_root(root.trim()) {
             warn!(error = %format!("{error:#}"), "ignoring invalid NSH trust root");
         }
+    }
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SmokePluginRequest {
+    plugin_id: String,
+    command: String,
+    title: String,
+}
+
+fn smoke_plugin_requests() -> Vec<SmokePluginRequest> {
+    if let Ok(value) = std::env::var("STEWARD_SMOKE_PLUGINS_JSON") {
+        match serde_json::from_str(&value) {
+            Ok(requests) => return requests,
+            Err(error) => {
+                error!(error = %error, "parse STEWARD_SMOKE_PLUGINS_JSON");
+                return Vec::new();
+            }
+        }
+    }
+
+    let Ok(plugin_id) = std::env::var("STEWARD_SMOKE_PLUGIN") else {
+        return Vec::new();
+    };
+    let command = std::env::var("STEWARD_SMOKE_COMMAND").unwrap_or_else(|_| plugin_id.clone());
+    let title = std::env::var("STEWARD_SMOKE_TITLE").unwrap_or_else(|_| command.clone());
+    vec![SmokePluginRequest {
+        plugin_id,
+        command,
+        title,
+    }]
+}
+
+fn smoke_plugin_action(request: &SmokePluginRequest) -> crate::services::RowAction {
+    crate::services::RowAction::OpenPlugin {
+        plugin_id: request.plugin_id.clone(),
+        command: request.command.clone(),
+        title: request.title.clone(),
+        input: String::new(),
     }
 }

@@ -182,7 +182,8 @@ git push origin v0.3.2
 - [x] NSH-1：GPUI Fast 与 NSH 嵌入
 - [x] NSH-2：NSH Rust 启动器与 GPUI Kit 设置页
 - [x] NSH-3：NSH 插件窗口与官方插件迁移
-- [ ] NSH-4：生产签名密钥、Release 基准与最终验收
+- [ ] NSH-4：实现与本地 Release 测量完成；阻塞于干净 VM 和生产产物验收
+- [ ] 插件进程隔离（Phase 3）：实现完成；阻塞于干净 VM 验收
 
 ## 致谢
 
