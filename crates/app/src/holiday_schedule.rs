@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 const HOLIDAY_API_ROOT: &str = "https://timor.tech/api/holiday/year";
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const USER_AGENT: &str = concat!(
     "Steward/",
     env!("CARGO_PKG_VERSION"),
@@ -38,20 +39,37 @@ pub(crate) fn load_year(year: u16, cache_dir: &Path) -> Result<HolidaySchedule> 
     }
 
     let cache_path = cache_path(cache_dir, year);
-    if let Some(schedule) = read_cache(&cache_path) {
-        return Ok(schedule);
+    let cached = read_cache(&cache_path);
+    if let Some(schedule) = cached.as_ref().filter(|_| cache_is_fresh(&cache_path)) {
+        return Ok(schedule.clone());
     }
 
-    let schedule = fetch_year(year)?;
-    if let Err(error) = write_cache(&cache_path, &schedule) {
-        tracing::warn!(
-            year,
-            path = %cache_path.display(),
-            %error,
-            "failed to cache calendar holiday schedule"
-        );
+    match fetch_year(year) {
+        Ok(schedule) => {
+            if let Err(error) = write_cache(&cache_path, &schedule) {
+                tracing::warn!(
+                    year,
+                    path = %cache_path.display(),
+                    %error,
+                    "failed to cache calendar holiday schedule"
+                );
+            }
+            Ok(schedule)
+        }
+        Err(error) => {
+            if let Some(schedule) = cached {
+                tracing::warn!(
+                    year,
+                    path = %cache_path.display(),
+                    %error,
+                    "using stale calendar holiday schedule after refresh failure"
+                );
+                Ok(schedule)
+            } else {
+                Err(error)
+            }
+        }
     }
-    Ok(schedule)
 }
 
 fn fetch_year(year: u16) -> Result<HolidaySchedule> {
@@ -134,6 +152,18 @@ fn read_cache(path: &Path) -> Option<HolidaySchedule> {
     serde_json::from_slice(&bytes).ok()
 }
 
+fn cache_is_fresh(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(cache_age_is_fresh)
+}
+
+fn cache_age_is_fresh(age: Duration) -> bool {
+    age < CACHE_MAX_AGE
+}
+
 fn write_cache(path: &Path, schedule: &HolidaySchedule) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -213,5 +243,11 @@ mod tests {
 
         assert_eq!(load_year(2024, &dir).unwrap(), schedule);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn holiday_cache_expires_after_one_week() {
+        assert!(cache_age_is_fresh(CACHE_MAX_AGE - Duration::from_secs(1)));
+        assert!(!cache_age_is_fresh(CACHE_MAX_AGE));
     }
 }

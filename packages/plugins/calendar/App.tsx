@@ -1,5 +1,14 @@
 import { effect, keymap, locale as systemLocale, mount, signal, Storage, Text, View } from "nsh";
-import { calendarHolidays, launchParams, onCommand, onTheme } from "@steward/extension-api";
+import {
+  backToLauncher,
+  calendarHolidays,
+  launchParams,
+  onCommand,
+  onTheme,
+  onVisibility,
+  preference,
+  setPageTitle,
+} from "@steward/extension-api";
 import { calendarCopyFor, monthTitleFor, relativeDaysLabel } from "./calendar-i18n";
 import { holidayScheduleFromApi, officialDayKindFor } from "./calendar-meta";
 import { calendarAnnotation, solarToLunar, type SolarDate } from "./lunar";
@@ -9,6 +18,10 @@ const MAX_YEAR = 2100;
 const GRID_CELLS = 42;
 const CONTROL_HEIGHT = 30;
 const CONTROL_RADIUS = 8;
+const WEEK_COLUMN_WIDTH = 40;
+const HOLIDAY_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+
+type WeekStart = "monday" | "sunday";
 
 interface Palette {
   background: string;
@@ -59,6 +72,10 @@ function dayNumber(date: SolarDate): number {
   return Math.floor(Date.UTC(date.year, date.month - 1, date.day) / 86_400_000);
 }
 
+function sameDate(left: SolarDate, right: SolarDate): boolean {
+  return left.year === right.year && left.month === right.month && left.day === right.day;
+}
+
 function shiftDate(date: SolarDate, days: number): SolarDate {
   const value = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
   return {
@@ -98,8 +115,9 @@ function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
-function firstWeekdayMonday(year: number, month: number): number {
-  return (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
+function firstWeekday(year: number, month: number, weekStartsOn: WeekStart): number {
+  const weekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  return weekStartsOn === "sunday" ? weekday : (weekday + 6) % 7;
 }
 
 interface CalendarCell {
@@ -107,9 +125,9 @@ interface CalendarCell {
   currentMonth: boolean;
 }
 
-function monthCells(year: number, month: number): CalendarCell[] {
+function monthCells(year: number, month: number, weekStartsOn: WeekStart): CalendarCell[] {
   const cells: CalendarCell[] = [];
-  const leading = firstWeekdayMonday(year, month);
+  const leading = firstWeekday(year, month, weekStartsOn);
   const previousYear = month === 1 ? year - 1 : year;
   const previousMonth = month === 1 ? 12 : month - 1;
   const previousMonthDays = daysInMonth(previousYear, previousMonth);
@@ -154,25 +172,30 @@ interface CalendarWeek {
   days: CalendarCell[];
 }
 
-function monthWeeks(year: number, month: number): CalendarWeek[] {
-  const cells = monthCells(year, month);
-  const leading = firstWeekdayMonday(year, month);
+function monthWeeks(year: number, month: number, weekStartsOn: WeekStart): CalendarWeek[] {
+  const cells = monthCells(year, month, weekStartsOn);
+  const leading = firstWeekday(year, month, weekStartsOn);
+  const thursdayOffset = weekStartsOn === "monday" ? 3 : 4;
   return Array.from({ length: GRID_CELLS / 7 }, (_, index) => {
-    const monday = new Date(Date.UTC(year, month - 1, 1 - leading + index * 7));
+    const first = new Date(Date.UTC(year, month - 1, 1 - leading + index * 7));
+    const thursday = shiftDate(
+      {
+        year: first.getUTCFullYear(),
+        month: first.getUTCMonth() + 1,
+        day: first.getUTCDate(),
+      },
+      thursdayOffset,
+    );
     return {
-      week: isoWeek({
-        year: monday.getUTCFullYear(),
-        month: monday.getUTCMonth() + 1,
-        day: monday.getUTCDate(),
-      }),
+      week: isoWeek(thursday),
       days: cells.slice(index * 7, (index + 1) * 7),
     };
   });
 }
 
-function visibleHolidayYears(year: number, month: number): number[] {
+function visibleHolidayYears(year: number, month: number, weekStartsOn: WeekStart): number[] {
   const years = new Set<number>();
-  for (const week of monthWeeks(year, month)) {
+  for (const week of monthWeeks(year, month, weekStartsOn)) {
     for (const cell of week.days) years.add(cell.date.year);
   }
   return [...years].sort((left, right) => left - right);
@@ -191,9 +214,10 @@ interface CalendarDisplayWeek {
 function monthDisplayWeeks(
   year: number,
   month: number,
+  weekStartsOn: WeekStart,
   schedule: Record<string, string>,
 ): CalendarDisplayWeek[] {
-  return monthWeeks(year, month).map((week) => ({
+  return monthWeeks(year, month, weekStartsOn).map((week) => ({
     ...week,
     days: week.days.map((cell) => ({
       cell,
@@ -203,20 +227,41 @@ function monthDisplayWeeks(
 }
 
 function holidayCacheKey(year: number): string {
-  return `calendar.holiday.v1.${year}`;
+  return `calendar.holiday.v2.${year}`;
 }
 
-function cachedHolidaySchedule(value: string | null): Record<string, string> | null {
+interface CachedHolidaySchedule {
+  fetchedAt: number;
+  schedule: Record<string, string>;
+}
+
+function normalizedHolidaySchedule(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const schedule = Object.fromEntries(
+    Object.entries(value).filter(
+      ([date, kind]) =>
+        /^\d{4}-\d{2}-\d{2}$/.test(date) && (kind === "holiday" || kind === "workday"),
+    ),
+  );
+  return Object.keys(schedule).length > 0 ? schedule : null;
+}
+
+function cachedHolidaySchedule(value: string | null): CachedHolidaySchedule | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        ([date, kind]) =>
-          /^\d{4}-\d{2}-\d{2}$/.test(date) && (kind === "holiday" || kind === "workday"),
-      ),
-    );
+    const record = parsed as Record<string, unknown>;
+    if ("schedule" in record) {
+      const schedule = normalizedHolidaySchedule(record.schedule);
+      if (!schedule) return null;
+      return {
+        fetchedAt: typeof record.fetchedAt === "number" ? record.fetchedAt : 0,
+        schedule,
+      };
+    }
+    const schedule = normalizedHolidaySchedule(parsed);
+    return schedule ? { fetchedAt: 0, schedule } : null;
   } catch {
     return null;
   }
@@ -238,21 +283,28 @@ async function fetchHolidaySchedule(year: number): Promise<Record<string, string
 async function loadHolidaySchedule(
   year: number,
   viaSteward: boolean,
-): Promise<Record<string, string>> {
+): Promise<Record<string, string> | null> {
   const cacheKey = holidayCacheKey(year);
+  let cached: CachedHolidaySchedule | null = null;
   try {
-    const cached = cachedHolidaySchedule(await Storage.getItem(cacheKey));
-    if (cached) return cached;
+    cached = cachedHolidaySchedule(await Storage.getItem(cacheKey));
+    if (cached && Date.now() - cached.fetchedAt < HOLIDAY_CACHE_TTL_MS) {
+      return cached.schedule;
+    }
   } catch {
     // Persistent storage is optional in development hosts.
   }
 
   try {
     const schedule = viaSteward ? await calendarHolidays(year) : await fetchHolidaySchedule(year);
-    void Storage.setItem(cacheKey, JSON.stringify(schedule)).catch(() => {});
+    if (Object.keys(schedule).length === 0) return cached?.schedule ?? null;
+    void Storage.setItem(
+      cacheKey,
+      JSON.stringify({ fetchedAt: Date.now(), schedule } satisfies CachedHolidaySchedule),
+    ).catch(() => {});
     return schedule;
   } catch {
-    return {};
+    return cached?.schedule ?? null;
   }
 }
 
@@ -263,7 +315,7 @@ async function holidaySchedules(
   const schedules = await Promise.all(
     source.split(",").map((value) => loadHolidaySchedule(Number(value), viaSteward)),
   );
-  return Object.assign({}, ...schedules);
+  return Object.assign({}, ...schedules.filter((schedule) => schedule !== null));
 }
 
 function initialSelection(month: { year: number; month: number }, current: SolarDate): string {
@@ -276,16 +328,28 @@ function initialSelection(month: { year: number; month: number }, current: Solar
 
 function App() {
   const params = launchParams();
+  const initialToday = today();
   const initial = resolveMonth(params.input.replace(/^calendar\s*/i, "").trim());
   const year = signal(initial.year);
   const month = signal(initial.month);
-  const selected = signal(initialSelection(initial, today()));
+  const selected = signal(initialSelection(initial, initialToday));
+  const current = signal(initialToday);
   const accent = signal(params.accent);
   const dark = signal(params.dark);
   const holidaySchedule = signal<Record<string, string>>({});
+  const holidayRefresh = signal(0);
   const holidayRequests = new Map<string, Promise<Record<string, string>>>();
+  const weekStartsOn =
+    preference<WeekStart>("weekStartsOn", "monday") === "sunday" ? "sunday" : "monday";
+  const showWeekNumbers = preference("showWeekNumbers", true);
+  const embedded = Boolean(params.pluginId) && params.presentation === "embedded";
+  const refreshCurrentDate = () => {
+    const next = today();
+    if (!sameDate(next, current())) current.set(next);
+  };
   effect(() => {
-    const source = visibleHolidayYears(year(), month()).join(",");
+    const source = visibleHolidayYears(year(), month(), weekStartsOn).join(",");
+    holidayRefresh();
     let active = true;
     let request = holidayRequests.get(source);
     if (!request) {
@@ -293,13 +357,19 @@ function App() {
       holidayRequests.set(source, request);
     }
     void request.then((schedule) => {
-      if (active) holidaySchedule.set(schedule);
+      if (!active) return;
+      if (Object.keys(schedule).length === 0) {
+        if (holidayRequests.get(source) === request) holidayRequests.delete(source);
+        return;
+      }
+      holidaySchedule.set(schedule);
     });
     return () => {
       active = false;
     };
   });
   onCommand(({ input }) => {
+    refreshCurrentDate();
     const next = resolveMonth(input.replace(/^calendar\s*/i, "").trim());
     year.set(next.year);
     month.set(next.month);
@@ -309,6 +379,11 @@ function App() {
   onTheme((theme) => {
     accent.set(theme.accent);
     dark.set(theme.dark);
+  });
+  onVisibility((visible) => {
+    if (!visible) return;
+    refreshCurrentDate();
+    holidayRefresh.update((value) => value + 1);
   });
 
   // Steward supplies its configured locale. The standalone NSH development
@@ -360,10 +435,11 @@ function App() {
   };
 
   const goToday = () => {
-    const current = today();
-    year.set(current.year);
-    month.set(current.month);
-    selected.set(isoDate(current));
+    const now = today();
+    current.set(now);
+    year.set(now.year);
+    month.set(now.month);
+    selected.set(isoDate(now));
   };
 
   const selectDate = (date: SolarDate, currentMonth: boolean) => {
@@ -387,9 +463,21 @@ function App() {
     { repeat: true },
   );
 
-  const current = today();
+  effect(() => {
+    if (!embedded) return;
+    void setPageTitle(monthTitleFor(year(), month(), copy)).catch(() => {});
+  });
+
   const relativeDay = () =>
-    relativeDaysLabel(dayNumber(parseIsoDate(selected())) - dayNumber(current), copy);
+    relativeDaysLabel(dayNumber(parseIsoDate(selected())) - dayNumber(current()), copy);
+
+  const returnToLauncher = async () => {
+    try {
+      await backToLauncher();
+    } catch {
+      // Escape and the host-owned close path remain available if navigation fails.
+    }
+  };
 
   return (
     <View
@@ -412,6 +500,37 @@ function App() {
             minWidth: 0,
           }}
         >
+          {embedded ? (
+            <View
+              accessibilityLabel={copy.back}
+              accessible
+              onPress={returnToLauncher}
+              role="button"
+              style={{
+                alignItems: "center",
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                borderRadius: CONTROL_RADIUS,
+                borderWidth: 1,
+                height: CONTROL_HEIGHT,
+                justifyContent: "center",
+                width: 32,
+              }}
+              testID="calendar-back"
+            >
+              <Text
+                style={{
+                  color: colors.foreground,
+                  fontSize: 18,
+                  lineHeight: 20,
+                  textAlign: "center",
+                  textAlignVertical: "center",
+                }}
+              >
+                ‹
+              </Text>
+            </View>
+          ) : null}
           <View
             style={{
               alignItems: "flex-end",
@@ -623,14 +742,16 @@ function App() {
               paddingTop: 2,
             }}
           >
-            <View
-              style={{ alignItems: "center", padding: 5, width: 40 }}
-              testID="calendar-week-header"
-            >
-              <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
-                {copy.week}
-              </Text>
-            </View>
+            {showWeekNumbers ? (
+              <View
+                style={{ alignItems: "center", padding: 5, width: WEEK_COLUMN_WIDTH }}
+                testID="calendar-week-header"
+              >
+                <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
+                  {copy.week}
+                </Text>
+              </View>
+            ) : null}
             <View style={{ flex: 1, flexDirection: "row" }}>
               <Each of={copy.weekdays} key="index">
                 {(weekday) => (
@@ -644,7 +765,7 @@ function App() {
             </View>
           </View>
           <Each
-            of={monthDisplayWeeks(year(), month(), holidaySchedule()).map((week) => ({
+            of={monthDisplayWeeks(year(), month(), weekStartsOn, holidaySchedule()).map((week) => ({
               ...week,
               selectedDate: selected(),
             }))}
@@ -663,16 +784,22 @@ function App() {
                   minHeight: 0,
                 }}
               >
-                <View
-                  accessibilityLabel={copy.weekLabel(week().week)}
-                  accessible
-                  style={{ alignItems: "center", justifyContent: "center", width: 40 }}
-                  testID={`calendar-week-${pad(week().week)}`}
-                >
-                  <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
-                    {pad(week().week)}
-                  </Text>
-                </View>
+                {showWeekNumbers ? (
+                  <View
+                    accessibilityLabel={copy.weekLabel(week().week)}
+                    accessible
+                    style={{
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: WEEK_COLUMN_WIDTH,
+                    }}
+                    testID={`calendar-week-${pad(week().week)}`}
+                  >
+                    <Text style={{ color: colors.muted, fontSize: 11, fontWeight: "bold" }}>
+                      {pad(week().week)}
+                    </Text>
+                  </View>
+                ) : null}
                 <Each
                   of={week().days}
                   key={(cell) => `${isoDate(cell.cell.date)}:${cell.officialDay ?? "-"}`}
@@ -694,9 +821,9 @@ function App() {
                     const isSelected = valueIso === week().selectedDate;
                     const isToday =
                       cell().cell.currentMonth &&
-                      value.year === current.year &&
-                      value.month === current.month &&
-                      value.day === current.day;
+                      value.year === current().year &&
+                      value.month === current().month &&
+                      value.day === current().day;
                     return (
                       <View
                         style={{

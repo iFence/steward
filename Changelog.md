@@ -66,6 +66,10 @@ Conventions:
   and close restore launcher focus and destroy the isolated plugin process.
   Plugins can update the page title and observe visibility changes, while the
   QuickJS VM remains outside the launcher process.
+- **Calendar refresh**: Calendar now opens as an embedded page with dynamic
+  title and Back navigation, supports Monday or Sunday week starts and optional
+  week numbers, refreshes the current-day marker when shown again, retries
+  unavailable holiday data, and refreshes stale holiday-schedule caches.
 
 ### Launcher
 

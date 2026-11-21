@@ -3,6 +3,7 @@ export type CalendarLocale = "en" | "zh" | "ja" | "ko" | "de" | "fr" | "ru";
 export interface CalendarCopy {
   locale: CalendarLocale;
   dateSeparator: string;
+  back: string;
   today: string;
   previousYear: string;
   previous: string;
@@ -71,6 +72,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "zh",
         dateSeparator: "，",
+        back: "返回",
         today: "今天",
         previousYear: "上一年",
         previous: "上个月",
@@ -103,6 +105,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "ja",
         dateSeparator: "、",
+        back: "戻る",
         today: "今日",
         previousYear: "前年",
         previous: "先月",
@@ -135,6 +138,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "ko",
         dateSeparator: ", ",
+        back: "뒤로",
         today: "오늘",
         previousYear: "이전 해",
         previous: "이전 달",
@@ -167,6 +171,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "de",
         dateSeparator: ", ",
+        back: "Zurück",
         today: "Heute",
         previousYear: "Vorheriges Jahr",
         previous: "Vorheriger Monat",
@@ -199,6 +204,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "fr",
         dateSeparator: ", ",
+        back: "Retour",
         today: "Aujourd’hui",
         previousYear: "Année précédente",
         previous: "Mois précédent",
@@ -231,6 +237,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "ru",
         dateSeparator: ", ",
+        back: "Назад",
         today: "Сегодня",
         previousYear: "Предыдущий год",
         previous: "Предыдущий месяц",
@@ -263,6 +270,7 @@ export function calendarCopyFor(locale: string): CalendarCopy {
       return {
         locale: "en",
         dateSeparator: ", ",
+        back: "Back",
         today: "Today",
         previousYear: "Previous year",
         previous: "Previous month",

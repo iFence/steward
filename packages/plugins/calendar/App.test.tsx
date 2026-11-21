@@ -32,6 +32,7 @@ test("calendar supplies copy for every Steward UI language", () => {
     expect(calendarCopyFor(locale).today).toBe(expected);
   }
 
+  expect(calendarCopyFor("zh-CN").back).toBe("返回");
   expect(calendarCopyFor("de-DE").weekdays[0]).toBe("Mo");
   expect(monthTitleFor(2024, 2, calendarCopyFor("fr-FR")).toLowerCase()).toContain("février");
   expect(relativeDaysLabel(-3, calendarCopyFor("zh-CN"))).toBe("3天前");
@@ -88,10 +89,14 @@ test("calendar parses official holiday API responses", () => {
 });
 
 test("calendar reuses a cached yearly holiday schedule", async () => {
-  const cacheKey = "calendar.holiday.v1.2024";
+  const cacheKey = "calendar.holiday.v2.2024";
+  const cached = {
+    fetchedAt: Date.now(),
+    schedule: TEST_HOLIDAYS,
+  };
   const app = await open("./App.tsx", {
     storage: {
-      [cacheKey]: JSON.stringify(TEST_HOLIDAYS),
+      [cacheKey]: JSON.stringify(cached),
     },
     host: {
       handlers: {
@@ -115,7 +120,39 @@ test("calendar reuses a cached yearly holiday schedule", async () => {
   expect(app.host.calls().filter((call) => call.name === "steward.calendar.holidays").length).toBe(
     0,
   );
-  expect(app.storage()[cacheKey]).toBe(JSON.stringify(TEST_HOLIDAYS));
+  expect(app.storage()[cacheKey]).toBe(JSON.stringify(cached));
+});
+
+test("calendar keeps stale holiday data available when refresh fails", async () => {
+  const cacheKey = "calendar.holiday.v2.2024";
+  const stale = {
+    fetchedAt: 0,
+    schedule: TEST_HOLIDAYS,
+  };
+  const app = await open("./App.tsx", {
+    storage: {
+      [cacheKey]: JSON.stringify(stale),
+    },
+    host: {
+      handlers: {
+        "steward.calendar.holidays": () => {
+          throw new Error("offline");
+        },
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+      },
+    },
+  });
+
+  await app.waitFor("id:calendar-badge-2024-02-10");
+  expect(app.shows("id:calendar-badge-2024-02-10")).toBe(true);
+  expect(app.storage()[cacheKey]).toBe(JSON.stringify(stale));
 });
 
 test("calendar silently hides official badges when holiday data is unavailable", async () => {
@@ -140,6 +177,37 @@ test("calendar silently hides official badges when holiday data is unavailable",
 
   expect(app.shows("id:calendar-root")).toBe(true);
   expect(app.shows("id:calendar-badge-2024-02-10")).toBe(false);
+});
+
+test("calendar retries holiday data when the embedded page becomes visible", async () => {
+  let attempts = 0;
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.calendar.holidays": (data: unknown) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("offline");
+          return holidayHandler(data);
+        },
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+        presentation: "embedded",
+      },
+    },
+  });
+
+  await app.host.send("steward.visibility", { visible: false });
+  await app.host.send("steward.visibility", { visible: true });
+  await app.waitFor("id:calendar-badge-2024-02-10");
+
+  expect(attempts).toBe(2);
+  expect(app.shows("id:calendar-badge-2024-02-10")).toBe(true);
 });
 
 test("calendar fetches holiday data in the standalone development host", async () => {
@@ -176,7 +244,63 @@ test("calendar fetches holiday data in the standalone development host", async (
     app.requests().filter((request) => request.url === "https://timor.tech/api/holiday/year/2024")
       .length,
   ).toBe(1);
-  expect(app.storage()["calendar.holiday.v1.2024"]).toContain("2024-02-10");
+  expect(app.storage()["calendar.holiday.v2.2024"]).toContain("2024-02-10");
+});
+
+test("calendar honors hosted week start and week-number preferences", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.calendar.holidays": holidayHandler,
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "en-US",
+        pluginId: "it.aspirin.calendar",
+        preferences: {
+          showWeekNumbers: false,
+          weekStartsOn: "sunday",
+        },
+      },
+    },
+  });
+
+  expect(app.shows("id:calendar-day-2024-01-28")).toBe(true);
+  expect(app.shows("id:calendar-day-2024-02-01")).toBe(true);
+  expect(app.shows("id:calendar-day-2024-03-09")).toBe(true);
+  expect(app.shows("id:calendar-week-header")).toBe(false);
+  expect(app.shows("id:calendar-week-05")).toBe(false);
+});
+
+test("calendar uses embedded navigation and keeps the page title in sync", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      handlers: {
+        "steward.calendar.holidays": holidayHandler,
+        "steward.navigation.back": {},
+        "steward.navigation.setTitle": {},
+      },
+      params: {
+        accent: "#ff6d00",
+        command: "calendar",
+        dark: true,
+        input: "calendar 2024-02",
+        locale: "zh-CN",
+        pluginId: "it.aspirin.calendar",
+        presentation: "embedded",
+      },
+    },
+  });
+
+  await app.press("id:calendar-next-month");
+  const titleCalls = app.host.calls().filter((call) => call.name === "steward.navigation.setTitle");
+  expect(titleCalls[titleCalls.length - 1]?.data).toEqual({ title: "2024年3月" });
+
+  await app.press("id:calendar-back");
+  expect(app.host.calls().filter((call) => call.name === "steward.navigation.back").length).toBe(1);
 });
 
 test("calendar renders solar and lunar dates and selects a day without copying", async () => {
