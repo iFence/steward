@@ -1,6 +1,6 @@
 {
   "name": "@steward/plugin-git-repos",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Official example plugin: Git repository discovery.",
   "main": "App.tsx",

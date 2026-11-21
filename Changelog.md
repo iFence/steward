@@ -52,6 +52,11 @@ Conventions:
   Explorer, or open it with an installed application from Steward's catalog.
   The new Local File Inspector and Git Repositories examples validate the same
   APIs from unrelated document and repository workflows.
+- **Scoped network and controlled tools**: plugins can request exact HTTPS
+  host/method/path grants and run user-approved executables without a shell.
+  The launcher owns process-tree limits, timeout, cancellation, environment
+  scrubbing, and bounded output while the plugin VM remains isolated. Network
+  Check and Git Repositories validate the new APIs across unrelated workloads.
 
 ### Security and Reliability
 

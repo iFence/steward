@@ -7,10 +7,10 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use steward_plugin_contract::capabilities::{
     describe_declared_capabilities, is_legacy_official_plugin_id, CALENDAR_HOLIDAYS,
-    CLIPBOARD_HISTORY, CLIPBOARD_WRITE, FEEDBACK_CONFIRM, FEEDBACK_PROGRESS, FEEDBACK_TOAST,
-    FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK, FS_WRITE_TEXT, PREFERENCES_ALL,
-    PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH,
-    SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM, FEEDBACK_PROGRESS,
+    FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK, FS_WRITE_TEXT,
+    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS,
+    SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::{CapabilityDescriptor, HOST_API_VERSION};
 use steward_plugin_registry::PluginManifest;
@@ -295,28 +295,66 @@ fn check_wildcard_permission(
 
 fn check_capabilities(capabilities: &Capabilities, policy: &mut PackagePolicyReport) {
     let mut denied = BTreeSet::new();
-    if !capabilities.process.execute.is_empty()
-        || capabilities.process.exit
-        || !capabilities.process.env.is_empty()
-    {
+    if capabilities.process.exit || !capabilities.process.env.is_empty() {
         deny(
             &mut denied,
             "process",
-            "release policy denies process execution",
+            "release policy denies inherited process environment and exit-control requests",
             policy,
         );
     }
-    check_file_grants(&capabilities.fs, &mut denied, policy);
-    if !capabilities.network.hosts.is_empty()
-        || !capabilities.network.http.is_empty()
-        || !capabilities.network.sockets.is_empty()
+    for executable in &capabilities.process.execute {
+        if !valid_executable_request(executable) {
+            policy.passed = false;
+            policy.errors.push(format!(
+                "process executable '{executable}' must be an exact .exe name or path without shell interpreters"
+            ));
+        }
+    }
+    if !capabilities.process.execute.is_empty()
+        && !capabilities.host.iter().any(|name| name == EXEC_RUN)
     {
+        policy.passed = false;
+        policy.errors.push(format!(
+            "process execution requires the '{EXEC_RUN}' host permission"
+        ));
+    }
+    check_file_grants(&capabilities.fs, &mut denied, policy);
+    if !capabilities.network.hosts.is_empty() || !capabilities.network.sockets.is_empty() {
         deny(
             &mut denied,
             "network",
-            "release policy denies network access",
+            "release policy only grants scoped HTTPS requests; unrestricted hosts and raw sockets are denied",
             policy,
         );
+    }
+    for grant in &capabilities.network.http {
+        if grant.schemes.is_empty()
+            || grant.schemes.iter().any(|scheme| scheme != "https")
+            || grant.methods.is_empty()
+            || grant.methods.iter().any(|method| {
+                !matches!(
+                    method.as_str(),
+                    "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"
+                )
+            })
+            || grant.port.is_some_and(|port| port != 443)
+            || local_network_host(grant.host.as_str())
+        {
+            policy.passed = false;
+            policy.errors.push(format!(
+                "network grant '{}' must use HTTPS on the default port, name a non-local host, and list supported methods",
+                grant.host.as_str()
+            ));
+        }
+    }
+    if !capabilities.network.http.is_empty()
+        && !capabilities.host.iter().any(|name| name == NET_FETCH)
+    {
+        policy.passed = false;
+        policy.errors.push(format!(
+            "network access requires the '{NET_FETCH}' host permission"
+        ));
     }
     if capabilities.webview.is_some()
         || capabilities.webview_input
@@ -475,7 +513,68 @@ fn host_allowed(name: &str) -> bool {
             | SYSTEM_REVEAL_PATH
             | SYSTEM_OPEN_WITH
             | SYSTEM_APPLICATIONS
+            | NET_FETCH
+            | EXEC_RUN
+            | EXEC_CANCEL
     )
+}
+
+fn valid_executable_request(executable: &str) -> bool {
+    let executable = executable.trim();
+    if executable.is_empty()
+        || executable.len() > 260
+        || executable.chars().any(|character| {
+            matches!(
+                character,
+                '\r' | '\n' | '\0' | '<' | '>' | '|' | '&' | ';' | '*' | '?'
+            )
+        })
+        || !executable.to_ascii_lowercase().ends_with(".exe")
+    {
+        return false;
+    }
+    let name = std::path::Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !matches!(
+        name.as_str(),
+        "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "wsl.exe"
+            | "bash.exe"
+            | "sh.exe"
+            | "cscript.exe"
+            | "wscript.exe"
+            | "mshta.exe"
+            | "rundll32.exe"
+            | "python.exe"
+            | "python3.exe"
+            | "py.exe"
+            | "node.exe"
+            | "nodejs.exe"
+            | "deno.exe"
+            | "bun.exe"
+            | "perl.exe"
+            | "ruby.exe"
+            | "java.exe"
+            | "javaw.exe"
+            | "dotnet.exe"
+            | "powershell_ise.exe"
+            | "wt.exe"
+            | "conhost.exe"
+    )
+}
+
+fn local_network_host(host: &str) -> bool {
+    let host = host.trim_matches('.').to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.parse::<std::net::IpAddr>().is_ok()
 }
 
 fn deny(
@@ -531,8 +630,60 @@ mod capability_policy_tests {
             SYSTEM_REVEAL_PATH,
             SYSTEM_OPEN_WITH,
             SYSTEM_APPLICATIONS,
+            NET_FETCH,
+            EXEC_RUN,
+            EXEC_CANCEL,
         ] {
             assert!(host_allowed(name), "{name}");
         }
+    }
+
+    #[test]
+    fn network_and_process_policy_rejects_unrestricted_shapes() {
+        let capabilities = Capabilities::from_json(&serde_json::json!({
+            "host": [NET_FETCH, EXEC_RUN],
+            "network": {
+                "hosts": ["*"],
+                "http": [{
+                    "host": "127.0.0.1",
+                    "schemes": ["http", "https"],
+                    "port": 8443
+                }]
+            },
+            "process": { "execute": ["cmd.exe"] }
+        }))
+        .unwrap();
+        let mut policy = PackagePolicyReport::empty();
+        check_capabilities(&capabilities, &mut policy);
+        assert!(!policy.passed);
+        assert!(policy
+            .errors
+            .iter()
+            .any(|error| error.contains("exact .exe")));
+        assert!(policy
+            .errors
+            .iter()
+            .any(|error| error.contains("HTTPS on the default port")));
+    }
+
+    #[test]
+    fn exact_git_execution_is_admitted_by_policy_shape() {
+        let capabilities = Capabilities::from_json(&serde_json::json!({
+            "host": [NET_FETCH, EXEC_RUN, EXEC_CANCEL],
+            "network": {
+                "http": [{
+                    "host": "api.example.com",
+                    "schemes": ["https"],
+                    "methods": ["GET"],
+                    "pathPrefixes": ["/v1"]
+                }]
+            },
+            "process": { "execute": ["git.exe"] }
+        }))
+        .unwrap();
+        let mut policy = PackagePolicyReport::empty();
+        check_capabilities(&capabilities, &mut policy);
+        assert!(policy.passed, "{:?}", policy.errors);
+        assert!(policy.denied_capabilities.is_empty());
     }
 }

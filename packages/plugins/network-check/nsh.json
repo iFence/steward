@@ -1,0 +1,19 @@
+{
+  "name": "Network Check",
+  "id": "it.aspirin.network-check",
+  "version": "0.1.0",
+  "build": 1,
+  "capabilities": {
+    "host": ["steward.net.fetch"],
+    "network": {
+      "http": [
+        {
+          "host": "api.github.com",
+          "schemes": ["https"],
+          "methods": ["GET"],
+          "pathPrefixes": ["/rate_limit"]
+        }
+      ]
+    }
+  }
+}

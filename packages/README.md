@@ -7,6 +7,10 @@ TypeScript and TSX packages for the Steward monorepo.
 - `plugins/`: official NSH applications. Each plugin is checked, tested,
   built, signed, and packaged with the pinned NSH CLI.
 
+The official validation set includes Network Check for scoped HTTPS and Git
+Repositories for controlled executable integration. Both use the same generic
+`@steward/extension-api` capabilities as third-party plugins.
+
 Run `pnpm typecheck` and `pnpm build` from the repository root after installing
 the pinned NSH CLI described in the top-level README. Package output stays
 under each plugin's ignored `dist/` directory.

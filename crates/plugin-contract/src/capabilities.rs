@@ -27,6 +27,7 @@ pub const FS_GRANTS: &str = "steward.fs.grants";
 pub const FS_CANCEL_WALK: &str = "steward.fs.cancelWalk";
 pub const NET_FETCH: &str = "steward.net.fetch";
 pub const EXEC_RUN: &str = "steward.exec.run";
+pub const EXEC_CANCEL: &str = "steward.exec.cancel";
 pub const SYSTEM_OPEN_URL: &str = "steward.system.openUrl";
 pub const SYSTEM_OPEN_PATH: &str = "steward.system.openPath";
 pub const SYSTEM_REVEAL_PATH: &str = "steward.system.revealPath";
@@ -348,6 +349,7 @@ fn is_sensitive(permission: &str, scope: &str) -> bool {
             | FEEDBACK_PROGRESS
             | FS_GRANTS
             | FS_CANCEL_WALK
+            | EXEC_CANCEL
     ) {
         return false;
     }
@@ -384,6 +386,7 @@ fn describe(permission: &str, scope: &str) -> String {
         FS_CANCEL_WALK => "Cancel a filesystem walk started by this plugin.".into(),
         NET_FETCH => format!("Make an authorized network request ({scope})."),
         EXEC_RUN => format!("Run an approved executable ({scope})."),
+        EXEC_CANCEL => "Cancel a controlled process started by this plugin.".into(),
         SYSTEM_OPEN_URL => format!("Open an authorized URL ({scope})."),
         SYSTEM_OPEN_PATH => "Open a selected path with its default application.".into(),
         SYSTEM_REVEAL_PATH => "Show a selected path in File Explorer.".into(),

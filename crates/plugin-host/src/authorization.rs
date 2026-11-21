@@ -5,7 +5,7 @@ use nsh_core::access::{Capabilities, FileGrants, HttpGrant, OpenUrlGrant};
 use semver::Version;
 use steward_plugin_contract::capabilities::{
     declaration_is_auto_granted, describe_declared_capabilities, is_legacy_official_plugin_id,
-    CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_RUN, FEEDBACK_CONFIRM,
+    CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM,
     FEEDBACK_PROGRESS, FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ, FS_READ_TEXT,
     FS_WALK, FS_WRITE, FS_WRITE_TEXT, NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET,
     STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH,
@@ -47,11 +47,33 @@ pub struct PluginAuthorization {
     pub version: String,
     pub features: Vec<String>,
     pub legacy_compatibility: bool,
+    pub declared_capabilities: Capabilities,
+    pub granted_capabilities: Capabilities,
 }
 
 impl PluginAuthorization {
     pub(crate) fn host_info(&self) -> HostInfo {
         HostInfo::new(self.features.clone())
+    }
+
+    /// Reloads the active exact grants for this launch. Runtime services use
+    /// this so revoking a capability affects an already-open plugin.
+    pub fn active_grants(
+        &self,
+        data_dir: &Path,
+    ) -> Result<BTreeSet<(String, String)>, PluginHostError> {
+        let storage = Storage::open_at(data_dir).map_err(|error| {
+            PluginHostError::HostFailure(format!("open capability store: {error:#}"))
+        })?;
+        let grants = storage
+            .matching_capability_grants(&self.plugin_id, &self.publisher_fingerprint, &self.version)
+            .map_err(|error| {
+                PluginHostError::HostFailure(format!("read active capability grants: {error:#}"))
+            })?;
+        Ok(grants
+            .into_iter()
+            .map(|grant| (grant.capability, grant.scope))
+            .collect())
     }
 }
 
@@ -137,15 +159,18 @@ pub(crate) fn authorize(
         restrict_to_permissions(&declared, &allowed)
     };
     let features = features(&descriptors, &allowed, legacy_compatibility);
+    let authorization = PluginAuthorization {
+        plugin_id: plugin_id.into(),
+        publisher_fingerprint: publisher_fingerprint.into(),
+        version: version.into(),
+        features,
+        legacy_compatibility,
+        declared_capabilities: declared.clone(),
+        granted_capabilities: granted.clone(),
+    };
     Ok(AuthorizationResult {
         granted,
-        authorization: PluginAuthorization {
-            plugin_id: plugin_id.into(),
-            publisher_fingerprint: publisher_fingerprint.into(),
-            version: version.into(),
-            features,
-            legacy_compatibility,
-        },
+        authorization,
     })
 }
 
@@ -214,22 +239,10 @@ fn restrict_to_permissions(
         })
         .cloned()
         .collect();
-    granted.process.exit =
-        declared.process.exit && permission_allowed(allowed, "steward.exec.exit", "process=self");
-    granted.process.env = declared
-        .process
-        .env
-        .iter()
-        .filter(|name| permission_allowed(allowed, "steward.exec.env", &format!("name={name}")))
-        .cloned()
-        .collect();
-    granted.network.hosts = declared
-        .network
-        .hosts
-        .iter()
-        .filter(|host| permission_allowed(allowed, NET_FETCH, &format!("host={}", host.as_str())))
-        .cloned()
-        .collect();
+    granted.process.exit = false;
+    granted.process.env.clear();
+    granted.network.hosts.clear();
+    granted.network.sockets.clear();
     granted.network.http = declared
         .network
         .http
@@ -251,8 +264,35 @@ fn clamp_to_release_ceiling(mut granted: Capabilities) -> Capabilities {
         .fs
         .write
         .retain(|root| release.fs.write.contains(root));
-    granted.process = Default::default();
-    granted.network = Default::default();
+    let process_call_allowed = granted.host.iter().any(|name| name == EXEC_RUN);
+    granted.process.execute.retain(|executable| {
+        process_call_allowed
+            && !executable
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n' | '\0'))
+            && executable.to_ascii_lowercase().ends_with(".exe")
+            && !is_shell_executable(executable)
+    });
+    granted.process.exit = false;
+    granted.process.env.clear();
+
+    let network_call_allowed = granted.host.iter().any(|name| name == NET_FETCH);
+    granted.network.hosts.clear();
+    granted.network.sockets.clear();
+    granted.network.http.retain(|grant| {
+        network_call_allowed
+            && grant.schemes.iter().any(|scheme| scheme == "https")
+            && grant.schemes.iter().all(|scheme| scheme == "https")
+            && !grant.methods.is_empty()
+            && grant.methods.iter().all(|method| {
+                matches!(
+                    method.as_str(),
+                    "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"
+                )
+            })
+            && grant.port.is_none_or(|port| port == 443)
+            && !grant.host.as_str().is_empty()
+    });
     granted.webview = None;
     granted.webview_input = false;
     granted.webview_media.clear();
@@ -277,6 +317,42 @@ fn clamp_to_release_ceiling(mut granted: Capabilities) -> Capabilities {
         }
     }
     granted
+}
+
+fn is_shell_executable(executable: &str) -> bool {
+    let name = Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "wsl.exe"
+            | "bash.exe"
+            | "sh.exe"
+            | "cscript.exe"
+            | "wscript.exe"
+            | "mshta.exe"
+            | "rundll32.exe"
+            | "python.exe"
+            | "python3.exe"
+            | "py.exe"
+            | "node.exe"
+            | "nodejs.exe"
+            | "deno.exe"
+            | "bun.exe"
+            | "perl.exe"
+            | "ruby.exe"
+            | "java.exe"
+            | "javaw.exe"
+            | "dotnet.exe"
+            | "powershell_ise.exe"
+            | "wt.exe"
+            | "conhost.exe"
+    )
 }
 
 fn restricted_open_url(
@@ -375,6 +451,12 @@ fn features(
         }
         if matches!(descriptor.permission.as_str(), STORAGE_GET | STORAGE_SET) {
             features.insert("plugin.data".into());
+        }
+        if matches!(
+            descriptor.permission.as_str(),
+            NET_FETCH | EXEC_RUN | EXEC_CANCEL
+        ) {
+            features.insert(descriptor.permission.clone());
         }
     }
     features.into_iter().collect()
@@ -741,6 +823,87 @@ mod tests {
                 .iter()
                 .any(|name| name == permission));
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn network_and_process_require_matching_named_and_resource_grants() {
+        let dir = temp_dir("network-process");
+        let declared = Capabilities::from_json(&serde_json::json!({
+            "host": [NET_FETCH, EXEC_RUN, EXEC_CANCEL],
+            "network": {
+                "http": [{
+                    "host": "api.example.com",
+                    "schemes": ["https"],
+                    "methods": ["GET"],
+                    "pathPrefixes": ["/v1"]
+                }]
+            },
+            "process": { "execute": ["git.exe"] }
+        }))
+        .unwrap();
+        let descriptors = describe_declared_capabilities(&declared.to_json());
+        let network_scope = descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.permission == NET_FETCH && descriptor.scope.contains("schemes=https")
+            })
+            .unwrap()
+            .scope
+            .clone();
+
+        let denied = authorize(
+            &dir,
+            "com.example.tools",
+            Some(HOST_API_VERSION),
+            "SHA256:publisher",
+            "1.0.0",
+            Some(&declared),
+        )
+        .unwrap();
+        assert!(denied.granted.network.http.is_empty());
+        assert!(denied.granted.process.execute.is_empty());
+        assert!(denied.granted.host.iter().any(|name| name == EXEC_CANCEL));
+
+        let storage = Storage::open_at(&dir).unwrap();
+        for (capability, scope) in [
+            (NET_FETCH, "host=steward".to_owned()),
+            (NET_FETCH, network_scope),
+            (EXEC_RUN, "host=steward".to_owned()),
+            (EXEC_RUN, "executable=git.exe".to_owned()),
+        ] {
+            storage
+                .grant_capability(&steward_storage::NewCapabilityGrant {
+                    plugin_id: "com.example.tools".into(),
+                    publisher_fingerprint: "SHA256:publisher".into(),
+                    version_range: "^1".into(),
+                    capability: capability.into(),
+                    scope,
+                    granted_at: 1,
+                })
+                .unwrap();
+        }
+        let allowed = authorize(
+            &dir,
+            "com.example.tools",
+            Some(HOST_API_VERSION),
+            "SHA256:publisher",
+            "1.0.0",
+            Some(&declared),
+        )
+        .unwrap();
+        assert_eq!(allowed.granted.network.http.len(), 1);
+        assert_eq!(allowed.granted.process.execute, vec!["git.exe"]);
+        assert!(allowed
+            .authorization
+            .features
+            .iter()
+            .any(|name| name == NET_FETCH));
+        assert!(allowed
+            .authorization
+            .features
+            .iter()
+            .any(|name| name == EXEC_RUN));
         std::fs::remove_dir_all(dir).ok();
     }
 }

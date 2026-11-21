@@ -153,8 +153,8 @@ production-signed plugin archive after `nsh verify`.
 
 Current release policy review categories include:
 
-- process execution;
-- network access;
+- shell, interpreter, inherited-environment, and exit-control process requests;
+- raw sockets, non-HTTPS requests, unrestricted hosts, and nonstandard ports;
 - web views and web-view input/media;
 - direct filesystem roots other than `${dataDir}`, while scoped path access is
   obtained through `steward.fs.pick`;
@@ -163,7 +163,7 @@ Current release policy review categories include:
 - home-directory discovery and extra native windows;
 - named host calls outside the current clipboard, storage, calendar, window,
   preference, feedback, scoped filesystem, installed-application, and
-  system-open allowlist;
+  system-open, scoped HTTPS, and controlled-execution allowlist;
 - URL schemes other than `https` and `mailto`.
 
 These declarations are reported rather than treated as an automatic
@@ -177,3 +177,9 @@ The filesystem/system-open allowlist only declares an API gate. A
 file or folder; that exact canonical selection is persisted as a separate path
 grant. `openPath`, `revealPath`, `readText`, `writeText`, and `walk` re-read the
 path grants on every call.
+
+Scoped HTTPS and controlled execution follow the same two-layer rule. The
+named host call is an API gate; a separate active `network.http` or exact
+`process.execute` grant authorizes the concrete resource. Runtime handlers
+reload those grants, and the launcher-owned execution broker owns the process
+tree so the plugin host keeps its one-active-process limit.

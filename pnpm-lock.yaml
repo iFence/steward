@@ -50,6 +50,12 @@ importers:
         specifier: workspace:*
         version: link:../../extension-api
 
+  packages/plugins/network-check:
+    dependencies:
+      '@steward/extension-api':
+        specifier: workspace:*
+        version: link:../../extension-api
+
   packages/plugins/ui-showcase:
     dependencies:
       '@steward/extension-api':

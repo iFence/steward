@@ -10,7 +10,7 @@ pub use capabilities::{CapabilityDescriptor, LEGACY_HOST_ACCESS};
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Semantic version of the public Steward plugin host API.
-pub const HOST_API_VERSION: &str = "0.3.0";
+pub const HOST_API_VERSION: &str = "0.4.0";
 
 /// Features that are always available independently of package grants.
 pub const BASE_HOST_FEATURES: &[&str] = &[
@@ -97,11 +97,24 @@ pub struct PluginProcessCommand {
     deny_unknown_fields
 )]
 pub enum PluginProcessAction {
-    Command { command: String, input: String },
-    Theme { accent: String, dark: bool },
+    Command {
+        command: String,
+        input: String,
+    },
+    Theme {
+        accent: String,
+        dark: bool,
+    },
     Focus,
     Close,
-    ResolveConfirmation { id: u64, confirmed: bool },
+    ResolveConfirmation {
+        id: u64,
+        confirmed: bool,
+    },
+    ResolveExecution {
+        request_id: u64,
+        result: PluginExecutionResult,
+    },
 }
 
 /// A lifecycle event sent from a plugin host process to the Steward shell.
@@ -132,6 +145,59 @@ pub enum PluginProcessEvent {
         code: PluginErrorCode,
         error: String,
     },
+    ExecutionRequest {
+        protocol_version: u16,
+        session_id: PluginSessionId,
+        request: PluginExecutionRequest,
+    },
+    ExecutionCancel {
+        protocol_version: u16,
+        session_id: PluginSessionId,
+        request_id: u64,
+    },
+}
+
+/// One exact-executable request sent from an isolated plugin host to the
+/// launcher-owned broker. The broker validates these fields again before any
+/// process is created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginExecutionRequest {
+    pub request_id: u64,
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub working_directory: String,
+    pub timeout_ms: u64,
+    pub max_output_bytes: u64,
+}
+
+/// A completed controlled process or a stable failure category.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginExecutionResult {
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration_ms: u64,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub error_code: Option<PluginErrorCode>,
+    pub error: Option<String>,
+}
+
+impl PluginExecutionResult {
+    pub fn failure(code: PluginErrorCode, error: impl Into<String>) -> Self {
+        Self {
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+            cancelled: false,
+            error_code: Some(code),
+            error: Some(error.into()),
+        }
+    }
 }
 
 /// Stable failure category used by logs and launcher notices.
@@ -365,6 +431,47 @@ mod tests {
         let action = PluginProcessAction::ResolveConfirmation {
             id: 42,
             confirmed: true,
+        };
+        assert_eq!(
+            serde_json::from_str::<PluginProcessEvent>(&serde_json::to_string(&event).unwrap())
+                .unwrap(),
+            event
+        );
+        assert_eq!(
+            serde_json::from_str::<PluginProcessAction>(&serde_json::to_string(&action).unwrap())
+                .unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn execution_requests_and_results_roundtrip() {
+        let request = PluginExecutionRequest {
+            request_id: 9,
+            executable: "git.exe".into(),
+            arguments: vec!["status".into(), "--porcelain=v1".into()],
+            working_directory: r"D:\projects\steward".into(),
+            timeout_ms: 30_000,
+            max_output_bytes: 1024 * 1024,
+        };
+        let event = PluginProcessEvent::ExecutionRequest {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 7,
+            request: request.clone(),
+        };
+        let result = PluginExecutionResult {
+            exit_code: Some(0),
+            stdout: "clean".into(),
+            stderr: String::new(),
+            duration_ms: 42,
+            timed_out: false,
+            cancelled: false,
+            error_code: None,
+            error: None,
+        };
+        let action = PluginProcessAction::ResolveExecution {
+            request_id: 9,
+            result: result.clone(),
         };
         assert_eq!(
             serde_json::from_str::<PluginProcessEvent>(&serde_json::to_string(&event).unwrap())

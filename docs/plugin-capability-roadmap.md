@@ -1,6 +1,6 @@
 # Steward Plugin Capability Roadmap
 
-> Status: PC-0 through PC-2 are implemented. PC-3 is next. This document defines a
+> Status: PC-0 through PC-3 are implemented. PC-4 and PC-5 are next. This document defines a
 > general third-party plugin capability roadmap. `git-repos` is one reference
 > workload used to validate the platform, not the boundary of the API design.
 >
@@ -59,19 +59,19 @@ and tools that operate on user-selected projects.
 
 ## 2. Current Stack Audit
 
-| Area                         | Current state                                                                                                               | General consequence                                                                                                             |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| NSH UI and QuickJS           | NSH 0.6.1 TSX, signals, inputs, navigation primitives, and tests are available                                              | Third-party plugin UI can be built now                                                                                          |
-| Package lifecycle            | Scaffold, inspect, install, update, remove, rollback, local marketplace, and policy checks are implemented                  | Distribution and iteration are ready                                                                                            |
-| Process isolation            | One plugin host process per open plugin, disposable child process, Job Object limits, and crash containment are implemented | A plugin crash does not take down the shell                                                                                     |
-| Capability storage           | Persistent grants, revocation, audit records, and Settings allow/revoke controls are implemented                            | Grants are resolved for every plugin launch and scoped by publisher, version, capability, and resource                          |
-| Release policy               | Deny-by-default ceiling intersected with active user grants; legacy wildcard only for unupdated official installs           | Selected filesystem roots and system-open are available; process execution, network fetch, and unrestricted roots remain denied |
-| Host bridge                  | Clipboard, storage, calendar, preferences, feedback, scoped filesystem, application discovery, and system-open calls        | No process, network, or navigation API                                                                                          |
-| Host permission granularity  | Official plugins now use named host calls; unupdated installs retain legacy `steward.*`                                     | Third-party packages cannot declare wildcard host permissions                                                                   |
-| Plugin manifest              | Strict schema v2 with routing commands, optional `minHostVersion`, and hosted preference schema                             | No presentation mode                                                                                                            |
-| Plugin window                | The plugin host child opens its own GPUI window                                                                             | The launcher and a plugin cannot currently share one OS window                                                                  |
-| Process containment          | Each plugin process has an active-process limit of one                                                                      | A plugin host cannot directly spawn a helper, including `git.exe`, without changing containment                                 |
-| Public marketplace admission | Not started                                                                                                                 | Public third-party publication remains blocked                                                                                  |
+| Area                         | Current state                                                                                                               | General consequence                                                                                                                        |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| NSH UI and QuickJS           | NSH 0.6.1 TSX, signals, inputs, navigation primitives, and tests are available                                              | Third-party plugin UI can be built now                                                                                                     |
+| Package lifecycle            | Scaffold, inspect, install, update, remove, rollback, local marketplace, and policy checks are implemented                  | Distribution and iteration are ready                                                                                                       |
+| Process isolation            | One plugin host process per open plugin, disposable child process, Job Object limits, and crash containment are implemented | A plugin crash does not take down the shell                                                                                                |
+| Capability storage           | Persistent grants, revocation, audit records, and Settings allow/revoke controls are implemented                            | Grants are resolved for every plugin launch and scoped by publisher, version, capability, and resource                                     |
+| Release policy               | Deny-by-default ceiling intersected with active user grants; legacy wildcard only for unupdated official installs           | Scoped HTTPS and exact non-shell executables are available; unrestricted roots, raw sockets, and unrestricted process access remain denied |
+| Host bridge                  | Clipboard, storage, calendar, preferences, feedback, scoped filesystem, system-open, scoped HTTPS, and controlled execution | Embedded navigation is not yet available                                                                                                   |
+| Host permission granularity  | Official plugins now use named host calls; unupdated installs retain legacy `steward.*`                                     | Third-party packages cannot declare wildcard host permissions                                                                              |
+| Plugin manifest              | Strict schema v2 with routing commands, optional `minHostVersion`, and hosted preference schema                             | No presentation mode                                                                                                                       |
+| Plugin window                | The plugin host child opens its own GPUI window                                                                             | The launcher and a plugin cannot currently share one OS window                                                                             |
+| Process containment          | Each plugin process has an active-process limit of one; execution requests cross to a launcher-owned broker                 | The broker owns executable validation, Job Object lifetime, output, timeout, and cancellation                                              |
+| Public marketplace admission | Not started                                                                                                                 | Public third-party publication remains blocked                                                                                             |
 
 The current stack is sufficient for UI-only plugins and the local lifecycle.
 It is not sufficient for general third-party system integration; `git-repos`
@@ -215,8 +215,8 @@ domain.
 | Detect submodules                 | Scoped file read plus plugin parsing                          | Yes                              |
 | Open repository directory         | Open-path host capability                                     | Yes                              |
 | Open repository in an editor      | Application selection and open-with host capability           | Yes                              |
-| Check clean/unpushed state        | Controlled `git` execution                                    | No                               |
-| Clone repository                  | Controlled `git` execution and network-capable process policy | No                               |
+| Check clean/unpushed state        | Controlled `git` execution                                    | Yes                              |
+| Clone repository                  | Controlled `git` execution and network-capable process policy | Yes                              |
 | Move repository to Recycle Bin    | Host-owned destructive filesystem operation                   | No                               |
 | Enter plugin from launcher        | Existing command routing                                      | Yes, as a separate plugin window |
 | Enter plugin on the launcher page | Embedded presentation and cross-process surface design        | No                               |
@@ -370,7 +370,7 @@ Implementation evidence (2026-11-21):
 
 ### PC-3: Network and Controlled Execution
 
-Status: planned. Depends on completed PC-2.
+Status: complete. Depends on completed PC-2.
 
 Deliverables:
 
@@ -394,6 +394,39 @@ Acceptance:
 - Network and process calls produce capability audit entries.
 - At least one network-focused plugin and one tool-integration plugin pass
   without adding domain-specific shell code; `git-repos` is one consumer.
+
+Implementation evidence (2026-11-21):
+
+- Host API `0.4.0` adds `steward.net.fetch`, `steward.exec.run`, and
+  `steward.exec.cancel`. Network declarations use exact HTTPS host, method, and
+  optional path/path-prefix scopes. Process declarations name exact `.exe`
+  targets; shell and interpreter executables are rejected in package policy,
+  launch authorization, and the broker.
+- `plugin_network` reloads active capability grants before every request,
+  rejects HTTP, IP literals, local-network names, embedded credentials, raw
+  sockets, oversized bodies, reserved headers, and unrestricted methods. It
+  follows at most five redirects, rechecks every redirect against the same
+  grant, strips credentials on origin changes, and enforces total timeout and
+  response-size limits.
+- `plugin_execution` is owned by the launcher process rather than the plugin
+  host, so the plugin host's one-active-process Job Object limit remains
+  intact. The broker resolves exact executables from `PATH`, confines the
+  working directory to a live write grant, clears inherited environment
+  variables, passes arguments directly without a shell, and caps argument
+  count/bytes, runtime, and combined output.
+- Each controlled process runs in a kill-on-close Windows Job Object. Timeout,
+  cancellation, output exhaustion, plugin exit, and broker shutdown terminate
+  the process tree. Request IDs correlate asynchronous NDJSON requests and
+  results across the isolated plugin process boundary.
+- `@steward/plugin-network-check` validates the scoped HTTPS path against
+  `GET https://api.github.com/rate_limit`. `@steward/plugin-git-repos` runs
+  `git status`, `git remote`, upstream lookup, unpushed-commit counting, and
+  clone through the same generic execution API without host-side Git logic.
+- Rust tests cover scope matching, method/path limits, local-network rejection,
+  reserved headers, shell/interpreter rejection, and Windows process-tree
+  termination. A Windows integration test runs local `git init`, status,
+  remote, push, upstream counting, and clone through the broker without a
+  shell. Host-mocked NSH tests cover both validation plugins.
 
 ### PC-4: Embedded Presentation and Navigation
 
@@ -479,8 +512,9 @@ For the `git-repos` workload specifically:
 
 - after PC-2 it should support repository discovery, filtering, favorites, link
   opening, and Explorer launch;
-- after PC-3 it should support editor launch, clone, clean/unpushed checks, and
-  safe removal;
+- after PC-3 it should support editor launch, clone, and clean/unpushed checks;
+- safe removal remains host-owned Recycle Bin work outside the PC-3
+  network/process deliverable;
 - after PC-4 it may support launcher-page entry instead of a separate window.
 
 These are acceptance examples, not separate public APIs.
@@ -543,9 +577,10 @@ Each milestone must include:
    (Done)
 4. Validate PC-2 with at least one non-Git local-data plugin and the read-only
    `git-repos` workload. (Done: Local Files and Git Repositories)
-5. Implement PC-3 only after the controlled execution broker design is approved.
+5. Implement PC-3 with the controlled execution broker. (Done)
 6. Validate PC-3 with a network plugin, a tool-integration plugin, and the
-   action-oriented `git-repos` workload.
+   action-oriented `git-repos` workload. (Done: Network Check and Git
+   Repositories)
 7. Prototype PC-4 separately and record the isolation-versus-embedding decision.
 8. Start public third-party admission only after PC-0 through PC-3, validation
    across multiple plugin domains, and the Phase 3 clean-VM gate are complete.

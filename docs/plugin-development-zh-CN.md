@@ -186,7 +186,7 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
   "id": "com.example.my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "minHostVersion": "0.3.0",
+  "minHostVersion": "0.4.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,
@@ -272,8 +272,8 @@ Steward 会检查包内版本与 `plugin.json` 完全一致。
 - 剪贴板、文件、URL 等能力按 NSH 要求显式声明。
 - 权限声明不是授权；敏感能力还需要用户 grant，更新新增敏感权限时会要求
   重新确认。
-- 不声明网络、进程执行、WebView 或图片选择器，除非产品需求明确需要并且
-  宿主策略已经放行。
+- 网络请求只声明具体 HTTPS 主机、方法和路径；工具执行只声明精确 `.exe`，
+  不申请 shell、解释器或任意命令。WebView、原始套接字和图片选择器仍默认拒绝。
 
 ## 5. Steward Host API
 

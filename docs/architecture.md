@@ -85,6 +85,8 @@ steward-app.exe
               +-- one QuickJS VM
               +-- signed plugin.nshpkg
               +-- HostChannel bridge
+              |
+              +-- launcher-owned execution broker
 ```
 
 The shell is Rust and contains no JavaScript VM. A plugin VM is created only
@@ -106,6 +108,15 @@ enter an automatic restart loop; a later user launch is gated by per-plugin
 2/4/8/16/30-second exponential backoff until a healthy first frame resets it.
 This is still not an OS security sandbox and does not restrict filesystem,
 network, registry, or token access.
+
+Controlled execution does not spawn from the plugin host. A plugin host sends a
+structured exact-executable request over the session-scoped NDJSON protocol;
+the launcher rechecks active grants, executes the approved target in its own
+kill-on-close Job Object, and returns bounded output. This avoids weakening the
+plugin host's one-active-process limit. The broker has no shell or command-line
+string, clears the inherited environment, confines the working directory to a
+live write grant, and terminates the full process tree on timeout,
+cancellation, output exhaustion, plugin exit, or broker shutdown.
 
 GUI startup is guarded by a session-scoped Windows named mutex before storage,
 search workers, tray, or windows are initialized. A secondary launch signals a
@@ -252,10 +263,13 @@ The release policy ceiling still contains:
 - default-path open, Explorer reveal, and catalog-only open-with;
 - installed-application discovery;
 - opening https and mailto URLs;
+- scoped HTTPS requests with exact host, method, and optional path grants;
+- exact non-shell `.exe` execution through the launcher-owned broker;
 - named Steward host calls, with `steward.*` retained only for official
   migration packages.
 
-Network, process execution, webview, generic NSH image-picker, and unrestricted
+Raw sockets, non-HTTPS network access, shell/interpreter execution,
+unrestricted network hosts, webview, generic NSH image-picker, and unrestricted
 filesystem roots are denied.
 The policy is applied again when a package is prepared for launch; package
 metadata cannot grant itself extra capabilities.
@@ -263,9 +277,10 @@ metadata cannot grant itself extra capabilities.
 The current host bridge exposes clipboard history and writes, plugin-private
 string storage, command/theme events, plugin-window close, resolved
 preferences, toast, confirmation, progress, user-selected filesystem roots,
-installed applications, and system-open operations. Clipboard, storage, and
-resource calls are capability-gated by the signed package plus the release
-policy; plugin-private storage is isolated under the plugin's data directory.
+installed applications, system-open operations, scoped HTTPS, and controlled
+execution. Clipboard, storage, network, process, and resource calls are
+capability-gated by the signed package plus the release policy; plugin-private
+storage is isolated under the plugin's data directory.
 
 PC-0 adds a semantic host API version, `minHostVersion`, feature discovery,
 stable errors, and launch-time intersection with active SQLite grants. New
@@ -289,6 +304,16 @@ non-traversable during walks. Path work runs on bounded worker queues; walks
 have depth, result, and deadline limits plus caller-driven cancellation.
 System opening accepts a path plus either the default handler or an exact
 installed-application ID, never a shell command line.
+
+PC-3 adds scoped HTTPS and controlled execution. Packages declare
+`steward.net.fetch` with `network.http` host/method/path grants, and
+`steward.exec.run` with exact `.exe` targets under `process.execute`. Runtime
+handlers reload active grants, reject non-HTTPS/local-network requests and
+shell or interpreter executables, and write capability audit records without
+storing request or response payloads. Network redirects are checked
+individually against the same grant. Execution arguments remain a string array
+through `Command`, and both network and process operations have bounded
+concurrency, timeout, and output or response limits.
 
 VM limits:
 

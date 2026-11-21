@@ -17,21 +17,24 @@ use gpui::{
 use nsh_engine::{HostCall, HostChannel, HostReply};
 use nsh_platform_gpui::{AppOptions, AppView};
 use steward_plugin_contract::capabilities::{
-    FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK, FS_WRITE_TEXT, SYSTEM_APPLICATIONS,
-    SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH,
+    EXEC_CANCEL, EXEC_RUN, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK,
+    FS_WRITE_TEXT, NET_FETCH, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH,
+    SYSTEM_REVEAL_PATH,
 };
 use steward_plugin_contract::{
-    LaunchRequest, PluginErrorCode, PluginNotice, PluginNoticeKind, PluginNoticeLevel,
-    PluginProcessAction, PluginProcessCommand, PluginProcessEvent, PluginProcessStart,
-    PluginSessionId, PROTOCOL_VERSION,
+    LaunchRequest, PluginErrorCode, PluginExecutionRequest, PluginExecutionResult, PluginNotice,
+    PluginNoticeKind, PluginNoticeLevel, PluginProcessAction, PluginProcessCommand,
+    PluginProcessEvent, PluginProcessStart, PluginSessionId, PROTOCOL_VERSION,
 };
-use steward_plugin_host::{HostConfig, PluginHost, PluginLaunch};
+use steward_plugin_host::{HostConfig, PluginAuthorization, PluginHost, PluginLaunch};
 use steward_plugin_registry::Registry;
 use steward_storage::{NewCapabilityAuditEntry, Storage};
 
 use crate::nsh_surface::{new_view, plugin_limits};
 use crate::plugin_containment::PluginProcessContainment;
+use crate::plugin_execution::{ExecutionAudit, ExecutionBroker, ExecutionResultSink};
 use crate::plugin_filesystem::{display_path, FileAccess, FileService, PickerMode};
+use crate::plugin_network::{NetworkAudit, NetworkRequest, NetworkService};
 use crate::plugin_system::SystemService;
 use crate::state::{AppState, PluginRuntimeEvent};
 
@@ -53,7 +56,7 @@ static NEXT_CONFIRMATION_ID: AtomicU64 = AtomicU64::new(1);
 /// The shell's handle to one isolated plugin host process.
 pub(crate) struct PluginProcess {
     child: Child,
-    input: ChildStdin,
+    input: Arc<Mutex<ChildStdin>>,
     containment: PluginProcessContainment,
     session_id: PluginSessionId,
     healthy: Arc<AtomicBool>,
@@ -81,12 +84,7 @@ impl PluginProcess {
     }
 
     fn send(&mut self, action: PluginProcessAction) -> std::io::Result<()> {
-        let command = PluginProcessCommand {
-            protocol_version: PROTOCOL_VERSION,
-            session_id: self.session_id,
-            action,
-        };
-        write_json_line(&mut self.input, &command)
+        send_process_action(&self.input, self.session_id, action)
     }
 
     fn poll_exit(&mut self) -> PluginProcessExit {
@@ -372,6 +370,22 @@ impl ChildEventSink {
         });
     }
 
+    fn execution_request(&self, session_id: PluginSessionId, request: PluginExecutionRequest) {
+        self.send(PluginProcessEvent::ExecutionRequest {
+            protocol_version: PROTOCOL_VERSION,
+            session_id,
+            request,
+        });
+    }
+
+    fn execution_cancel(&self, session_id: PluginSessionId, request_id: u64) {
+        self.send(PluginProcessEvent::ExecutionCancel {
+            protocol_version: PROTOCOL_VERSION,
+            session_id,
+            request_id,
+        });
+    }
+
     fn failed_and_flush(
         &self,
         session_id: PluginSessionId,
@@ -391,6 +405,22 @@ fn write_json_line(writer: &mut impl Write, value: &impl serde::Serialize) -> st
     serde_json::to_writer(&mut *writer, value).map_err(std::io::Error::other)?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+fn send_process_action(
+    input: &Arc<Mutex<ChildStdin>>,
+    session_id: PluginSessionId,
+    action: PluginProcessAction,
+) -> std::io::Result<()> {
+    let command = PluginProcessCommand {
+        protocol_version: PROTOCOL_VERSION,
+        session_id,
+        action,
+    };
+    let mut input = input
+        .lock()
+        .map_err(|_| std::io::Error::other("plugin control pipe lock is poisoned"))?;
+    write_json_line(&mut *input, &command)
 }
 
 struct PluginFrameView {
@@ -435,6 +465,76 @@ struct HolidayRequest {
 struct PathPickerRequest {
     mode: PickerMode,
     reply: HostReply,
+}
+
+fn parse_execution_request(data: &serde_json::Value) -> Result<PluginExecutionRequest, String> {
+    let request_id = data
+        .get("requestId")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|request_id| *request_id > 0)
+        .ok_or_else(|| "runProcess requires a positive requestId".to_owned())?;
+    let executable = data
+        .get("executable")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 260)
+        .ok_or_else(|| "runProcess requires a bounded executable string".to_owned())?
+        .to_owned();
+    let arguments =
+        data.get("arguments")
+            .map(|value| {
+                value
+                    .as_array()
+                    .ok_or_else(|| "runProcess arguments must be an array".to_owned())?
+                    .iter()
+                    .map(|argument| {
+                        argument.as_str().map(str::to_owned).ok_or_else(|| {
+                            "runProcess arguments must contain only strings".to_owned()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+    if arguments.len() > 256 {
+        return Err("runProcess accepts at most 256 arguments".into());
+    }
+    let working_directory = data
+        .get("workingDirectory")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "runProcess requires a workingDirectory string".to_owned())?
+        .to_owned();
+    let timeout_ms = data
+        .get("timeoutMs")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(30_000);
+    let max_output_bytes = data
+        .get("maxOutputBytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1024 * 1024);
+    Ok(PluginExecutionRequest {
+        request_id,
+        executable,
+        arguments,
+        working_directory,
+        timeout_ms,
+        max_output_bytes,
+    })
+}
+
+fn resolve_execution_reply(reply: HostReply, result: PluginExecutionResult) {
+    if let Some(code) = result.error_code {
+        reply.reject(format!(
+            "[{}] {}",
+            code.as_str(),
+            result
+                .error
+                .as_deref()
+                .unwrap_or("controlled process failed")
+        ));
+    } else {
+        reply.resolve(serde_json::to_value(result).unwrap_or_default());
+    }
 }
 
 fn start_holiday_worker(cache_dir: PathBuf) -> crossbeam_channel::Sender<HolidayRequest> {
@@ -482,6 +582,17 @@ fn run_child_window(
     };
     let files = FileService::new(file_access.clone());
     let system = SystemService::new(file_access);
+    let network_audit: NetworkAudit = {
+        let audit = audit.clone();
+        Arc::new(move |capability, scope, outcome, detail| {
+            audit.record_outcome(capability, scope, outcome, detail);
+        })
+    };
+    let network = NetworkService::new(
+        data_dir.clone(),
+        launch.authorization.clone(),
+        network_audit,
+    );
     let (control_tx, control_rx) =
         crossbeam_channel::bounded::<PluginProcessCommand>(HOLIDAY_QUEUE_DEPTH);
     let (picker_tx, picker_rx) =
@@ -522,6 +633,7 @@ fn run_child_window(
         .join("steward-host-storage.json");
     let plugin_storage = Arc::new(Mutex::new(load_plugin_storage(&storage_path)));
     let pending_confirmations = Arc::new(Mutex::new(HashMap::<u64, HostReply>::new()));
+    let pending_executions = Arc::new(Mutex::new(HashMap::<u64, HostReply>::new()));
     let host = HostChannel::new();
     host.set_params(launch.params.clone());
     host.handle("steward.preferences.get", {
@@ -1045,6 +1157,83 @@ fn run_child_window(
             system.enqueue_open_with(application_id, path, reply);
         }
     });
+    host.handle(NET_FETCH, {
+        let network = network.clone();
+        let audit = audit.clone();
+        move |call: HostCall| {
+            audit.record(NET_FETCH);
+            let request = match NetworkRequest::from_value(call.data()) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject(error.host_message());
+                    return;
+                }
+            };
+            let Some(reply) = call.into_reply() else {
+                return;
+            };
+            network.enqueue(request, reply);
+        }
+    });
+    host.handle(EXEC_RUN, {
+        let events = events.clone();
+        let pending = pending_executions.clone();
+        let audit = audit.clone();
+        move |call: HostCall| {
+            audit.record(EXEC_RUN);
+            let request = match parse_execution_request(call.data()) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject(format!("[invalid_input] {error}"));
+                    return;
+                }
+            };
+            let request_id = request.request_id;
+            let Some(reply) = call.into_reply() else {
+                return;
+            };
+            let Ok(mut pending) = pending.lock() else {
+                reply.reject("[host_failure] controlled process state is unavailable");
+                return;
+            };
+            if pending.len() >= 64 {
+                reply.reject("[resource_exhausted] too many controlled processes are pending");
+                return;
+            }
+            if pending.contains_key(&request_id) {
+                reply.reject("[invalid_input] process request id is already active");
+                return;
+            }
+            pending.insert(request_id, reply);
+            drop(pending);
+            events.execution_request(session_id, request);
+        }
+    });
+    host.handle(EXEC_CANCEL, {
+        let events = events.clone();
+        let pending = pending_executions.clone();
+        let audit = audit.clone();
+        move |call: HostCall| {
+            audit.record(EXEC_CANCEL);
+            let Some(request_id) = call
+                .data()
+                .get("requestId")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|request_id| *request_id > 0)
+            else {
+                call.reject("[invalid_input] cancelProcess requires a positive requestId");
+                return;
+            };
+            let exists = pending
+                .lock()
+                .map(|pending| pending.contains_key(&request_id))
+                .unwrap_or(false);
+            if exists {
+                events.execution_cancel(session_id, request_id);
+            }
+            call.resolve(serde_json::json!({ "cancelled": exists }));
+        }
+    });
     host.handle("steward.window.close", {
         let control = control_tx.clone();
         let audit = audit.clone();
@@ -1060,6 +1249,7 @@ fn run_child_window(
     });
 
     let ui_pending_confirmations = pending_confirmations.clone();
+    let ui_pending_executions = pending_executions.clone();
     gpui_platform::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run({
@@ -1185,6 +1375,7 @@ fn run_child_window(
 
                 let control_host = host.clone();
                 let control_confirmations = ui_pending_confirmations.clone();
+                let control_executions = ui_pending_executions.clone();
                 cx.spawn(async move |cx| loop {
                     while let Ok(command) = control_rx.try_recv() {
                         match command.action {
@@ -1228,6 +1419,13 @@ fn run_child_window(
                                         } else {
                                             reply.reject("confirmation denied");
                                         }
+                                    }
+                                }
+                            }
+                            PluginProcessAction::ResolveExecution { request_id, result } => {
+                                if let Ok(mut pending) = control_executions.lock() {
+                                    if let Some(reply) = pending.remove(&request_id) {
+                                        resolve_execution_reply(reply, result);
                                     }
                                 }
                             }
@@ -1320,7 +1518,12 @@ impl CapabilityAuditSink {
                 for mut entry in receiver {
                     entry.plugin_id = plugin_id.clone();
                     entry.publisher_fingerprint = publisher_fingerprint.clone();
-                    entry.detail = Some(format!("origin=host_call;version={}", version));
+                    entry.detail = Some(match entry.detail.take() {
+                        Some(detail) if !detail.is_empty() => {
+                            format!("origin=host_call;version={version};{detail}")
+                        }
+                        _ => format!("origin=host_call;version={version}"),
+                    });
                     if let Err(error) = storage.append_capability_audit(&entry) {
                         tracing::warn!(
                             error = %format!("{error:#}"),
@@ -1334,6 +1537,10 @@ impl CapabilityAuditSink {
     }
 
     fn record(&self, capability: &str) {
+        self.record_outcome(capability, "host=steward", "allowed", "origin=host_call");
+    }
+
+    fn record_outcome(&self, capability: &str, scope: &str, outcome: &str, detail: &str) {
         let occurred_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
@@ -1342,10 +1549,10 @@ impl CapabilityAuditSink {
             plugin_id: String::new(),
             publisher_fingerprint: String::new(),
             capability: capability.into(),
-            scope: "host=steward".into(),
-            outcome: "allowed".into(),
+            scope: scope.into(),
+            outcome: outcome.into(),
             occurred_at,
-            detail: None,
+            detail: Some(detail.into()),
         });
     }
 }
@@ -1366,6 +1573,35 @@ pub(crate) fn focus_and_send(
         })
         .and_then(|()| process.send(PluginProcessAction::Focus))
         .is_ok()
+}
+
+fn append_runtime_audit(
+    data_dir: &Path,
+    authorization: &PluginAuthorization,
+    capability: &str,
+    scope: &str,
+    outcome: &str,
+    detail: &str,
+) {
+    let Ok(storage) = Storage::open_at(data_dir) else {
+        return;
+    };
+    let occurred_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default();
+    let _ = storage.append_capability_audit(&NewCapabilityAuditEntry {
+        plugin_id: authorization.plugin_id.clone(),
+        publisher_fingerprint: authorization.publisher_fingerprint.clone(),
+        capability: capability.into(),
+        scope: scope.into(),
+        outcome: outcome.into(),
+        occurred_at,
+        detail: Some(format!(
+            "origin=broker;version={};{detail}",
+            authorization.version
+        )),
+    });
 }
 
 pub(crate) fn resolve_confirmation(
@@ -1396,12 +1632,17 @@ pub(crate) fn open_launch(
     }
 
     let events = state.borrow().plugin_events.clone();
+    let data_dir = state.borrow().data_dir.clone();
+    let authorization = launch.authorization.clone();
+    let receipt = launch.package.receipt.clone();
     let session_id = NEXT_PLUGIN_SESSION.fetch_add(1, Ordering::Relaxed);
     let process = spawn_process(
         session_id,
         requested_at,
         initial.clone(),
-        launch.package.receipt.clone(),
+        receipt,
+        authorization,
+        data_dir,
         events,
     )?;
     let child_pid = process.pid();
@@ -1435,6 +1676,8 @@ fn spawn_process(
     requested_at: Instant,
     request: LaunchRequest,
     receipt: nsh_package::PackageReceipt,
+    authorization: PluginAuthorization,
+    data_dir: PathBuf,
     events: crossbeam_channel::Sender<PluginRuntimeEvent>,
 ) -> anyhow::Result<PluginProcess> {
     let executable = std::env::current_exe()?;
@@ -1469,6 +1712,7 @@ fn spawn_process(
             request: request.clone(),
         },
     )?;
+    let input = Arc::new(Mutex::new(input));
 
     let healthy = Arc::new(AtomicBool::new(false));
     let failure_reported = Arc::new(AtomicBool::new(false));
@@ -1495,6 +1739,9 @@ fn spawn_process(
             session_id,
             requested_at,
             receipt,
+            authorization,
+            data_dir,
+            command_input: input.clone(),
             events,
             healthy: healthy.clone(),
             failure_reported: failure_reported.clone(),
@@ -1519,6 +1766,9 @@ struct ProcessEventContext {
     session_id: PluginSessionId,
     requested_at: Instant,
     receipt: nsh_package::PackageReceipt,
+    authorization: PluginAuthorization,
+    data_dir: PathBuf,
+    command_input: Arc<Mutex<ChildStdin>>,
     events: crossbeam_channel::Sender<PluginRuntimeEvent>,
     healthy: Arc<AtomicBool>,
     failure_reported: Arc<AtomicBool>,
@@ -1532,11 +1782,45 @@ fn spawn_event_reader(output: std::process::ChildStdout, context: ProcessEventCo
         session_id,
         requested_at,
         receipt,
+        authorization,
+        data_dir,
+        command_input,
         events,
         healthy,
         failure_reported,
         pipe_closed,
     } = context;
+    let execution_results: ExecutionResultSink = {
+        let command_input = command_input.clone();
+        Arc::new(move |request_id, result| {
+            let _ = send_process_action(
+                &command_input,
+                session_id,
+                PluginProcessAction::ResolveExecution { request_id, result },
+            );
+        })
+    };
+    let execution_audit: ExecutionAudit = {
+        let data_dir = data_dir.clone();
+        let authorization = authorization.clone();
+        Arc::new(move |capability, scope, outcome, detail| {
+            append_runtime_audit(
+                &data_dir,
+                &authorization,
+                capability,
+                scope,
+                outcome,
+                detail,
+            );
+        })
+    };
+    let broker = ExecutionBroker::new(
+        data_dir,
+        authorization,
+        session_id,
+        execution_results,
+        execution_audit,
+    );
     std::thread::Builder::new()
         .name(format!("steward-plugin-events-{session_id}"))
         .spawn(move || {
@@ -1667,8 +1951,48 @@ fn spawn_event_reader(output: std::process::ChildStdout, context: ProcessEventCo
                             });
                         }
                     }
+                    PluginProcessEvent::ExecutionRequest {
+                        protocol_version,
+                        session_id: event_session,
+                        request: execution_request,
+                    } => {
+                        if protocol_version != PROTOCOL_VERSION || event_session != session_id {
+                            report_protocol_failure(
+                                &events,
+                                &plugin_id,
+                                &request,
+                                session_id,
+                                &failure_reported,
+                                PluginErrorCode::RuntimeError,
+                                "plugin host sent an execution request for another session".into(),
+                            );
+                            return;
+                        }
+                        broker.submit(execution_request);
+                    }
+                    PluginProcessEvent::ExecutionCancel {
+                        protocol_version,
+                        session_id: event_session,
+                        request_id,
+                    } => {
+                        if protocol_version != PROTOCOL_VERSION || event_session != session_id {
+                            report_protocol_failure(
+                                &events,
+                                &plugin_id,
+                                &request,
+                                session_id,
+                                &failure_reported,
+                                PluginErrorCode::RuntimeError,
+                                "plugin host sent an execution cancellation for another session"
+                                    .into(),
+                            );
+                            return;
+                        }
+                        broker.cancel(request_id);
+                    }
                 }
             }
+            broker.cancel_all();
             if !failure_reported.load(Ordering::Acquire) {
                 pipe_closed.store(true, Ordering::Release);
             }
@@ -1790,6 +2114,60 @@ mod tests {
         ]);
         persist_plugin_storage(&path, &values).unwrap();
         assert_eq!(load_plugin_storage(&path), values);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn runtime_broker_audits_scoped_network_and_process_outcomes() {
+        let dir = std::env::temp_dir().join(format!(
+            "steward-plugin-runtime-audit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = Storage::open_at(&dir).unwrap();
+        drop(storage);
+        let authorization = PluginAuthorization {
+            plugin_id: "com.example.audit".into(),
+            publisher_fingerprint: "SHA256:publisher".into(),
+            version: "1.0.0".into(),
+            features: Vec::new(),
+            legacy_compatibility: false,
+            declared_capabilities: Default::default(),
+            granted_capabilities: Default::default(),
+        };
+        append_runtime_audit(
+            &dir,
+            &authorization,
+            NET_FETCH,
+            "host=api.example.com;method=GET;path=/v1/items",
+            "allowed",
+            "status=200",
+        );
+        append_runtime_audit(
+            &dir,
+            &authorization,
+            EXEC_RUN,
+            "executable=git.exe;cwd=D:\\projects",
+            "denied",
+            "permission revoked",
+        );
+        let audit = Storage::open_at(&dir)
+            .unwrap()
+            .capability_audit("com.example.audit")
+            .unwrap();
+        assert!(audit.iter().any(|entry| {
+            entry.capability == NET_FETCH
+                && entry.scope.contains("method=GET")
+                && entry.outcome == "allowed"
+        }));
+        assert!(audit.iter().any(|entry| {
+            entry.capability == EXEC_RUN
+                && entry.scope == "executable=git.exe;cwd=D:\\projects"
+                && entry.outcome == "denied"
+        }));
         std::fs::remove_dir_all(dir).ok();
     }
 }

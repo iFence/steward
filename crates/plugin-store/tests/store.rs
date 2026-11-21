@@ -181,8 +181,20 @@ fn inspection_reports_signature_publisher_and_policy_review() {
         "1.0.0",
         1,
         serde_json::json!({
-            "network": { "hosts": ["example.com"] },
-            "process": { "execute": ["powershell.exe"] }
+            "host": ["steward.net.fetch", "steward.exec.run"],
+            "network": {
+                "http": [{
+                    "host": "api.example.com",
+                    "schemes": ["https"],
+                    "methods": ["GET"],
+                    "pathPrefixes": ["/v1"]
+                }],
+                "sockets": ["example.com:9000"]
+            },
+            "process": {
+                "execute": ["git.exe"],
+                "env": ["SECRET_TOKEN"]
+            }
         }),
     );
     let inspection = store(&root, &signer).inspect(&zip).unwrap();

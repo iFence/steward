@@ -1,6 +1,6 @@
 # Steward Plugin Host API Compatibility
 
-> Status: PC-0 through PC-2 implemented. The host API version is `0.3.0`.
+> Status: PC-0 through PC-3 implemented. The host API version is `0.4.0`.
 
 Steward uses semantic versions for the public plugin host contract. The current
 version is exported as `HOST_API_VERSION` from `steward-plugin-contract` and
@@ -71,6 +71,7 @@ steward.fs.read [path=D:\projects]
 steward.fs.pick [host=steward]
 steward.system.openPath [host=steward]
 steward.net.fetch [host=api.example.com;schemes=https;methods=GET;...]
+steward.exec.run [executable=git.exe]
 ```
 
 Private `${dataDir}` access, plugin-private string storage, and window-close
@@ -151,6 +152,35 @@ never descends through those entries. `readText()` and `writeText()` cap text at
 `openWith()` revalidates both the path grant and the application ID at execution
 time. No system-open call has a command-line parameter.
 
+## Network And Controlled Execution
+
+The `0.4.0` API adds:
+
+```text
+steward.net.fetch
+steward.exec.run
+steward.exec.cancel
+```
+
+Network use requires an active named host grant plus an active matching
+`network.http` scope. Runtime requests authorize the initial URL and every
+redirect, require HTTPS and a public DNS host, reject embedded credentials,
+and enforce method, path, timeout, request-body, response-body, concurrency,
+and redirect limits.
+
+Controlled execution requires an active named host grant plus an active exact
+`process.execute` scope. The isolated plugin host sends a structured request
+to the launcher-owned broker; it does not spawn the target itself. The broker
+resolves the `.exe`, verifies that the working directory is inside a live write
+grant, clears inherited environment variables, invokes the process with an
+argument array, and owns a kill-on-close Job Object. Shells and common
+interpreter/runtime executables are rejected. Timeout, cancellation, output
+exhaustion, plugin exit, and broker shutdown terminate the process tree.
+
+Both calls append payload-free capability audit records with allowed, denied,
+failed, or cancelled outcomes. Request and response bodies, arguments, headers,
+and process output are not copied into audit storage.
+
 ## Compatibility Tests
 
 The current test baseline covers:
@@ -170,4 +200,10 @@ The current test baseline covers:
   deadlines, and result limits;
 - host-grant enforcement for every filesystem and system-open call;
 - two unrelated headless plugins using the same filesystem and system-open API;
+- scoped HTTPS method/host/path matching, redirect authorization, local-network
+  rejection, reserved-header rejection, request/response limits, and timeout;
+- exact executable authorization, shell/interpreter rejection, scrubbed
+  environment, argument limits, output caps, cancellation, and Windows
+  process-tree termination;
+- headless Network Check and Git Repositories consumers of the new APIs;
 - package inspection policy and signed-package lifecycle tests.

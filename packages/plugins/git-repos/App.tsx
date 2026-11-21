@@ -5,6 +5,7 @@ import {
   pickFolder,
   preference,
   readText,
+  runProcess,
   revealPath,
   storageGet,
   storageSet,
@@ -40,7 +41,7 @@ function App() {
 
   async function scan() {
     try {
-      const root = await pickFolder(false);
+      const root = await pickFolder(true);
       if (!root) {
         status.set("Folder selection cancelled.");
         return;
@@ -78,6 +79,82 @@ function App() {
       const config = await readText(`${repository}\\.git\\config`, 256 * 1024);
       remote.set(remoteUrl(config));
       status.set(`Loaded ${repository}`);
+    } catch (error) {
+      status.set(message(error));
+    }
+  }
+
+  async function git(
+    repository: string,
+    arguments_: string[],
+    timeoutMs = 30_000,
+  ): Promise<string> {
+    const result = await runProcess({
+      id: `git-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`,
+      executable: "git.exe",
+      arguments: arguments_,
+      workingDirectory: repository,
+      timeoutMs,
+      maxOutputBytes: 1024 * 1024,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || result.stdout.trim() || "Git command failed");
+    }
+    return result.stdout.trim();
+  }
+
+  async function loadGitState() {
+    if (!selected()) return;
+    try {
+      status.set("Reading repository state with controlled Git execution...");
+      const summary = await git(selected(), ["status", "--porcelain=v1", "--branch"]);
+      const remotes = await git(selected(), ["remote", "-v"]);
+      let unpushed = "No upstream";
+      try {
+        const upstream = await git(selected(), [
+          "rev-parse",
+          "--abbrev-ref",
+          "--symbolic-full-name",
+          "@{u}",
+        ]);
+        const count = await git(selected(), ["rev-list", "--count", `${upstream}..HEAD`]);
+        unpushed = `${count} unpushed commit${count === "1" ? "" : "s"}`;
+      } catch {
+        unpushed = "No upstream configured";
+      }
+      const clean = summary.split(/\r?\n/).filter((line) => line && !line.startsWith("##")).length;
+      status.set(
+        `${clean === 0 ? "Clean" : `${clean} changed files`}; ${unpushed}; ${
+          remotes ? "remotes loaded" : "no remotes"
+        }`,
+      );
+    } catch (error) {
+      status.set(message(error));
+    }
+  }
+
+  async function cloneRepository() {
+    if (!remote()) {
+      status.set("Select a repository with an HTTPS remote first.");
+      return;
+    }
+    try {
+      const destination = await pickFolder(true);
+      if (!destination) {
+        status.set("Clone destination selection cancelled.");
+        return;
+      }
+      const remotePath = remote()!
+        .replace(/[?#].*$/, "")
+        .replace(/\/+$/, "");
+      const name =
+        remotePath
+          .split("/")
+          .pop()
+          ?.replace(/\.git$/i, "") || "repository";
+      status.set(`Cloning ${remote()}...`);
+      await git(destination, ["clone", "--", remote()!, `${destination}\\${name}`], 120_000);
+      status.set(`Cloned ${remote()} into ${destination}\\${name}`);
     } catch (error) {
       status.set(message(error));
     }
@@ -143,6 +220,10 @@ function App() {
         <Action label="Open" onPress={openRepository} />
         <Action label="Reveal" onPress={revealRepository} />
         <Action label="Open remote" onPress={openRemote} />
+      </View>
+      <View style={{ flexDirection: "row", gap: 10 }}>
+        <Action label="Git state" onPress={loadGitState} />
+        <Action label="Clone" onPress={cloneRepository} />
       </View>
       <Input
         value={query()}

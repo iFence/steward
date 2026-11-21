@@ -3,8 +3,8 @@
 > Status: NSH-0 through NSH-3 complete; NSH-4 implementation complete, blocked
 > on clean-VM and production-artifact acceptance. M4 implementation is complete
 > and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run. M5 plugin
-> ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-2 are
-> complete; PC-3 is the next implementation target.
+> ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-3 are
+> complete; PC-4 and public third-party admission are the next targets.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -72,10 +72,12 @@ application runtime:
 8. Windows is the acceptance platform. Other `cfg` branches remain buildable
    but are not part of functional acceptance.
 9. The release capability policy is deny-by-default. It grants clipboard,
-   `${dataDir}` filesystem access, and https/mailto URL opening. Named Steward
-   host calls are intersected with active user grants at launch; `steward.*`
-   remains only for legacy official migration. Network, process, webview, and
-   picker capabilities are denied.
+   `${dataDir}` filesystem access, https/mailto URL opening, scoped HTTPS
+   fetch, and exact non-shell `.exe` execution. Named Steward host calls and
+   resource scopes are intersected with active user grants at launch;
+   `steward.*` remains only for legacy official migration. Raw sockets,
+   unrestricted network access, shell/interpreter execution, webview, and
+   picker capabilities remain denied.
 
 ## Target Architecture
 
@@ -95,7 +97,9 @@ Windows app process
               +-- steward-app --plugin-host-process
               +-- signed plugin.nshpkg
               +-- one QuickJS VM
-              +-- host bridge: clipboard, storage, preferences, feedback, close
+              +-- host bridge: storage, preferences, feedback, filesystem,
+              |   system-open, scoped HTTPS
+              +-- NDJSON execution request -> launcher-owned broker
 ```
 
 ## Public Contracts
@@ -164,7 +168,7 @@ Launch parameters:
   "locale": "en",
   "accent": "#863bff",
   "dark": true,
-  "hostApiVersion": "0.3.0",
+  "hostApiVersion": "0.4.0",
   "features": ["host_info", "runtime_feature_discovery"],
   "preferences": {
     "showHints": true
@@ -750,8 +754,8 @@ Remaining PC-2 boundary:
 - Filesystem operations run as the current Windows user. Canonicalization and
   reparse-point checks prevent grant escapes and traversal, but do not turn the
   plugin host into an OS-level sandbox against a same-user attacker.
-- Network fetch, controlled process execution, destructive recycle-bin
-  operations, and embedded presentation remain PC-3/PC-4 work.
+- Destructive recycle-bin operations remain later filesystem work;
+  embedded presentation remains PC-4 work.
 
 Local verification (2026-11-21):
 
@@ -767,6 +771,73 @@ Local verification (2026-11-21):
   rejection, write grants, a directory symlink escape, bounded walks,
   cancellation, deadlines, Unicode and extended-length paths, case-insensitive
   duplicate roots, and shared use by two plugin identities.
+
+### PC-3: Network and Controlled Execution (2026-11-21, complete)
+
+Files:
+
+- `crates/plugin-contract/src/{lib.rs,capabilities.rs}`
+- `crates/plugin-host/src/{authorization.rs,policy.rs}`
+- `crates/plugin-store/src/package.rs`
+- `crates/app/src/{plugin_network.rs,plugin_execution.rs,plugin_window.rs}`
+- `packages/extension-api/src/host.ts`
+- `packages/plugins/{network-check,git-repos}/`
+
+Delivered:
+
+- [x] Host API `0.4.0` adds `steward.net.fetch`, `steward.exec.run`, and
+      `steward.exec.cancel`.
+- [x] HTTPS grants are scoped by host, method, optional exact path or path
+      prefix, and optional port. Only HTTPS 443 is admitted by the release
+      profile.
+- [x] Every initial request and redirect reloads active grants. Redirects are
+      capped at five; origin changes remove authorization and cookie headers.
+- [x] Request bodies, response bodies, headers, timeout, concurrency, queue
+      depth, and redirects are bounded. IP literals, localhost/`.local`/
+      `.internal`, embedded credentials, raw sockets, and reserved headers are
+      rejected before I/O.
+- [x] Package policy, launch authorization, and runtime broker accept only
+      exact `.exe` targets and reject shells and common script runtimes.
+- [x] Controlled processes cross the isolated process boundary to a
+      launcher-owned broker, preserving the plugin host's one-active-process
+      limit.
+- [x] The broker rechecks active executable and write-root grants, resolves
+      `PATH` targets itself, clears inherited environment variables, passes
+      arguments as an array without shell interpolation, and enforces argument
+      count/bytes, timeout, and combined output limits.
+- [x] A kill-on-close Windows Job Object owns each process tree. Timeout,
+      cancellation, output exhaustion, plugin exit, and broker shutdown
+      terminate descendants.
+- [x] Network and process handlers append payload-free capability audit
+      records with allowed, denied, failed, or cancelled outcomes.
+- [x] `@steward/plugin-network-check` validates scoped HTTPS.
+      `@steward/plugin-git-repos` validates `git status`, `git remote`,
+      upstream lookup, unpushed-commit counting, and clone through the same
+      generic API. Neither adds host-side domain logic.
+- [x] Headless NSH tests mock and assert both capabilities. Rust tests cover
+      grant intersection, host/method/path matching, local-network and header
+      rejection, request limits, shell/interpreter rejection, and Windows
+      process-tree termination. A Windows broker integration test creates a
+      repository and bare remote, then runs init, status, remote, push,
+      upstream-count, and clone through the same argument-array execution path.
+
+Local verification (2026-11-21):
+
+- `cargo check -p steward-app` passed.
+- `cargo test -p steward-plugin-contract`, `cargo test -p steward-plugin-host
+--lib`, `cargo test -p steward-plugin-store --lib`, and `cargo test -p
+steward-app --bin steward-app` passed.
+- `nsh check App.tsx` passed for Network Check and Git Repositories.
+- `nsh test .` passed Network Check (1) and Git Repositories (2).
+
+Remaining PC-3 boundary:
+
+- Controlled processes still run as the current Windows user. The broker limits
+  what it starts and owns the resulting tree, but it is not an OS security
+  sandbox against a same-user attacker or an approved tool's own subprocess
+  behavior.
+- Host-owned Recycle Bin removal and embedded presentation remain outside the
+  PC-3 implementation.
 
 ## Verification Commands
 

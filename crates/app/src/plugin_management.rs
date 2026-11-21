@@ -11,10 +11,11 @@ use anyhow::{Context as _, Result};
 use semver::{Version, VersionReq};
 use serde_json::Value;
 use steward_plugin_contract::capabilities::{
-    CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, FEEDBACK_CONFIRM, FEEDBACK_PROGRESS,
-    FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ, FS_READ_TEXT, FS_WALK, FS_WRITE,
-    FS_WRITE_TEXT, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS,
-    SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM,
+    FEEDBACK_PROGRESS, FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ, FS_READ_TEXT,
+    FS_WALK, FS_WRITE, FS_WRITE_TEXT, NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET,
+    STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH,
+    SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::CapabilityDescriptor;
 use steward_plugin_store::{MarketplaceIndex, PluginCatalog, PluginOperationKind, PluginStore};
@@ -438,9 +439,33 @@ fn release_allows_capability(descriptor: &CapabilityDescriptor) -> bool {
         | WINDOW_CLOSE | PREFERENCES_GET | PREFERENCES_ALL | FEEDBACK_TOAST | FEEDBACK_CONFIRM
         | FEEDBACK_PROGRESS | FS_PICK | FS_WALK | FS_READ_TEXT | FS_WRITE_TEXT | FS_GRANTS
         | FS_CANCEL_WALK | SYSTEM_OPEN_PATH | SYSTEM_REVEAL_PATH | SYSTEM_OPEN_WITH
-        | SYSTEM_APPLICATIONS => true,
+        | SYSTEM_APPLICATIONS | EXEC_CANCEL => true,
         FS_READ | FS_WRITE => {
             descriptor.scope == "path=${dataDir}" || descriptor.scope.starts_with("path=")
+        }
+        NET_FETCH => {
+            let methods = descriptor
+                .scope
+                .split(';')
+                .find_map(|part| part.strip_prefix("methods="))
+                .unwrap_or_default();
+            descriptor.scope == "host=steward"
+                || (descriptor.scope.contains("schemes=https")
+                    && !descriptor.scope.contains("schemes=http,")
+                    && !descriptor.scope.contains(",http")
+                    && !methods.is_empty()
+                    && methods.split(',').all(|method| {
+                        matches!(method, "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE")
+                    })
+                    && (descriptor.scope.ends_with("port=")
+                        || descriptor.scope.ends_with("port=443")))
+        }
+        EXEC_RUN => {
+            descriptor.scope == "host=steward"
+                || descriptor
+                    .scope
+                    .strip_prefix("executable=")
+                    .is_some_and(controlled_executable_allowed)
         }
         SYSTEM_OPEN_URL => matches!(
             descriptor.scope.strip_prefix("scheme=").unwrap_or_default(),
@@ -449,6 +474,46 @@ fn release_allows_capability(descriptor: &CapabilityDescriptor) -> bool {
         "steward.system.clipboard" => true,
         _ => false,
     }
+}
+
+fn controlled_executable_allowed(executable: &str) -> bool {
+    let executable = executable.trim();
+    if !executable.to_ascii_lowercase().ends_with(".exe") {
+        return false;
+    }
+    let name = std::path::Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !matches!(
+        name.as_str(),
+        "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "wsl.exe"
+            | "bash.exe"
+            | "sh.exe"
+            | "cscript.exe"
+            | "wscript.exe"
+            | "mshta.exe"
+            | "rundll32.exe"
+            | "python.exe"
+            | "python3.exe"
+            | "py.exe"
+            | "node.exe"
+            | "nodejs.exe"
+            | "deno.exe"
+            | "bun.exe"
+            | "perl.exe"
+            | "ruby.exe"
+            | "java.exe"
+            | "javaw.exe"
+            | "dotnet.exe"
+            | "powershell_ise.exe"
+            | "wt.exe"
+            | "conhost.exe"
+    )
 }
 
 fn grant_capability(
@@ -671,7 +736,7 @@ mod tests {
                 CapabilityDescriptor::new("steward.storage.get", "host=steward"),
                 CapabilityDescriptor::new(
                     "steward.net.fetch",
-                    "host=example.com;schemes=https;methods=;paths=;pathPrefixes=;port=",
+                    "host=example.com;schemes=https;methods=GET;paths=;pathPrefixes=;port=",
                 ),
             ],
             policy: PackagePolicyReport {
@@ -737,7 +802,7 @@ mod tests {
             .iter()
             .find(|capability| capability.descriptor.permission == "steward.net.fetch")
             .unwrap();
-        assert!(!network.release_allowed);
+        assert!(network.release_allowed);
         assert!(!network.allowed());
         std::fs::remove_dir_all(dir).ok();
     }
@@ -784,6 +849,26 @@ mod tests {
     }
 
     #[test]
+    fn settings_release_policy_accepts_scoped_https_and_exact_exec() {
+        assert!(release_allows_capability(&CapabilityDescriptor::new(
+            "steward.net.fetch",
+            "host=api.example.com;schemes=https;methods=GET;paths=;pathPrefixes=/v1;port="
+        )));
+        assert!(release_allows_capability(&CapabilityDescriptor::new(
+            "steward.exec.run",
+            "executable=git.exe"
+        )));
+        assert!(!release_allows_capability(&CapabilityDescriptor::new(
+            "steward.exec.run",
+            "executable=cmd.exe"
+        )));
+        assert!(!release_allows_capability(&CapabilityDescriptor::new(
+            "steward.net.fetch",
+            "host=api.example.com;schemes=http;methods=GET;paths=;pathPrefixes=;port="
+        )));
+    }
+
+    #[test]
     fn approval_and_revocation_only_accept_declared_sensitive_capabilities() {
         let dir = std::env::temp_dir().join(format!(
             "steward-plugin-capability-actions-{}-{}",
@@ -813,15 +898,30 @@ mod tests {
             "host=other",
         )
         .is_err());
-        assert!(grant_declared_capability(
+        grant_declared_capability(
             &storage,
             "com.example.test",
             inspection,
             "steward.net.fetch",
-            "host=example.com;schemes=https;methods=;paths=;pathPrefixes=;port=",
+            "host=example.com;schemes=https;methods=GET;paths=;pathPrefixes=;port=",
         )
-        .is_err());
+        .unwrap();
         grant_declared_capability(
+            &storage,
+            "com.example.test",
+            inspection,
+            "steward.clipboard.write",
+            "host=steward",
+        )
+        .unwrap();
+        assert_eq!(
+            storage
+                .active_capability_grants("com.example.test")
+                .unwrap()
+                .len(),
+            2
+        );
+        revoke_declared_capability(
             &storage,
             "com.example.test",
             inspection,
@@ -840,8 +940,8 @@ mod tests {
             &storage,
             "com.example.test",
             inspection,
-            "steward.clipboard.write",
-            "host=steward",
+            "steward.net.fetch",
+            "host=example.com;schemes=https;methods=GET;paths=;pathPrefixes=;port=",
         )
         .unwrap();
         assert!(storage

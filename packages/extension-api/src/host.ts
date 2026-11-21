@@ -67,6 +67,43 @@ export interface InstalledApplication {
   name: string;
 }
 
+export interface HttpFetchOptions {
+  url: string;
+  method?: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  body?: string;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+}
+
+export interface HttpResponse {
+  status: number;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+  body: string;
+  redirects: number;
+  elapsedMs: number;
+}
+
+export interface ProcessRunOptions {
+  id?: string;
+  executable: string;
+  arguments?: string[];
+  workingDirectory: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+}
+
+export interface ProcessResult {
+  requestId: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timedOut: boolean;
+  cancelled: boolean;
+}
+
 export interface StewardErrorObject {
   code: StewardErrorCode;
   message: string;
@@ -413,9 +450,92 @@ export async function openWith(applicationId: string, path: string): Promise<voi
   }
 }
 
+export async function fetchHttp(options: HttpFetchOptions): Promise<HttpResponse> {
+  if (!options.url) {
+    throw new StewardError("invalid_input", "fetchHttp requires a URL");
+  }
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  try {
+    return await host.call<HttpResponse>(
+      "steward.net.fetch",
+      {
+        url: options.url,
+        method: options.method ?? "GET",
+        headers: options.headers,
+        body: options.body,
+        timeoutMs,
+        maxResponseBytes: options.maxResponseBytes,
+      },
+      { timeout: timeoutMs + 2_000 },
+    );
+  } catch (error) {
+    throw hostCallError("steward.net.fetch", error);
+  }
+}
+
+export async function runProcess(options: ProcessRunOptions): Promise<ProcessResult> {
+  if (!options.executable || !options.workingDirectory) {
+    throw new StewardError(
+      "invalid_input",
+      "runProcess requires an executable and workingDirectory",
+    );
+  }
+  const requestId = options.id ?? createProcessId();
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) {
+    throw new StewardError("invalid_input", "process id contains unsupported characters");
+  }
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  try {
+    const result = await host.call<Omit<ProcessResult, "requestId">>(
+      "steward.exec.run",
+      {
+        requestId,
+        executable: options.executable,
+        arguments: options.arguments ?? [],
+        workingDirectory: options.workingDirectory,
+        timeoutMs,
+        maxOutputBytes: options.maxOutputBytes,
+      },
+      { timeout: timeoutMs + 2_000 },
+    );
+    return { ...result, requestId };
+  } catch (error) {
+    throw hostCallError("steward.exec.run", error);
+  }
+}
+
+export async function cancelProcess(requestId: string): Promise<boolean> {
+  if (!requestId) {
+    throw new StewardError("invalid_input", "cancelProcess requires a request id");
+  }
+  const numericId = processIdNumber(requestId);
+  try {
+    const result = await host.call<{ cancelled: boolean }>("steward.exec.cancel", {
+      requestId: numericId,
+    });
+    return result.cancelled;
+  } catch (error) {
+    throw hostCallError("steward.exec.cancel", error);
+  }
+}
+
 function createWalkId(): string {
   const random = Math.floor(Math.random() * 0x100000000).toString(36);
   return `walk-${Date.now().toString(36)}-${random}`;
+}
+
+function createProcessId(): string {
+  const random = Math.floor(Math.random() * 0x100000000).toString(36);
+  return `process-${Date.now().toString(36)}-${random}`;
+}
+
+function processIdNumber(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0 || 1;
 }
 
 function hostCallError(capability: string, cause: unknown): StewardError {

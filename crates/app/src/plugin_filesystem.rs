@@ -495,6 +495,17 @@ impl FileAccess {
         self.resolve_existing(value, &roots, "read")
     }
 
+    pub(crate) fn authorize_write_directory(&self, value: &str) -> FileResult<PathBuf> {
+        let roots = self.matching_paths(FS_WRITE)?;
+        let path = self.resolve_existing(value, &roots, "write")?;
+        if !path.is_dir() {
+            return Err(FileError::InvalidInput(
+                "controlled process working directory must be a directory".into(),
+            ));
+        }
+        Ok(path)
+    }
+
     fn read_text(&self, value: &str, max_bytes: usize) -> FileResult<String> {
         let path = self.authorize_read(value)?;
         let metadata = std::fs::metadata(&path)

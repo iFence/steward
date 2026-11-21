@@ -45,6 +45,9 @@ interface StewardLaunchParams {
 | `openPath(path)`          | Open a selected path with its default handler.           |
 | `revealPath(path)`        | Reveal a selected path in Explorer.                      |
 | `openWith(appId, path)`   | Open a selected path with a catalog application.         |
+| `fetchHttp(options)`      | Make a scoped HTTPS request through Steward.             |
+| `runProcess(options)`     | Run an exact approved executable through the broker.     |
+| `cancelProcess(id)`       | Cancel a controlled process tree.                        |
 | `onProgress(cb)`          | Receive `steward.progress` events.                       |
 | `onCommand(cb)`           | Receive another command while the plugin window is open. |
 | `onTheme(cb)`             | Receive accent/dark-mode changes.                        |
@@ -64,9 +67,10 @@ receive general network capability through this host call.
 
 The embedding host allows clipboard, filesystem under `${dataDir}`,
 user-selected scoped roots, bounded filesystem operations, installed-app
-discovery, system open/reveal/open-with, and https/mailto URL opening. General
-plugin network, process execution, webview, unrestricted filesystem roots, and
-the generic NSH image picker are denied.
+discovery, system open/reveal/open-with, https/mailto URL opening, scoped
+HTTPS fetch, and exact non-shell executable execution. Raw sockets,
+local-network requests, webview, unrestricted filesystem roots, and the generic
+NSH image picker are denied.
 
 Each open plugin gets 64 MiB heap, 1 MiB stack, a 2 second load budget, a
 250 ms per-call budget, and at most 20,000 UI nodes.
@@ -74,9 +78,10 @@ Each open plugin gets 64 MiB heap, 1 MiB stack, a 2 second load budget, a
 Third-party packages negotiate `minHostVersion`, use named permissions, and
 receive an effective grant narrowed by active SQLite user grants. PC-1 adds
 hosted preferences and feedback. PC-2 adds selected-path grants, bounded
-filesystem operations, application discovery, and system-open calls while
-keeping network, process execution, and unrestricted roots denied. Official
-migration packages retain the legacy ceiling. See
+filesystem operations, application discovery, and system-open calls. PC-3 adds
+scoped HTTPS and launcher-brokered exact-executable execution with process-tree
+cleanup; unrestricted roots and raw sockets remain denied. Official migration
+packages retain the legacy ceiling. See
 [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md).
 
 For end-to-end local development, host-mocked tests, development signing, and
