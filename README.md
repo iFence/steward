@@ -81,6 +81,18 @@ The app starts silently in the system tray. Summon it with `Ctrl+Alt+Space`.
 Set `STEWARD_SHOW_ON_START=1` for development if the launcher should be visible
 immediately.
 
+If startup, display scaling, autostart, or plugin verification fails, generate
+a support report without starting the GUI:
+
+```powershell
+& .\target\release\steward-app.exe --write-diagnostics `
+  .\target\steward-diagnostics.json
+```
+
+The report includes application and package hashes, monitor DPI and work areas,
+the database schema, autostart state, and recent error lines. It does not read
+clipboard contents or plugin-private storage.
+
 ## Installing existing plugins
 
 Download the required `steward-plugin-<name>-<version>.zip` asset from
@@ -189,6 +201,8 @@ git push origin v0.3.2
   clean-VM and production-artifact acceptance
 - [ ] Plugin process isolation (Phase 3): implementation complete; blocked on
   clean-VM acceptance
+- [ ] M4 Windows support polish: implementation complete; blocked on clean-VM,
+  mixed-DPI, and interactive IME acceptance
 
 ## Acknowledgements
 

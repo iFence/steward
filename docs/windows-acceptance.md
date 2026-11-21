@@ -27,11 +27,30 @@
 | P0-A06 | 插件性能 | `pwsh scripts/bench-plugins.ps1 -Plugin calendar -Iterations 20` | 首帧 p95 不高于 500 ms；聚焦 p95 不高于 50 ms；隐藏 VM 数为 0 |
 | P0-A07 | MSI 干净安装、修复与卸载 | `pwsh scripts/test-msi-lifecycle.ps1 -Msi <当前版本.msi>` | 安装、启动、修复和卸载全部通过 |
 | P0-A08 | MSI 大版本升级 | `pwsh scripts/test-msi-lifecycle.ps1 -Msi <当前版本.msi> -PreviousMsi <上一版本.msi>` | 上一版本可原位升级；开机自启状态保留；卸载后安装文件被移除 |
+| P0-A09 | Windows 支持回归 | `pwsh scripts/test-windows-support.ps1 -Exe <当前版本 exe>` | 托盘与热键创建/销毁、隔离实例的单实例唤醒、自启修复/移除、显示器 DPI 定位、Unicode 键盘输入、插件包校验失败及诊断报告全部通过 |
 
 性能验收必须保留 `target\benchmarks\...\summary.json` 和
 `scripts/bench-resident.ps1` 的输出。还需记录机器型号、CPU、内存、Windows
 版本、构建配置、插件数量和原始采样值。功能 smoke 结果不能替代 Release
 性能证据。
+
+P0-A09 的 `summary.json`、诊断 JSON 和 `STEWARD_METRICS_PATH` JSONL 应与
+MSI 生命周期日志放在同一证据目录。脚本使用独立的数据目录和单实例命名空间，
+并在 `finally` 中恢复原自启注册表值。
+
+## 支持诊断
+
+用户可按以下方式生成不含插件内部数据或剪贴板内容的 JSON 报告：
+
+```powershell
+$report = Join-Path $env:TEMP "steward-diagnostics.json"
+& "$env:ProgramFiles\Steward\steward-app.exe" --write-diagnostics $report
+```
+
+报告包含应用版本与可执行文件哈希、Windows 版本、进程 DPI 感知、显示器
+工作区与 DPI、数据库 schema、自启注册表真值、内嵌信任根哈希、已安装插件
+manifest/package 哈希，以及最近日志中的错误行。报告用于定位启动、托盘、
+包校验和混合 DPI 问题；完整日志仍位于 `%APPDATA%\Steward\logs`。
 
 ## 当前执行记录
 

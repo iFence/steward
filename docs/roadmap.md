@@ -13,7 +13,7 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 | NSH migration (NSH-0 to NSH-3) | complete |
 | NSH release hardening (NSH-4) | blocked: clean VM and production artifacts |
 | Plugin process isolation (Phase 3) | blocked: clean VM acceptance |
-| Windows support polish (M4) | next |
+| Windows support polish (M4) | blocked: clean-VM and interactive IME/display acceptance |
 | Plugin ecosystem v1 (M5) | planned |
 | AI capability and MCP layers (M6-M8) | planned |
 | External runtime compatibility (M9-M10) | later |
@@ -89,11 +89,25 @@ blocked only on clean-VM and production-artifact acceptance.
 
 ## M4 - Windows Support Polish
 
-- clean install, upgrade, repair, and uninstall paths;
-- mixed-DPI and multi-monitor summon behavior;
-- IME and keyboard accessibility acceptance;
-- tray lifecycle and autostart regression coverage;
-- crash and package-verification diagnostics suitable for support.
+Implementation is complete. Acceptance is tracked in
+[windows-acceptance.md](windows-acceptance.md) and requires a clean Windows 11
+VM with the release MSI and at least one mixed-DPI or multi-monitor display
+configuration.
+
+- [x] clean install, upgrade, repair, and uninstall paths are automated by
+  `scripts/test-msi-lifecycle.ps1`;
+- [x] mixed-DPI and multi-monitor summon geometry is implemented and covered by
+  native geometry tests plus `scripts/test-windows-support.ps1`;
+- [x] focused Unicode keyboard input, navigation events, IME context
+  attachment, and foreground focus are covered by the Windows support suite;
+- [x] tray/hotkey creation and destruction, single-instance activation, and
+  autostart repair/removal regression coverage is automated;
+- [x] `steward-app.exe --write-diagnostics <path>` emits a support report with
+  display DPI, autostart state, trust-root identity, plugin package hashes,
+  database schema, and recent error lines;
+- [ ] blocked: run the support suite and real Chinese IME composition on the
+  acceptance VM;
+- [ ] blocked: finish the clean-VM MSI install/upgrade/repair/uninstall matrix.
 
 ## M5 - Plugin Ecosystem v1
 

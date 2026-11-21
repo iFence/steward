@@ -321,41 +321,44 @@ pub fn StewardLauncher() -> impl IntoElement {
         let activate_selected_action = activate_selected_action.clone();
         let submit = submit.clone();
         let set_actions_open = set_actions_open.clone();
-        Rc::new(move |key: &str| match key {
-            "up" | "ArrowUp" => {
-                if actions_open.get_untracked() {
-                    select_action_relative(-1);
-                } else {
-                    select_relative(-1);
-                }
-            }
-            "down" | "ArrowDown" => {
-                if actions_open.get_untracked() {
-                    select_action_relative(1);
-                } else {
-                    select_relative(1);
-                }
-            }
-            "escape" | "Escape" => {
-                if actions_open.get_untracked() {
-                    set_actions_open(false);
-                } else {
-                    app.send_window_command(WindowCommand::Hide);
-                }
-            }
-            "enter" | "Enter" => {
-                if actions_open.get_untracked() {
-                    if activate_selected_action() {
-                        set_actions_open(false);
+        Rc::new(move |key: &str| {
+            crate::metrics::value("launcher_key", 1, serde_json::json!({ "key": key }));
+            match key {
+                "up" | "ArrowUp" => {
+                    if actions_open.get_untracked() {
+                        select_action_relative(-1);
+                    } else {
+                        select_relative(-1);
                     }
-                } else {
-                    submit(&query.get_untracked());
                 }
+                "down" | "ArrowDown" => {
+                    if actions_open.get_untracked() {
+                        select_action_relative(1);
+                    } else {
+                        select_relative(1);
+                    }
+                }
+                "escape" | "Escape" => {
+                    if actions_open.get_untracked() {
+                        set_actions_open(false);
+                    } else {
+                        app.send_window_command(WindowCommand::Hide);
+                    }
+                }
+                "enter" | "Enter" => {
+                    if actions_open.get_untracked() {
+                        if activate_selected_action() {
+                            set_actions_open(false);
+                        }
+                    } else {
+                        submit(&query.get_untracked());
+                    }
+                }
+                "ctrl+k" | "control+k" if actions.with_untracked(Vec::len) > 0 => {
+                    set_actions_open(!actions_open.get_untracked());
+                }
+                _ => {}
             }
-            "ctrl+k" | "control+k" if actions.with_untracked(Vec::len) > 0 => {
-                set_actions_open(!actions_open.get_untracked());
-            }
-            _ => {}
         })
     };
 
@@ -427,7 +430,14 @@ pub fn StewardLauncher() -> impl IntoElement {
                                 })
                                 .on_change({
                                     let filter = filter.clone();
-                                    move |text: &str| filter(text, SelectionMode::Reset)
+                                    move |text: &str| {
+                                        crate::metrics::value(
+                                            "launcher_input_update",
+                                            text.chars().count() as u64,
+                                            serde_json::json!({}),
+                                        );
+                                        filter(text, SelectionMode::Reset);
+                                    }
                                 })
                                 .on_submit({
                                     let submit = submit.clone();

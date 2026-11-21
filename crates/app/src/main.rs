@@ -6,6 +6,7 @@ mod app_icons;
 mod autostart;
 mod clipboard_history;
 mod config;
+mod diagnostics;
 mod events;
 mod handlers;
 mod holiday_schedule;
@@ -56,6 +57,27 @@ fn main() {
         plugin_window::run_plugin_host();
         return;
     }
+    let data_dir = std::env::var_os("STEWARD_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::data_dir()
+                .expect("no OS data directory available")
+                .join("Steward")
+        });
+    if let Some(position) = std::env::args().position(|arg| arg == "--write-diagnostics") {
+        let output = std::env::args()
+            .nth(position + 1)
+            .filter(|arg| !arg.starts_with("--"))
+            .map(PathBuf::from);
+        match diagnostics::write_report(&data_dir, output.as_deref()) {
+            Ok(path) => println!("{}", path.display()),
+            Err(error) => {
+                eprintln!("failed to write Steward diagnostics: {error:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if std::env::args().any(|arg| arg == "--sync-autostart") {
         autostart::sync_autostart_path();
         return;
@@ -81,13 +103,6 @@ fn main() {
         }
     };
 
-    let data_dir = std::env::var_os("STEWARD_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_dir()
-                .expect("no OS data directory available")
-                .join("Steward")
-        });
     let log_guard = match logging::init(&data_dir) {
         Ok(guard) => Some(guard),
         Err(error) => {
@@ -208,11 +223,33 @@ fn main() {
             }
 
             match tray::setup_tray(&i18n) {
-                Ok(tray) => *state.borrow().tray.borrow_mut() = Some(tray),
-                Err(error) => error!(error = %format!("{error:#}"), "failed to create tray icon"),
+                Ok(tray) => {
+                    *state.borrow().tray.borrow_mut() = Some(tray);
+                    metrics::value("tray_lifecycle", 1, serde_json::json!({ "phase": "ready" }));
+                }
+                Err(error) => {
+                    metrics::value(
+                        "component_failure",
+                        1,
+                        serde_json::json!({ "component": "tray" }),
+                    );
+                    error!(error = %format!("{error:#}"), "failed to create tray icon");
+                }
             }
-            if let Err(error) = hotkeys::setup(&state) {
-                error!(error = %format!("{error:#}"), "failed to setup summon hotkey");
+            match hotkeys::setup(&state) {
+                Ok(()) => metrics::value(
+                    "hotkey_lifecycle",
+                    1,
+                    serde_json::json!({ "phase": "ready" }),
+                ),
+                Err(error) => {
+                    metrics::value(
+                        "component_failure",
+                        1,
+                        serde_json::json!({ "component": "summon_hotkey" }),
+                    );
+                    error!(error = %format!("{error:#}"), "failed to setup summon hotkey");
+                }
             }
             if let Err(error) = events::spawn(state.clone(), cx) {
                 error!(error = %format!("{error:#}"), "failed to start event loop");

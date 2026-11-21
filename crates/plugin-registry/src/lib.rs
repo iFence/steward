@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 pub use manifest::{
     ManifestError, PluginCommand, PluginManifest, Trigger, TriggerType, MANIFEST_FILE,
@@ -107,30 +107,25 @@ impl Registry {
     }
 
     pub fn cached_plugins(&self) -> Result<Vec<PluginMeta>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, version, dir, package, icon, commands, scanned_at FROM plugins",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let manifest = PluginManifest {
-                schema_version: SCHEMA_VERSION,
-                id: row.get(0)?,
-                name: row.get(1)?,
-                version: row.get(2)?,
-                icon: row.get(5)?,
-                package: PACKAGE_FILE.to_string(),
-                commands: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
-            };
-            let icon = manifest.icon.clone();
-            Ok(PluginMeta {
-                manifest,
-                dir: PathBuf::from(row.get::<_, String>(3)?),
-                package: PathBuf::from(row.get::<_, String>(4)?),
-                icon,
-                scanned_at: row.get(7)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("collect cached plugins")
+        load_cached_plugins(&self.conn)
+    }
+
+    /// Read cached routes without creating or migrating the cache database.
+    pub fn cached_plugins_at(data_dir: &Path) -> Result<Vec<PluginMeta>> {
+        let database = data_dir.join(DB_FILE);
+        if !database.is_file() {
+            return Ok(Vec::new());
+        }
+        let conn = Connection::open_with_flags(
+            database,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .context("open plugin cache for diagnostics")?;
+        load_cached_plugins(&conn)
+    }
+
+    pub fn cache_path(data_dir: &Path) -> PathBuf {
+        data_dir.join(DB_FILE)
     }
 
     pub fn scan(&mut self) -> Result<ScanReport> {
@@ -243,6 +238,33 @@ fn unix_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn load_cached_plugins(conn: &Connection) -> Result<Vec<PluginMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, version, dir, package, icon, commands, scanned_at FROM plugins",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let manifest = PluginManifest {
+            schema_version: SCHEMA_VERSION,
+            id: row.get(0)?,
+            name: row.get(1)?,
+            version: row.get(2)?,
+            icon: row.get(5)?,
+            package: PACKAGE_FILE.to_string(),
+            commands: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+        };
+        let icon = manifest.icon.clone();
+        Ok(PluginMeta {
+            manifest,
+            dir: PathBuf::from(row.get::<_, String>(3)?),
+            package: PathBuf::from(row.get::<_, String>(4)?),
+            icon,
+            scanned_at: row.get(7)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .context("collect cached plugins")
 }
 
 #[cfg(test)]

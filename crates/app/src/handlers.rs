@@ -515,12 +515,15 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 );
                 return;
             }
-            if let Err(error) = state
+            // Keep the RefCell guard out of the `if let` scrutinee. A guard
+            // created there lives through the error arm, so reporting the
+            // failure would borrow the same state again and panic.
+            let launch_result = state
                 .borrow_mut()
                 .search
                 .borrow_mut()
-                .start_launch(request.clone())
-            {
+                .start_launch(request.clone());
+            if let Err(error) = launch_result {
                 record_failed_launch(state, &request.plugin_id, error.code());
                 report_launch_failure(state, &request, error.code(), &error.to_string());
             }

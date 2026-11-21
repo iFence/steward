@@ -33,6 +33,34 @@ use their native Windows shell icons when available. Plugins use the inline SVG
 from `plugin.json`, with a generic plugin fallback for older manifests. Built-in
 calculator and URL actions use Steward-owned SVG icons.
 
+## Windows Support
+
+The process declares PerMonitorV2 DPI awareness before creating GPUI surfaces.
+Each summon measures the monitor under the cursor, converts the launcher's
+logical client size at that monitor's effective DPI, fits it to the work area,
+and applies exact geometry after the cross-monitor DPI transition. Startup also
+detects stale Alt/IME modifier state so the first keystroke after activation
+reaches the focused NSH input instead of the system menu.
+
+The tray, global hotkey, single-instance mutex, activation event, and autostart
+`Run` value have explicit process-lifetime ownership. Autostart repair only
+rewrites a dangling path, upgrades rewrite it to the installed executable, and
+uninstall removes it. `scripts/test-windows-support.ps1` covers these paths,
+mixed-DPI summoning, Unicode input, IME context attachment, invalid-package
+containment, and support-report generation.
+
+Support can run the shipped executable directly:
+
+```text
+steward-app.exe --write-diagnostics <output.json>
+```
+
+The report is generated without applying database migrations or initializing
+the shell. It records executable and plugin-package hashes, monitor DPI and work
+areas, database schema state, autostart registry truth, trust-root identity,
+and recent error lines. It deliberately excludes clipboard contents and plugin
+private storage.
+
 ## Process and Runtime Model
 
 ```text
@@ -244,7 +272,9 @@ or file-index helper executable is installed.
 CI runs Rust formatting, clippy, workspace tests, TypeScript lint/format/type
 checks/builds, and headless NSH plugin tests. Release performance and clean-MSI
 acceptance are tracked in [benchmarks.md](benchmarks.md) and
-[nsh-migration.md](nsh-migration.md).
+[nsh-migration.md](nsh-migration.md). Windows support acceptance uses
+`scripts/test-windows-support.ps1`; clean-VM MSI lifecycle evidence remains a
+separate gate.
 
 The pre-migration architecture and decision log are preserved in
 [architecture-history.md](architecture-history.md) for context. New decisions

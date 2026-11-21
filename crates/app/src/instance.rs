@@ -30,8 +30,8 @@ mod imp {
 
     use super::InstanceClaim;
 
-    const INSTANCE_MUTEX_NAME: &str = "Local\\com.hiaspirin.steward.single-instance.v1";
-    const ACTIVATION_EVENT_NAME: &str = "Local\\com.hiaspirin.steward.activate.v1";
+    const INSTANCE_MUTEX_PREFIX: &str = "Local\\com.hiaspirin.steward.single-instance.v1";
+    const ACTIVATION_EVENT_PREFIX: &str = "Local\\com.hiaspirin.steward.activate.v1";
 
     pub(crate) struct InstanceGuard {
         mutex: HANDLE,
@@ -59,7 +59,23 @@ mod imp {
     }
 
     pub(crate) fn claim() -> io::Result<InstanceClaim> {
-        claim_named(INSTANCE_MUTEX_NAME, ACTIVATION_EVENT_NAME)
+        let suffix = std::env::var("STEWARD_INSTANCE_SUFFIX")
+            .ok()
+            .map(|value| {
+                value
+                    .chars()
+                    .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+                    .take(64)
+                    .collect::<String>()
+            })
+            .filter(|value| !value.is_empty());
+        match suffix {
+            Some(suffix) => claim_named(
+                &format!("{INSTANCE_MUTEX_PREFIX}.{suffix}"),
+                &format!("{ACTIVATION_EVENT_PREFIX}.{suffix}"),
+            ),
+            None => claim_named(INSTANCE_MUTEX_PREFIX, ACTIVATION_EVENT_PREFIX),
+        }
     }
 
     fn claim_named(mutex_name: &str, activation_name: &str) -> io::Result<InstanceClaim> {

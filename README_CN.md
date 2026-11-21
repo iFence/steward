@@ -78,6 +78,17 @@ cargo run -p steward-app
 应用启动后驻留系统托盘，默认不显示窗口。使用 `Ctrl+Alt+Space` 呼出。开发时可
 设置 `STEWARD_SHOW_ON_START=1` 让启动器立即显示。
 
+如果启动、显示缩放、自启或插件校验出现问题，可在不启动 GUI 的情况下生成
+支持报告：
+
+```powershell
+& .\target\release\steward-app.exe --write-diagnostics `
+  .\target\steward-diagnostics.json
+```
+
+报告包含应用与插件包哈希、显示器 DPI 和工作区、数据库 schema、自启状态和
+最近错误；不会读取剪贴板内容或插件私有存储。
+
 ## 安装现有插件
 
 从 [GitHub Releases](https://github.com/iFence/steward/releases) 下载所需的
@@ -184,6 +195,8 @@ git push origin v0.3.2
 - [x] NSH-3：NSH 插件窗口与官方插件迁移
 - [ ] NSH-4：实现与本地 Release 测量完成；阻塞于干净 VM 和生产产物验收
 - [ ] 插件进程隔离（Phase 3）：实现完成；阻塞于干净 VM 验收
+- [ ] M4 Windows 支持收尾：实现完成；阻塞于干净 VM、混合 DPI 和交互式 IME
+  验收
 
 ## 致谢
 

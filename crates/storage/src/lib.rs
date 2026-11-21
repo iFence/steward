@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 mod apps;
 mod capabilities;
@@ -94,6 +94,26 @@ impl Storage {
         self.conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .context("read schema version")
+    }
+
+    /// Inspect the existing database schema without creating the data
+    /// directory, opening WAL mode, or applying migrations.
+    ///
+    /// Support diagnostics must be able to report a damaged or future schema
+    /// without changing the user's installation.
+    pub fn existing_schema_version(data_dir: &Path) -> Result<Option<i64>> {
+        let path = data_dir.join(DB_FILE);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .context("open sqlite database for diagnostics")?;
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map(Some)
+            .context("read schema version for diagnostics")
     }
 
     /// Read a persisted application setting, or `None` when it was never set.
@@ -202,6 +222,10 @@ impl Storage {
     /// current index, so an idle reconcile does not touch the database.
     pub fn mark_seen(&mut self, apps: &[CachedApp]) -> Result<()> {
         apps::mark_seen(&mut self.conn, apps)
+    }
+
+    pub fn database_path(data_dir: &Path) -> PathBuf {
+        data_dir.join(DB_FILE)
     }
 }
 

@@ -1,7 +1,8 @@
 //! Launch-at-logon registration (Windows per-user `Run` key).
 
 #[cfg(any(target_os = "windows", test))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use tracing::{error, warn};
 
 /// Per-user autostart registry key (HKCU\...\Run). Values run at logon before
@@ -16,6 +17,15 @@ const AUTOSTART_VALUE_NAME: &str = "Steward";
 /// already gone. Deleting an absent autostart entry is a success.
 #[cfg(target_os = "windows")]
 const ERROR_FILE_NOT_FOUND: u32 = 2;
+
+#[derive(Clone, Debug)]
+pub(crate) struct AutostartDiagnostic {
+    pub enabled: bool,
+    pub stored_value: Option<String>,
+    pub resolved_path: Option<PathBuf>,
+    pub points_to_existing_file: bool,
+    pub points_to_current_executable: bool,
+}
 
 /// Quote a path for the `Run` value. Windows parses an unquoted path with
 /// spaces by trying shorter prefixes first, so the executable path is always
@@ -49,6 +59,39 @@ pub(crate) fn autostart_enabled() -> bool {
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn autostart_enabled() -> bool {
     false
+}
+
+/// Snapshot the registry truth for support diagnostics without mutating it.
+pub(crate) fn diagnostic() -> AutostartDiagnostic {
+    #[cfg(target_os = "windows")]
+    {
+        let stored_value = read_autostart_value();
+        let resolved_path = stored_value.as_deref().map(parse_autostart_value);
+        let current = std::env::current_exe().ok();
+        AutostartDiagnostic {
+            enabled: stored_value.is_some(),
+            points_to_existing_file: resolved_path.as_deref().is_some_and(Path::is_file),
+            points_to_current_executable: resolved_path.as_ref().is_some_and(|path| {
+                current.as_ref().is_some_and(|current| {
+                    path.to_string_lossy()
+                        .eq_ignore_ascii_case(&current.to_string_lossy())
+                })
+            }),
+            stored_value,
+            resolved_path,
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        AutostartDiagnostic {
+            enabled: false,
+            stored_value: None,
+            resolved_path: None,
+            points_to_existing_file: false,
+            points_to_current_executable: false,
+        }
+    }
 }
 
 /// Register (`enabled`) or unregister Steward at logon and return the state
@@ -162,10 +205,15 @@ fn wide(value: &str) -> Vec<u16> {
 /// Read the raw `Run` value, or `None` when it is absent or blank.
 #[cfg(target_os = "windows")]
 fn read_autostart_value() -> Option<String> {
+    read_autostart_value_at(AUTOSTART_REGISTRY_PATH, AUTOSTART_VALUE_NAME)
+}
+
+#[cfg(target_os = "windows")]
+fn read_autostart_value_at(path: &str, name: &str) -> Option<String> {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
 
-    let path = wide(AUTOSTART_REGISTRY_PATH);
-    let name = wide(AUTOSTART_VALUE_NAME);
+    let path = wide(path);
+    let name = wide(name);
 
     // First call with a null buffer reports the required size (bytes,
     // including the terminating NUL) without copying anything.
@@ -217,10 +265,15 @@ fn read_autostart_value() -> Option<String> {
 /// Write the `Run` value and return the Win32 result code (0 is success).
 #[cfg(target_os = "windows")]
 fn write_autostart_value(value: &str) -> u32 {
+    write_autostart_value_at(AUTOSTART_REGISTRY_PATH, AUTOSTART_VALUE_NAME, value)
+}
+
+#[cfg(target_os = "windows")]
+fn write_autostart_value_at(path: &str, name: &str, value: &str) -> u32 {
     use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
 
-    let path = wide(AUTOSTART_REGISTRY_PATH);
-    let name = wide(AUTOSTART_VALUE_NAME);
+    let path = wide(path);
+    let name = wide(name);
     let data: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         RegSetKeyValueW(
@@ -237,10 +290,15 @@ fn write_autostart_value(value: &str) -> u32 {
 /// Delete the `Run` value and return the Win32 result code (0 is success).
 #[cfg(target_os = "windows")]
 fn delete_autostart_value() -> u32 {
+    delete_autostart_value_at(AUTOSTART_REGISTRY_PATH, AUTOSTART_VALUE_NAME)
+}
+
+#[cfg(target_os = "windows")]
+fn delete_autostart_value_at(path: &str, name: &str) -> u32 {
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER};
 
-    let path = wide(AUTOSTART_REGISTRY_PATH);
-    let name = wide(AUTOSTART_VALUE_NAME);
+    let path = wide(path);
+    let name = wide(name);
     unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, path.as_ptr(), name.as_ptr()) }
 }
 
@@ -270,5 +328,40 @@ mod tests {
             parse_autostart_value(r#""C:\Users\a b\Steward\steward-app.exe""#),
             PathBuf::from(r"C:\Users\a b\Steward\steward-app.exe")
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn registry_value_roundtrips_without_touching_the_real_autostart_entry() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use windows_sys::Win32::System::Registry::{RegDeleteKeyW, HKEY_CURRENT_USER};
+
+        static TEST_ID: AtomicU32 = AtomicU32::new(0);
+        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let path = format!(
+            r"Software\Steward\DiagnosticsTests\autostart-{}-{id}",
+            std::process::id()
+        );
+        let expected = r#""C:\Program Files\Steward\steward-app.exe""#;
+
+        let write_result = write_autostart_value_at(&path, "Steward", expected);
+        if write_result == 5 {
+            // Restricted CI/sandbox tokens cannot mutate HKCU. The acceptance
+            // VM script exercises the real value; keep unit tests portable.
+            eprintln!("skip registry roundtrip: HKCU write access denied");
+            return;
+        }
+        assert_eq!(write_result, 0);
+        assert_eq!(
+            read_autostart_value_at(&path, "Steward").as_deref(),
+            Some(expected)
+        );
+        assert_eq!(delete_autostart_value_at(&path, "Steward"), 0);
+        assert!(read_autostart_value_at(&path, "Steward").is_none());
+
+        let path = wide(&path);
+        unsafe {
+            RegDeleteKeyW(HKEY_CURRENT_USER, path.as_ptr());
+        }
     }
 }

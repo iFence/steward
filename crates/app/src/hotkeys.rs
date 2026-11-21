@@ -20,6 +20,12 @@ pub(crate) fn default_summon_hotkey() -> HotKey {
 }
 
 pub(crate) fn persisted_summon_hotkey(storage: &steward_storage::Storage) -> HotKey {
+    if let Some(hotkey) = std::env::var("STEWARD_SUMMON_HOTKEY")
+        .ok()
+        .and_then(|value| value.parse::<HotKey>().ok())
+    {
+        return hotkey;
+    }
     storage
         .get_setting(SUMMON_HOTKEY_SETTING)
         .and_then(|value| value.parse::<HotKey>().ok())

@@ -349,6 +349,15 @@ mod windows {
             apply_exact(hwnd, width, height);
             dbg_dpi("after", hwnd, target_dpi, cross, 0, 0, 0, 0);
             focus_for_keyboard(hwnd);
+            crate::metrics::value(
+                "launcher_monitor",
+                target_dpi as u64,
+                serde_json::json!({
+                    "crossMonitor": cross,
+                    "widthPx": width_px,
+                    "heightPx": height_px,
+                }),
+            );
             backdrop
         }
     }

@@ -16,6 +16,17 @@ Conventions:
   Object with memory, CPU, process-count, and handle limits. Unexpected plugin
   exits leave the launcher running, and repeated launches use a short backoff
   instead of entering a crash loop.
+- **Windows support diagnostics**: `steward-app.exe --write-diagnostics` now
+  creates a support report covering display DPI, autostart state, database
+  schema, installed plugin package hashes, trust-root identity, and recent
+  errors without reading clipboard contents or plugin-private storage.
+- **Windows support regression coverage**: automated acceptance now exercises
+  tray and hotkey lifetime, single-instance activation, autostart repair and
+  removal, mixed-DPI monitor placement, Unicode keyboard input, and structured
+  package-verification failures.
+- **Plugin verification failures stay contained**: an invalid or unsigned
+  package now records a structured launch failure and keeps the launcher alive
+  instead of panicking while publishing the error notice.
 
 ---
 

@@ -1,7 +1,8 @@
 # Steward NSH Migration Plan
 
 > Status: NSH-0 through NSH-3 complete; NSH-4 implementation complete, blocked
-> on clean-VM and production-artifact acceptance.
+> on clean-VM and production-artifact acceptance. M4 implementation is complete
+> and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -388,6 +389,74 @@ Completed acceptance:
   Downloading the artifacts and rechecking their SHA-256 manifests and
   production signatures also passed locally.
 
+### M4: Windows Support Polish (2026-11-21, implementation complete)
+
+Files:
+
+- `crates/app/src/autostart.rs`
+- `crates/app/src/diagnostics.rs`
+- `crates/app/src/instance.rs`
+- `crates/app/src/main.rs`
+- `crates/app/src/platform.rs`
+- `crates/app/src/shell.rs`
+- `crates/storage/src/lib.rs`
+- `scripts/test-windows-support.ps1`
+- `docs/windows-acceptance.md`
+- `docs/architecture.md`
+- `docs/roadmap.md`
+- `Changelog.md`
+- `Changelog-zh-CN.md`
+
+Acceptance implementation:
+
+- The existing MSI lifecycle script remains the clean install, major upgrade,
+  repair, launch, and uninstall gate.
+- PerMonitorV2 summon geometry continues to use the monitor under the cursor,
+  fits the launcher to that monitor's work area, and now emits target-DPI,
+  cross-monitor, and physical-size metrics. Native geometry tests cover clamped
+  and negative-coordinate work areas.
+- `scripts/test-windows-support.ps1` checks tray/hotkey lifetime, isolated
+  single-instance activation, autostart repair and removal, launch geometry on
+  every monitor, foreground keyboard focus, Unicode input, navigation events,
+  IME context attachment, and structured invalid-package failure.
+- The script uses isolated data, mutex/event, and summon-hotkey names. It
+  restores the real `HKCU\...\Run\Steward` value in `finally`; production names
+  and the persisted summon hotkey remain unchanged when the test environment
+  overrides are absent.
+- `steward-app.exe --write-diagnostics <path>` produces a read-only support
+  report. It includes executable/package hashes, monitor DPI/work areas, DB
+  schema, autostart truth, trust-root identity, and recent error lines without
+  applying migrations or reading clipboard/plugin-private content.
+- The support report is generated before logger and GUI initialization so it
+  remains available when the shell cannot start.
+
+Local verification (2026-11-21):
+
+- `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed. The workspace run reported 146 passed and 2
+  intentionally ignored tests.
+- `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build` passed.
+- `nsh test` passed Calendar (13), Clipboard History (1), and UI Showcase (1).
+- `scripts/test-windows-support.ps1` passed tray/hotkey creation and
+  destruction, isolated single-instance activation, support-report generation,
+  plugin-cache inspection, and invalid-package `trust_failure` containment in
+  the restricted local desktop session.
+- The support suite is documented with `-AllowNonInteractive` for restricted
+  sessions; that mode skips cursor control, foreground keyboard input, and IME
+  instead of claiming acceptance. Normative P0-A09 runs must omit the switch.
+- The regression suite exposed and now covers a failure-reporting
+  `RefCell already borrowed` panic: package launch errors are stored before
+  borrowing `AppState` again to record metrics and publish the notice.
+
+Remaining blocked:
+
+- Run P0-A09 and real Chinese IME composition on the Windows acceptance VM.
+- Record evidence for a mixed-DPI or multi-monitor configuration; a single-DPI
+  local run only validates the geometry path, not the acceptance matrix.
+- Complete the clean-VM P0-A07/P0-A08 MSI install, upgrade, repair, and uninstall
+  lifecycle run.
+
 ### Omission Audit (2026-11-18)
 
 Files:
@@ -545,6 +614,7 @@ Process isolation and release measurements:
 ./scripts/bench-plugin-set.ps1
 ./scripts/test-plugin-isolation.ps1 -Plugin calendar
 ./scripts/test-plugin-isolation.ps1 -Plugin calendar -MemoryLimitMiB 32
+./scripts/test-windows-support.ps1 -Exe target/release/steward-app.exe
 cargo test -p steward-plugin-host --release synthetic_plugin_route_scaling -- --ignored --nocapture
 ```
 
@@ -582,6 +652,9 @@ release measurements. NSH-4 remains open until the gates above are measured.
   `STEWARD_PLUGIN_MEMORY_LIMIT_MIB`, `STEWARD_PLUGIN_CPU_RATE_PERCENT`, and
   `STEWARD_PLUGIN_HANDLE_LIMIT` are clamped developer-only containment test
   overrides; production defaults are 256 MiB, 50%, and 1,024 handles.
+  `STEWARD_INSTANCE_SUFFIX` and `STEWARD_SUMMON_HOTKEY` are developer-only
+  acceptance overrides for running the Windows support suite beside a normal
+  Steward install. Production launches do not require or persist them.
   `STEWARD_DATA_DIR` consistently redirects app data, plugin data, and clipboard
   storage for isolated tests.
 - No migration commit or tag is created by this working-tree implementation.
