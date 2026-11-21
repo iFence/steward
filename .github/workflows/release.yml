@@ -175,7 +175,7 @@ jobs:
 
       - name: Check Steward package policy
         shell: pwsh
-        run: ./scripts/check-plugin-policies.ps1
+        run: ./scripts/check-plugin-policies.ps1 -PublicAdmission
 
       - name: Generate plugin checksums
         shell: pwsh

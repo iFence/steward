@@ -38,6 +38,7 @@ fn run() -> Result<()> {
     match command.as_str() {
         "inspect" => inspect(&store, &args),
         "check" => check(&store, &args),
+        "review" => review(&store, &args),
         "list" => list(&store, &args),
         "install" => install(&store, &args, false),
         "update" => install(&store, &args, true),
@@ -107,6 +108,23 @@ fn check(store: &PluginStore, args: &[String]) -> Result<()> {
     }
     if strict && !inspection.policy.warnings.is_empty() {
         anyhow::bail!("package failed strict policy review");
+    }
+    Ok(())
+}
+
+fn review(store: &PluginStore, args: &[String]) -> Result<()> {
+    let mut args = args.to_vec();
+    let path = positional(&mut args, "plugin source")?;
+    let json = take_flag(&mut args, "--json");
+    reject_extra(&args)?;
+    let review = store.review(Path::new(&path))?;
+    if json {
+        print_json(&review)?;
+    } else {
+        print_admission_review(&review);
+    }
+    if !review.accepted {
+        anyhow::bail!("package failed public admission policy");
     }
     Ok(())
 }
@@ -235,16 +253,26 @@ fn marketplace(store: &PluginStore, args: &[String]) -> Result<()> {
     match action.as_str() {
         "sync" => {
             let json = take_flag(&mut args, "--json");
+            let public_admission = take_flag(&mut args, "--public");
             reject_extra(&args)?;
-            let report = store.sync_marketplace()?;
+            let report = if public_admission {
+                store.sync_public_marketplace()?
+            } else {
+                store.sync_marketplace()?
+            };
             if json {
                 print_json(&report)?;
             } else {
                 println!(
-                    "Indexed {} package(s) from {} archive(s) into {}",
+                    "Indexed {} package(s) from {} archive(s) into {} under {} policy",
                     report.entries,
                     report.packages_scanned,
-                    report.index_path.display()
+                    report.index_path.display(),
+                    if report.public_admission {
+                        "public-admission"
+                    } else {
+                        "local-review"
+                    }
                 );
                 for error in report.errors {
                     eprintln!("skipped: {error}");
@@ -261,9 +289,18 @@ fn marketplace(store: &PluginStore, args: &[String]) -> Result<()> {
                 println!("Local marketplace is empty.");
             } else {
                 for entry in index.entries {
+                    let policy = entry
+                        .admission_policy_version
+                        .map(|version| format!(" public-policy-v{version}"))
+                        .unwrap_or_default();
                     println!(
-                        "{} {} ({}) publisher {} artifact {}",
-                        entry.name, entry.version, entry.id, entry.publisher_key_id, entry.artifact
+                        "{} {} ({}) publisher {} artifact {}{}",
+                        entry.name,
+                        entry.version,
+                        entry.id,
+                        entry.publisher_key_id,
+                        entry.artifact,
+                        policy
                     );
                 }
             }
@@ -438,6 +475,63 @@ fn print_inspection(inspection: &steward_plugin_store::PackageInspection) {
     }
 }
 
+fn print_admission_review(review: &steward_plugin_store::AdmissionReview) {
+    println!("{} {}", review.name, review.version);
+    println!("  id: {}", review.plugin_id);
+    println!("  build: {}", review.build);
+    println!(
+        "  publisher key id: {}",
+        review.publisher_key_id.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "  host API: {} (plugin requires {})",
+        review.host_api_version,
+        review.required_host_api.as_deref().unwrap_or("unspecified")
+    );
+    println!(
+        "  admission: {} (policy v{})",
+        if review.accepted {
+            "accepted"
+        } else {
+            "rejected"
+        },
+        review.policy_version
+    );
+    println!("  capability groups:");
+    if review.capability_groups.is_empty() {
+        println!("    none");
+    }
+    for group in &review.capability_groups {
+        println!(
+            "    {} ({})",
+            group.permission,
+            if group.sensitive {
+                "user grant required"
+            } else {
+                "automatic"
+            }
+        );
+        for scope in &group.scopes {
+            println!("      {scope}");
+        }
+    }
+    if !review.denied_capabilities.is_empty() {
+        println!(
+            "  denied capability categories: {}",
+            review.denied_capabilities.join(", ")
+        );
+    }
+    println!("  checks:");
+    for check in &review.checks {
+        println!(
+            "    [{}] {} - {}",
+            if check.passed { "pass" } else { "fail" },
+            check.code,
+            check.detail
+        );
+    }
+}
+
 fn print_operation(operation: &steward_plugin_store::PluginOperation) {
     let action = match operation.action {
         PluginOperationKind::Install => "Installed",
@@ -550,12 +644,13 @@ Commands:
       [--command <name>]
   steward-plugin inspect <zip-or-dir> [--json]
   steward-plugin check <zip-or-dir> [--strict] [--json]
+  steward-plugin review <zip-or-dir> [--json]
   steward-plugin list [--json]
   steward-plugin install <zip-or-dir> [--json]
   steward-plugin update <zip-or-dir> [--json]
   steward-plugin remove <plugin-id> [--json]
   steward-plugin rollback <plugin-id> [--version <semver>] [--json]
-  steward-plugin marketplace sync [--json]
+  steward-plugin marketplace sync [--public] [--json]
   steward-plugin marketplace list [--json]
   steward-plugin marketplace install <plugin-id> [--json]
   steward-plugin marketplace update <plugin-id> [--json]
@@ -567,6 +662,7 @@ Commands:
 
 Local marketplace packages are placed in
 <data-dir>/marketplace/packages/*.zip and indexed with `marketplace sync`.
+Use `marketplace sync --public` to apply the stricter public-admission policy.
 "#
     );
 }

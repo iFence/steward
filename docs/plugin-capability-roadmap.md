@@ -1,8 +1,10 @@
 # Steward Plugin Capability Roadmap
 
-> Status: PC-0 through PC-4 are implemented. PC-5 is next. This document defines
-> a general third-party plugin capability roadmap. `git-repos` is one reference
-> workload used to validate the platform, not the boundary of the API design.
+> Status: PC-0 through PC-4 are implemented. PC-5 is in progress on automated
+> public admission, while the clean-VM and hosted-operations gates remain
+> blocked. This document defines a general third-party plugin capability
+> roadmap. `git-repos` is one reference workload used to validate the platform,
+> not the boundary of the API design.
 >
 > This work belongs to Phase 4 platform admission and follows the completed M5
 > local plugin ecosystem. It must also be read together with
@@ -71,7 +73,7 @@ and tools that operate on user-selected projects.
 | Plugin manifest              | Strict schema v3 with routing commands, optional host-rendering preferences, and per-command presentation modes               | Schema v2 remains readable; only v3 commands can select `embedded`                                                                         |
 | Plugin window                | The plugin host child opens its own GPUI window; embedded commands use a launcher-positioned frameless hosted surface       | Plugin code remains in its isolated child process; this is not an in-shell NSH surface                                                     |
 | Process containment          | Each plugin process has an active-process limit of one; execution requests cross to a launcher-owned broker                 | The broker owns executable validation, Job Object lifetime, output, timeout, and cancellation                                              |
-| Public marketplace admission | Not started                                                                                                                 | Public third-party publication remains blocked                                                                                             |
+| Public marketplace admission | In progress: automated policy review and strict marketplace mode are implemented                                           | Hosted publisher operations and the clean-VM gate still block publication                                                                  |
 
 The current stack is sufficient for UI-only plugins and the local lifecycle.
 It is not sufficient for general third-party system integration; `git-repos`
@@ -489,7 +491,9 @@ Implementation evidence (2026-11-21):
 
 ### PC-5: Third-Party Admission
 
-Status: blocked on PC-0 through PC-3 and the Phase 3 clean-VM gate.
+Status: in progress. Automated capability review and strict marketplace
+indexing are implemented; public publication remains blocked on the Phase 3
+clean-VM gate and hosted publisher operations.
 
 Deliverables:
 
@@ -513,6 +517,33 @@ Acceptance:
   on a clean Windows VM.
 - The release review clearly documents the remaining same-user security
   boundary.
+
+Implementation progress (2026-11-21):
+
+- `steward-plugin review` returns a versioned, machine-readable admission
+  report with stable `signature`, `trust_chain`, `publisher_identity`,
+  `release_policy`, `capability_scope`, and `public_contract` checks.
+- Public review rejects every release-policy warning, wildcard or malformed
+  declaration, missing publisher identity, and invalid or too-new host API
+  requirement. It groups declarations by permission and scope for policy and
+  publisher review.
+- `steward-plugin marketplace sync --public` indexes only packages accepted by
+  that gate. Local `marketplace sync` retains manual-review behavior.
+- The release workflow applies public admission to every production-signed
+  archive, and packaging/benchmark scripts now accept manifest schema v2 and
+  v3.
+- [plugin-public-admission.md](plugin-public-admission.md) records the current
+  permission, update, publisher, revocation, release-gate, and same-user
+  boundary.
+
+Remaining PC-5 work:
+
+- hosted publisher registration, key-rotation recovery, dispute handling, and
+  operator audit records;
+- public repository quarantine and revocation operations;
+- external-style validation across at least three domains;
+- clean Windows VM acceptance for signed install, update, crash, rollback,
+  revocation, and uninstall.
 
 ## 6. Validation Workloads
 

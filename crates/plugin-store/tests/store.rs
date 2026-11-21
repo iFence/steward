@@ -261,6 +261,77 @@ fn third_party_packages_require_a_host_version_and_named_host_permissions() {
 }
 
 #[test]
+fn public_admission_accepts_scoped_declarations_with_stable_evidence() {
+    let root = temp_root("public-admission-pass");
+    let signer = Signer::new();
+    let zip = signer.zip_with_capabilities(
+        &root,
+        "1.0.0",
+        1,
+        serde_json::json!({
+            "host": ["steward.net.fetch", "steward.exec.run", "steward.exec.cancel"],
+            "network": {
+                "http": [{
+                    "host": "api.example.com",
+                    "schemes": ["https"],
+                    "methods": ["GET"],
+                    "pathPrefixes": ["/v1"]
+                }]
+            },
+            "process": { "execute": ["git.exe"] }
+        }),
+    );
+    let review = store(&root, &signer).review(&zip).unwrap();
+    assert!(review.accepted, "{:?}", review.checks);
+    assert_eq!(review.policy_version, 1);
+    assert!(review.checks.iter().all(|check| check.passed));
+    assert!(review
+        .capability_groups
+        .iter()
+        .any(|group| group.permission == "steward.net.fetch"));
+    assert!(review
+        .capability_groups
+        .iter()
+        .any(|group| group.permission == "steward.exec.run"));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn public_admission_rejects_policy_warnings_and_overbroad_requests() {
+    let root = temp_root("public-admission-reject");
+    let signer = Signer::new();
+    let zip = signer.zip_with_capabilities(
+        &root,
+        "1.0.0",
+        1,
+        serde_json::json!({
+            "host": ["steward.net.fetch", "steward.exec.run"],
+            "network": {
+                "http": [{
+                    "host": "api.example.com",
+                    "schemes": ["https"],
+                    "methods": ["GET"]
+                }],
+                "sockets": ["example.com:9000"]
+            },
+            "process": {
+                "execute": ["git.exe"],
+                "env": ["SECRET_TOKEN"]
+            }
+        }),
+    );
+    let review = store(&root, &signer).review(&zip).unwrap();
+    assert!(!review.accepted);
+    assert!(review
+        .checks
+        .iter()
+        .any(|check| check.code == "capability_scope" && !check.passed));
+    assert!(review.denied_capabilities.contains(&"network".into()));
+    assert!(review.denied_capabilities.contains(&"process".into()));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn install_update_and_rollback_restore_verified_history() {
     let root = temp_root("lifecycle");
     let signer = Signer::new();
@@ -353,10 +424,73 @@ fn marketplace_indexes_and_installs_verified_local_archives() {
     assert_eq!(report.entries, 1);
     let index = store.marketplace().unwrap();
     assert_eq!(index.entries[0].id, "com.example.test");
+    assert_eq!(index.entries[0].admission_policy_version, None);
     assert_eq!(index.publishers[0].key_id, signer.release.public().id());
 
     let installed = store.install_from_marketplace("com.example.test").unwrap();
     assert_eq!(installed.version, "2.0.0");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn public_marketplace_sync_rejects_packages_that_need_manual_policy_review() {
+    let root = temp_root("marketplace-public-admission");
+    let signer = Signer::new();
+    let store = store(&root, &signer);
+    let zip = signer.zip_with_capabilities(
+        &root,
+        "2.0.0",
+        2,
+        serde_json::json!({
+            "host": ["steward.net.fetch"],
+            "network": {
+                "hosts": ["*"],
+                "http": [{
+                    "host": "api.example.com",
+                    "schemes": ["https"],
+                    "methods": ["GET"]
+                }]
+            }
+        }),
+    );
+    let destination = store
+        .marketplace_dir()
+        .join("packages")
+        .join(zip.file_name().unwrap());
+    std::fs::copy(zip, destination).unwrap();
+    let accepted = signer.zip_with_capabilities(
+        &root,
+        "2.1.0",
+        3,
+        serde_json::json!({ "host": ["steward.storage.get"] }),
+    );
+    let destination = store
+        .marketplace_dir()
+        .join("packages")
+        .join(accepted.file_name().unwrap());
+    std::fs::copy(accepted, destination).unwrap();
+
+    let public = store.sync_public_marketplace().unwrap();
+    assert!(public.public_admission);
+    assert_eq!(public.entries, 1);
+    assert!(public
+        .errors
+        .iter()
+        .any(|error| error.contains("public admission rejected")));
+    let public_index = store.marketplace().unwrap();
+    assert_eq!(public_index.entries[0].version, "2.1.0");
+    assert_eq!(public_index.entries[0].admission_policy_version, Some(1));
+    assert!(!public_index.entries[0].review_required);
+
+    let local = store.sync_marketplace().unwrap();
+    assert!(!local.public_admission);
+    assert_eq!(local.entries, 2);
+    assert!(store
+        .marketplace()
+        .unwrap()
+        .entries
+        .iter()
+        .any(|entry| entry.version == "2.0.0" && entry.review_required));
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -388,6 +522,12 @@ fn applied_revocation_rejects_the_release_key() {
         .trust_error
         .as_deref()
         .is_some_and(|error| error.contains("revoked")));
+    let review = store.review(&zip).unwrap();
+    assert!(!review.accepted);
+    assert!(review
+        .checks
+        .iter()
+        .any(|check| check.code == "publisher_identity" && !check.passed));
     std::fs::remove_dir_all(root).ok();
 }
 

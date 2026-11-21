@@ -17,6 +17,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Split-Path -Parent $PSScriptRoot
 $pluginsRoot = Join-Path $root "packages\plugins"
 if (-not $OutDir) {
@@ -41,8 +43,8 @@ foreach ($name in $names) {
     # page, which mangles the non-ASCII keywords a manifest may carry (`日历`).
     $meta = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifest | ConvertFrom-Json
     $version = $meta.version
-    if ($meta.schemaVersion -ne 2 -or $meta.package -ne "plugin.nshpkg") {
-        throw "plugin.json in $dir is not NSH schema v2"
+    if ($meta.schemaVersion -notin @(2, 3) -or $meta.package -ne "plugin.nshpkg") {
+        throw "plugin.json in $dir is not NSH schema v2 or v3"
     }
     if (-not $version) {
         throw "plugin.json in $dir has no version"
@@ -79,7 +81,45 @@ foreach ($name in $names) {
     if (Test-Path $zip) {
         Remove-Item -Force -LiteralPath $zip
     }
-    Compress-Archive -Path (Join-Path $stage $name) -DestinationPath $zip
+    # Compress-Archive writes backslash separators on Windows PowerShell 5.1,
+    # which violates the zip path contract enforced by package inspection.
+    $zipStream = [System.IO.File]::Open(
+        $zip,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $zipArchive = New-Object System.IO.Compression.ZipArchive(
+            $zipStream,
+            [System.IO.Compression.ZipArchiveMode]::Create,
+            $false
+        )
+        try {
+            foreach ($fileName in @("plugin.json", "plugin.nshpkg")) {
+                $entry = $zipArchive.CreateEntry(
+                    "$name/$fileName",
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                )
+                $source = Join-Path (Join-Path $stage $name) $fileName
+                $input = [System.IO.File]::OpenRead($source)
+                try {
+                    $output = $entry.Open()
+                    try {
+                        $input.CopyTo($output)
+                    } finally {
+                        $output.Dispose()
+                    }
+                } finally {
+                    $input.Dispose()
+                }
+            }
+        } finally {
+            $zipArchive.Dispose()
+        }
+    } finally {
+        $zipStream.Dispose()
+    }
     $sizeKb = [math]::Round((Get-Item $zip).Length / 1KB, 1)
     Write-Host "Built plugin package: $zip ($sizeKb KB)"
     Remove-Item -Recurse -Force -LiteralPath $stage

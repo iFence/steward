@@ -5,6 +5,7 @@ use anyhow::{Context as _, Result};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+use crate::admission::{self, PUBLIC_ADMISSION_POLICY_VERSION};
 use crate::archive::sha256_file;
 use crate::{
     atomic_write, safe_relative_path, unix_seconds, PluginStore, MARKETPLACE_SCHEMA_VERSION,
@@ -22,6 +23,8 @@ pub struct MarketplaceEntry {
     pub package_sha256: String,
     pub publisher_key_id: String,
     pub review_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_policy_version: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,6 +58,7 @@ impl Default for MarketplaceIndex {
 #[serde(rename_all = "camelCase")]
 pub struct MarketplaceSyncReport {
     pub index_path: PathBuf,
+    pub public_admission: bool,
     pub packages_scanned: usize,
     pub entries: usize,
     pub errors: Vec<String>,
@@ -92,7 +96,7 @@ pub(crate) fn read_index(root: &Path) -> Result<MarketplaceIndex> {
     Ok(index)
 }
 
-pub(crate) fn sync(store: &PluginStore) -> Result<MarketplaceSyncReport> {
+pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<MarketplaceSyncReport> {
     let packages_dir = store.marketplace_dir().join("packages");
     std::fs::create_dir_all(&packages_dir)
         .with_context(|| format!("create {}", packages_dir.display()))?;
@@ -135,6 +139,23 @@ pub(crate) fn sync(store: &PluginStore) -> Result<MarketplaceSyncReport> {
             ));
             continue;
         }
+        if public_admission {
+            let review = admission::review(&inspection);
+            if !review.accepted {
+                errors.push(format!(
+                    "{}: public admission rejected the package ({})",
+                    path.display(),
+                    review
+                        .checks
+                        .iter()
+                        .filter(|check| !check.passed)
+                        .map(|check| format!("{}: {}", check.code, check.detail))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+                continue;
+            }
+        }
         let file_name = path
             .file_name()
             .and_then(|value| value.to_str())
@@ -154,7 +175,8 @@ pub(crate) fn sync(store: &PluginStore) -> Result<MarketplaceSyncReport> {
             artifact_sha256: sha256_file(&path)?,
             package_sha256: inspection.package_sha256,
             publisher_key_id: publisher_key_id.clone(),
-            review_required: !inspection.policy.warnings.is_empty(),
+            review_required: !public_admission && !inspection.policy.warnings.is_empty(),
+            admission_policy_version: public_admission.then_some(PUBLIC_ADMISSION_POLICY_VERSION),
         };
         let key = (candidate.id.clone(), candidate.version.clone());
         if let Some(existing) = candidates.get(&key) {
@@ -199,6 +221,7 @@ pub(crate) fn sync(store: &PluginStore) -> Result<MarketplaceSyncReport> {
     )?;
     Ok(MarketplaceSyncReport {
         index_path,
+        public_admission,
         packages_scanned: scanned,
         entries: entries.len(),
         errors,

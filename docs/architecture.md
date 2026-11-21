@@ -369,8 +369,16 @@ The local marketplace is an index over operator-provided archives under
 `<data-dir>/marketplace/packages`. An index entry records artifact and package
 hashes, version/build, and publisher key ID, but package trust is always checked
 again when it is installed. Root-signed NSH revocation lists can be applied to
-the same persistent trust store used by plugin launch. See
-[plugin-ecosystem.md](plugin-ecosystem.md).
+the same persistent trust store used by plugin launch.
+
+PC-5 adds a versioned public-admission review over the same inspection result.
+It requires a trusted publisher, compatible host API, successful release policy,
+and named capability declarations with no manual-review warnings.
+`marketplace sync --public` uses that gate before writing an index; local sync
+continues to surface review-required entries for development. The public
+marketplace and publisher registration service are not enabled yet. See
+[plugin-ecosystem.md](plugin-ecosystem.md) and
+[plugin-public-admission.md](plugin-public-admission.md).
 
 ## Verification and Operations
 

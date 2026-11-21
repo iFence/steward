@@ -8,7 +8,8 @@
 > confirmation, and progress APIs are complete. PC-2 scoped filesystem and
 > system-open APIs and PC-3 scoped HTTPS plus controlled execution are also
 > complete. PC-4 managed embedded presentation and navigation are complete.
-> Public marketplace admission remains open.
+> PC-5 public admission is in progress with automated policy review complete;
+> hosted publisher operations and clean-VM acceptance remain open.
 
 ## Invariants
 
@@ -34,13 +35,15 @@
 | Phase 4: scoped filesystem and system open (PC-2) | Complete                       |
 | Phase 4: network and controlled execution (PC-3)  | Complete                       |
 | Phase 4: embedded presentation and navigation (PC-4) | Complete                    |
-| Phase 4: third-party marketplace admission        | Not started                    |
+| Phase 4: third-party marketplace admission (PC-5) | In progress                    |
 
 M5 local ecosystem infrastructure is complete: package scaffolding,
 inspection UI, staged lifecycle operations, rollback history, a local
 marketplace index, publisher identity, revocation application, and automated
 policy checks. It does not yet admit public third-party publishers into a
-hosted marketplace; that admission policy remains Phase 4 work.
+hosted marketplace. Automated public-admission review and strict marketplace
+indexing are implemented; publisher services and clean-VM acceptance remain
+Phase 4 gates.
 
 ## Phase 1: Launch and Diagnostics
 

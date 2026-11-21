@@ -629,7 +629,14 @@ $env:STEWARD_NSH_RELEASE_CERT = "C:\secure\release.cert"
   -ForceSign
 
 .\scripts\verify-release-plugins.ps1
+
+cargo run -p steward-plugin-cli --bin steward-plugin -- `
+  review .\target\plugins\steward-plugin-my-plugin-0.1.0.zip
 ```
+
+`review` 使用公开市场准入策略，拒绝通配权限、未知或过宽的能力声明、缺失或
+过新的 `minHostVersion`、未受信任发布者以及其他需要人工复核的策略项。
+发布自动化可加 `--json` 获取带稳定检查码的机器可读报告。
 
 插件 zip 只能包含：
 

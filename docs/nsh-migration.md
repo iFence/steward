@@ -4,7 +4,9 @@
 > on clean-VM and production-artifact acceptance. M4 implementation is complete
 > and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run. M5 plugin
 > ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-4 are
-> complete; public third-party admission is the next target.
+> complete. PC-5 public third-party admission is in progress; automated policy
+> review is implemented, while hosted publisher operations and the clean-VM
+> gate remain blocked.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -880,6 +882,60 @@ Design decision:
   cross-process render bridge. It preserves process isolation and reports the
   zero-hidden-VM invariant. A true single-window renderer remains a separate
   architecture change.
+
+### PC-5: Third-Party Admission (in progress)
+
+Files:
+
+- `crates/plugin-store/src/{admission.rs,lib.rs,marketplace.rs}`
+- `crates/plugin-cli/src/main.rs`
+- `crates/plugin-store/tests/store.rs`
+- `scripts/{bench-plugins.ps1,check-plugin-policies.ps1,package-plugins.ps1}`
+- `.github/workflows/release.yml`
+- `docs/plugin-public-admission.md`
+
+Delivered:
+
+- [x] Automated public admission policy version 1 returns stable checks for
+      signature, trust chain, publisher identity, release policy, capability
+      scope, and host API contract.
+- [x] Public review rejects all capabilities that need manual review,
+      including wildcard, unknown, overbroad, and unsafe declarations, and
+      groups accepted declarations by permission and scope.
+- [x] `steward-plugin review` exposes the report in text or JSON.
+- [x] `steward-plugin marketplace sync --public` rejects packages that fail
+      admission and records its policy version for accepted entries; local
+      marketplace synchronization keeps its manual-review behavior.
+- [x] The release workflow runs public admission against production-signed
+      archives.
+- [x] Packaging and benchmark scripts accept manifest schema v2 and v3.
+- [x] The admission policy, publisher/revocation process, update-consent
+      expectations, release gate, and same-user boundary are documented.
+
+Local verification (2026-11-21):
+
+- `cargo fmt --all --check` passed.
+- `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo test -p steward-plugin-store` passed 14 tests, including accepted and
+  rejected public reviews, strict marketplace rejection, and revoked-publisher
+  rejection.
+- `scripts/package-plugins.ps1` successfully packaged a schema-v3 UI Showcase
+  archive with forward-slash zip paths.
+- `cargo test --workspace` stopped on the unrelated Windows process-tree test:
+  107 passed, 1 ignored, and
+  `plugin_execution::tests::execution_job_terminates_the_whole_process_tree`
+  timed out before creating its descendant process. Repeated isolated runs hit
+  the same environment-dependent failure.
+
+Remaining blocked:
+
+- Hosted publisher registration, key-rotation recovery, disputes, operator
+  audit, repository quarantine, and public marketplace operations are not
+  implemented.
+- Clean-Windows-VM signed install, update, crash, rollback, revocation, and
+  uninstall acceptance has not run.
+- External-style plugins from at least three domains remain required before
+  public admission.
 
 ## Verification Commands
 

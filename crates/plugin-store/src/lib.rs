@@ -4,6 +4,7 @@
 //! layer around it: the two-file distribution contract, local marketplace
 //! index, version history, rollback, publisher identity, and policy reporting.
 
+mod admission;
 mod archive;
 mod marketplace;
 mod package;
@@ -19,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use steward_plugin_contract::CapabilityDescriptor;
 use steward_plugin_registry::PluginManifest;
 
+pub use admission::{
+    AdmissionCapabilityGroup, AdmissionCheck, AdmissionReview, PUBLIC_ADMISSION_POLICY_VERSION,
+};
 pub use marketplace::{
     MarketplaceEntry, MarketplaceIndex, MarketplacePublisher, MarketplaceSyncReport,
 };
@@ -168,6 +172,10 @@ impl PluginStore {
         self.inspect_prepared(&prepared)
     }
 
+    pub fn review(&self, path: &Path) -> Result<AdmissionReview> {
+        Ok(admission::review(&self.inspect(path)?))
+    }
+
     pub fn install(&self, path: &Path) -> Result<PluginOperation> {
         store::install(self, archive::prepare_source(path)?, false)
     }
@@ -201,7 +209,11 @@ impl PluginStore {
     }
 
     pub fn sync_marketplace(&self) -> Result<MarketplaceSyncReport> {
-        marketplace::sync(self)
+        marketplace::sync(self, false)
+    }
+
+    pub fn sync_public_marketplace(&self) -> Result<MarketplaceSyncReport> {
+        marketplace::sync(self, true)
     }
 
     pub fn install_from_marketplace(&self, plugin_id: &str) -> Result<PluginOperation> {

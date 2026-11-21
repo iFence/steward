@@ -27,6 +27,10 @@ Conventions:
 - **Automated policy checks**: package inspection reports the release
   capability ceiling, and the release workflow checks every production plugin
   archive with Steward's installability policy in addition to `nsh verify`.
+- **Public admission review**: `steward-plugin review` now returns stable,
+  machine-readable signature, trust, publisher, host-version, and capability
+  checks. Public marketplace synchronization rejects wildcards and any
+  declaration that needs manual policy review.
 - **Capability contract foundation**: new third-party packages declare
   `minHostVersion`, use named Steward permissions, and discover supported
   features at runtime. Launches are narrowed by active user grants, revoked

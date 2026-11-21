@@ -2,8 +2,8 @@
 
 > Status: M5 complete. Local package lifecycle, inspection, marketplace
 > indexing, publisher identity, revocation, and automated policy checks are
-> implemented. Public third-party marketplace admission remains a later
-> platform-policy decision.
+> implemented. PC-5 public admission is in progress; see
+> [plugin-public-admission.md](plugin-public-admission.md).
 
 ## Package Manager
 
@@ -56,6 +56,7 @@ continues to use the configured NSH release key and certificate.
 steward-plugin inspect .\my-plugin.zip
 steward-plugin check .\my-plugin.zip
 steward-plugin check .\my-plugin.zip --strict --json
+steward-plugin review .\my-plugin.zip --json
 ```
 
 Inspection reports the app ID/version/build, package SHA-256, claimed publisher
@@ -65,6 +66,11 @@ mismatches, unsafe archive layouts, and malformed metadata. `--strict` also
 fails when a package declares a capability outside the current release grant;
 the declaration remains visible as a review item because NSH intersects it with
 the release grant at launch.
+
+`review` applies the public-marketplace admission policy. It fails for every
+review item, wildcard declaration, missing publisher identity, incompatible
+host requirement, or other release-policy violation. The JSON form includes
+stable check codes and capability groups for publishing automation.
 
 ## Lifecycle
 
@@ -101,6 +107,7 @@ Then index and use them:
 
 ```powershell
 steward-plugin marketplace sync
+steward-plugin marketplace sync --public
 steward-plugin marketplace list
 steward-plugin marketplace install com.example.plugin
 steward-plugin marketplace update com.example.plugin
@@ -110,6 +117,12 @@ steward-plugin marketplace update com.example.plugin
 index records the artifact hash, signed package hash, version/build, and release
 publisher key ID. Package bytes are verified again at installation time, so a
 changed index or artifact cannot bypass trust.
+
+`marketplace sync` indexes otherwise valid packages for local manual review.
+`marketplace sync --public` applies the stricter public-admission gate and
+rejects any package whose capability declarations need manual review. Accepted
+entries record the admission policy version in the index. This command does not
+enable the hosted public marketplace.
 
 The Settings > Plugins page uses the same store in a background worker. It
 shows installed packages, signature/trust state, publisher key ID, package
@@ -148,8 +161,8 @@ being persisted and are also used by every subsequent plugin launch.
 
 Rust tests cover inspection, publisher identity, update history, rollback,
 marketplace indexing, revocation, unsafe archive rejection, and scaffolding.
-The release workflow runs `scripts/check-plugin-policies.ps1` against every
-production-signed plugin archive after `nsh verify`.
+The release workflow runs `scripts/check-plugin-policies.ps1 -PublicAdmission`
+against every production-signed plugin archive after `nsh verify`.
 
 Current release policy review categories include:
 
@@ -169,8 +182,9 @@ Current release policy review categories include:
 These declarations are reported rather than treated as an automatic
 admissibility failure because NSH intersects them with the release grant and
 the effective capability is still deny-by-default. Public marketplace
-admission can adopt stricter automatic rejection without changing the package
-format.
+admission uses stricter automatic rejection without changing the package
+format. See [plugin-public-admission.md](plugin-public-admission.md) for the
+policy, publisher lifecycle, and release gate.
 
 The filesystem/system-open allowlist only declares an API gate. A
 `steward.fs.pick` call must still be followed by the user choosing a concrete

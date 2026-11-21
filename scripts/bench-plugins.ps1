@@ -41,7 +41,7 @@ if (-not (Test-Path -LiteralPath $manifestPath) -or -not (Test-Path -LiteralPath
     throw "signed plugin input is missing under $pluginDir"
 }
 $manifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath | ConvertFrom-Json
-if ($manifest.schemaVersion -ne 2 -or -not $manifest.id) {
+if ($manifest.schemaVersion -notin @(2, 3) -or -not $manifest.id) {
     throw "invalid plugin.json under $pluginDir"
 }
 $command = [string]$manifest.commands[0].name
