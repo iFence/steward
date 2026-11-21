@@ -8643,10 +8643,12 @@ dependencies = [
  "nsh-package",
  "nucleo",
  "regex",
+ "semver",
  "serde_json",
  "steward-plugin-contract",
  "steward-plugin-registry",
  "steward-search",
+ "steward-storage",
  "thiserror 2.0.20",
 ]
 
@@ -8676,6 +8678,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "steward-plugin-contract",
  "steward-plugin-registry",
  "zip",
 ]
@@ -8696,6 +8699,7 @@ dependencies = [
  "dirs 6.0.0",
  "rusqlite",
  "semver",
+ "serde_json",
 ]
 
 [[package]]

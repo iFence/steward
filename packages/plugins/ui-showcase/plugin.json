@@ -2,9 +2,53 @@
   "schemaVersion": 2,
   "id": "it.aspirin.ui-showcase",
   "name": "UI Showcase",
-  "version": "1.0.0",
+  "version": "1.0.2",
+  "minHostVersion": "0.2.0",
   "icon": "<svg viewBox=\"0 0 1024 1024\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1024\" height=\"1024\" rx=\"224\" fill=\"#7C4DFF\"></rect><rect x=\"176\" y=\"176\" width=\"304\" height=\"264\" rx=\"48\" fill=\"#FFFFFF\"></rect><rect x=\"544\" y=\"176\" width=\"304\" height=\"264\" rx=\"48\" fill=\"#D8CCFF\"></rect><rect x=\"176\" y=\"504\" width=\"304\" height=\"344\" rx=\"48\" fill=\"#D8CCFF\"></rect><rect x=\"544\" y=\"504\" width=\"304\" height=\"344\" rx=\"48\" fill=\"#FFFFFF\"></rect><circle cx=\"648\" cy=\"676\" r=\"72\" fill=\"#7C4DFF\"></circle></svg>",
   "package": "plugin.nshpkg",
+  "preferences": {
+    "schemaVersion": 1,
+    "fields": [
+      {
+        "key": "title",
+        "title": "Page title",
+        "description": "Heading shown at the top of the showcase.",
+        "type": "text",
+        "default": "Steward NSH UI",
+        "maxLength": 80
+      },
+      {
+        "key": "showHints",
+        "title": "Show hints",
+        "description": "Display explanatory text under the heading.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "density",
+        "title": "Density",
+        "description": "Spacing used by the component showcase.",
+        "type": "select",
+        "default": "comfortable",
+        "options": [
+          { "value": "compact", "label": "Compact" },
+          { "value": "comfortable", "label": "Comfortable" }
+        ]
+      },
+      {
+        "key": "workspace",
+        "title": "Workspace folder",
+        "description": "Optional local folder used to preview the folder preference.",
+        "type": "folder"
+      },
+      {
+        "key": "editor",
+        "title": "Editor application",
+        "description": "Optional executable used to preview the application preference.",
+        "type": "application"
+      }
+    ]
+  },
   "commands": [
     {
       "name": "uishowcase",

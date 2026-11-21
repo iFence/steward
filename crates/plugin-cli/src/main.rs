@@ -406,6 +406,23 @@ fn print_inspection(inspection: &steward_plugin_store::PackageInspection) {
         println!("  minimum runtime: {runtime}");
     }
     println!(
+        "  minimum host API: {}",
+        inspection.min_host_version.as_deref().unwrap_or("legacy")
+    );
+    if inspection.legacy_compatibility {
+        println!("  compatibility: legacy official plugin");
+    }
+    println!(
+        "  declared capabilities: {}",
+        inspection.declared_capabilities.len()
+    );
+    for capability in &inspection.declared_capabilities {
+        println!(
+            "    {} [{}] - {}",
+            capability.permission, capability.scope, capability.description
+        );
+    }
+    println!(
         "  policy: {}",
         if inspection.policy.passed {
             "passed"
@@ -436,6 +453,15 @@ fn print_operation(operation: &steward_plugin_store::PluginOperation) {
     println!("  package sha256: {}", operation.package_sha256);
     if let Some(previous) = &operation.previous_version {
         println!("  previous version: {previous}");
+    }
+    for capability in &operation.added_capabilities {
+        println!(
+            "  new permission: {} ({})",
+            capability.permission, capability.description
+        );
+    }
+    if operation.consent_required {
+        println!("  consent: new sensitive capability requires approval");
     }
 }
 

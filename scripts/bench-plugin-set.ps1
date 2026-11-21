@@ -7,7 +7,7 @@
 
 param(
     [string]$Exe = (Join-Path $PSScriptRoot "..\target\release\steward-app.exe"),
-    [string[]]$Plugins = @("calendar", "clipboard-history", "ui-showcase"),
+    [string[]]$Plugins = @("calendar", "clipboard-history", "local-files", "git-repos", "ui-showcase"),
     [string]$TrustRootFile = "",
     [string]$OutDir = (Join-Path $PSScriptRoot "..\target\benchmarks")
 )

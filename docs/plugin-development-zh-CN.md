@@ -178,7 +178,7 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
 
 ### `plugin.json`
 
-`plugin.json` 只负责启动器路由：
+`plugin.json` 负责启动器路由和无需启动 VM 即可读取的偏好 schema：
 
 ```json
 {
@@ -186,7 +186,34 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
   "id": "com.example.my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
+  "minHostVersion": "0.3.0",
   "package": "plugin.nshpkg",
+  "preferences": {
+    "schemaVersion": 1,
+    "fields": [
+      {
+        "key": "showHints",
+        "title": "显示提示",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "density",
+        "title": "界面密度",
+        "type": "select",
+        "default": "comfortable",
+        "options": [
+          { "value": "compact", "label": "紧凑" },
+          { "value": "comfortable", "label": "舒适" }
+        ]
+      },
+      {
+        "key": "workspace",
+        "title": "工作目录",
+        "type": "folder"
+      }
+    ]
+  },
   "commands": [
     {
       "name": "my-plugin",
@@ -206,6 +233,11 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
 
 完整字段见 [Plugin Manifest v2](plugin-manifest-spec.md)。
 
+偏好支持 `text`、`boolean`、`select`、`folder` 和 `application`。Steward
+会在 Settings 中直接渲染这些字段，无需打开插件窗口。值按插件 ID 持久化，
+升级后保留；更新 schema 时可用 `preferences.migrations` 重命名旧键。偏好
+不会直接授予文件或应用访问权限，PC-2 才会接入对应的路径授权与打开 API。
+
 ### `nsh.json`
 
 `nsh.json` 定义签名包里的应用 ID、版本、构建号和能力：
@@ -217,7 +249,14 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
   "version": "0.1.0",
   "build": 1,
   "capabilities": {
-    "host": ["steward.*"]
+    "host": [
+      "steward.storage.get",
+      "steward.storage.set",
+      "steward.window.close",
+      "steward.feedback.toast",
+      "steward.feedback.confirm",
+      "steward.feedback.progress"
+    ]
   }
 }
 ```
@@ -227,8 +266,12 @@ Steward 会检查包内版本与 `plugin.json` 完全一致。
 
 能力采用 deny-by-default。只声明插件实际需要的能力：
 
-- `host: ["steward.*"]`：使用 `@steward/extension-api`。
+- `host` 必须逐个列出 `@steward/extension-api` 所需的 Steward host call。
+  新第三方包不能声明 `steward.*` 或其他通配 host 权限；旧官方插件仅在迁移期
+  保留兼容。
 - 剪贴板、文件、URL 等能力按 NSH 要求显式声明。
+- 权限声明不是授权；敏感能力还需要用户 grant，更新新增敏感权限时会要求
+  重新确认。
 - 不声明网络、进程执行、WebView 或图片选择器，除非产品需求明确需要并且
   宿主策略已经放行。
 
@@ -246,6 +289,12 @@ Steward 会检查包内版本与 `plugin.json` 完全一致。
 | `storageGet(key)`        | 读取插件私有字符串。                              |
 | `storageSet(key, value)` | 写入插件私有字符串。                              |
 | `closeWindow()`          | 请求 Steward 关闭当前插件窗口。                   |
+| `preferences()`          | 读取宿主解析后的全部偏好。                        |
+| `preference(key, value)` | 读取单个偏好并提供类型化默认值。                  |
+| `toast(options)`         | 显示启动器 Toast。                                |
+| `confirm(options)`       | 请求用户确认，拒绝时返回 `false`。                |
+| `reportProgress(update)` | 上报有界的长任务进度。                            |
+| `onProgress(cb)`         | 接收 `steward.progress` 事件。                    |
 
 示例：
 
@@ -350,6 +399,24 @@ test("copies the selected value", async () => {
 - `steward.storage.get`
 - `steward.storage.set`
 - `steward.window.close`
+- `steward.feedback.toast`
+- `steward.feedback.confirm`
+- `steward.feedback.progress`
+
+`host.params.preferences` 或 `preference()` 可以直接在无头测试中提供：
+
+```tsx
+const app = await open("./App.tsx", {
+  host: {
+    params: {
+      preferences: {
+        density: "compact",
+        showHints: false,
+      },
+    },
+  },
+});
+```
 
 测试同时可以发送主题事件：
 
@@ -658,6 +725,8 @@ Get-ChildItem -Force -Recurse .nsh\test
 - [ ] `nsh.json` 的 `build` 已增加。
 - [ ] `nsh check App.tsx` 通过。
 - [ ] `nsh test .` 通过。
+- [ ] 新增偏好已在 `plugin.json` 声明，并在无头测试中覆盖默认值和迁移。
+- [ ] Toast、确认和进度调用已使用 mock 验证。
 - [ ] `pnpm lint`、`pnpm typecheck`、`pnpm format:check` 通过。
 - [ ] GPUI bundle 或原生窗口人工检查通过。
 - [ ] 本地签名包在隔离 Steward 数据目录中完成首帧。

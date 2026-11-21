@@ -64,4 +64,4 @@ jobs:
       - name: build
         run: pnpm build
       - name: plugin tests
-        run: pnpm --filter @steward/plugin-calendar test && pnpm --filter @steward/plugin-clipboard-history test && pnpm --filter @steward/plugin-ui-showcase test
+        run: pnpm --filter @steward/plugin-calendar test && pnpm --filter @steward/plugin-clipboard-history test && pnpm --filter @steward/plugin-local-files test && pnpm --filter @steward/plugin-git-repos test && pnpm --filter @steward/plugin-ui-showcase test

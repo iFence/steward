@@ -1,17 +1,48 @@
 import { mount, signal, Text, View } from "nsh";
 import { Input, Switch } from "nsh/base";
+import { confirm, onProgress, preference, reportProgress, toast } from "@steward/extension-api";
 
 function App() {
   const clicks = signal(0);
   const query = signal("");
   const enabled = signal(true);
+  const title = preference("title", "Steward NSH UI");
+  const showHints = preference("showHints", true);
+  const density = preference<"compact" | "comfortable">("density", "comfortable");
+  const workspace = preference("workspace", "");
+  const editor = preference("editor", "");
+  const feedback = signal("");
+  const gap = density === "compact" ? 8 : 16;
+  onProgress((update) => feedback.set(update.message));
+
+  async function showToast() {
+    await toast({ title: "Steward", message: "Hosted toast delivered" });
+    feedback.set("Toast sent");
+  }
+
+  async function requestConfirmation() {
+    await reportProgress({
+      id: "showcase",
+      message: "Preparing confirmation",
+      current: 1,
+      total: 1,
+    });
+    const confirmed = await confirm({
+      title: "Confirm action",
+      message: "Continue with the showcase action?",
+      confirmLabel: "Continue",
+    });
+    feedback.set(confirmed ? "Confirmed" : "Cancelled");
+  }
 
   return (
-    <View style={{ flex: 1, padding: 24, gap: 16, backgroundColor: "#202024" }}>
-      <Text style={{ color: "#ffffff", fontSize: 28, fontWeight: "bold" }}>Steward NSH UI</Text>
-      <Text style={{ color: "#79797c" }}>
-        Native TSX, signals and host-controlled capabilities.
-      </Text>
+    <View style={{ flex: 1, padding: 24, gap, backgroundColor: "#202024" }}>
+      <Text style={{ color: "#ffffff", fontSize: 28, fontWeight: "bold" }}>{title}</Text>
+      {showHints ? (
+        <Text style={{ color: "#79797c" }}>
+          Native TSX, signals, hosted preferences and host-controlled capabilities.
+        </Text>
+      ) : null}
       <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
         <View
           role="button"
@@ -35,6 +66,26 @@ function App() {
         <Text style={{ color: "#ffffff" }}>{enabled() ? "Enabled" : "Disabled"}</Text>
       </View>
       <Text style={{ color: "#ffffff" }}>Query: {query() || "(empty)"}</Text>
+      <Text style={{ color: "#79797c" }}>
+        Workspace: {workspace || "(not set)"} / Editor: {editor || "(not set)"}
+      </Text>
+      <View style={{ flexDirection: "row", gap: 12 }}>
+        <View
+          role="button"
+          onPress={showToast}
+          style={{ backgroundColor: "#2c2c31", borderRadius: 8, padding: 10 }}
+        >
+          <Text style={{ color: "#ffffff" }}>Show toast</Text>
+        </View>
+        <View
+          role="button"
+          onPress={requestConfirmation}
+          style={{ backgroundColor: "#2c2c31", borderRadius: 8, padding: 10 }}
+        >
+          <Text style={{ color: "#ffffff" }}>Confirm</Text>
+        </View>
+        <Text style={{ color: "#ffffff" }}>{feedback()}</Text>
+      </View>
     </View>
   );
 }

@@ -156,10 +156,14 @@ Current release policy review categories include:
 - process execution;
 - network access;
 - web views and web-view input/media;
-- filesystem roots other than `${dataDir}`;
-- file picker, sharing, speech, notifications, audio, and application control;
+- direct filesystem roots other than `${dataDir}`, while scoped path access is
+  obtained through `steward.fs.pick`;
+- generic NSH file picker, sharing, speech, notifications, audio, and
+  application control;
 - home-directory discovery and extra native windows;
-- host calls outside `steward.*`;
+- named host calls outside the current clipboard, storage, calendar, window,
+  preference, feedback, scoped filesystem, installed-application, and
+  system-open allowlist;
 - URL schemes other than `https` and `mailto`.
 
 These declarations are reported rather than treated as an automatic
@@ -167,3 +171,9 @@ admissibility failure because NSH intersects them with the release grant and
 the effective capability is still deny-by-default. Public marketplace
 admission can adopt stricter automatic rejection without changing the package
 format.
+
+The filesystem/system-open allowlist only declares an API gate. A
+`steward.fs.pick` call must still be followed by the user choosing a concrete
+file or folder; that exact canonical selection is persisted as a separate path
+grant. `openPath`, `revealPath`, `readText`, `writeText`, and `walk` re-read the
+path grants on every call.

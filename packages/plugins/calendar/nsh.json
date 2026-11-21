@@ -1,10 +1,10 @@
 {
   "name": "Calendar",
   "id": "it.aspirin.calendar",
-  "version": "0.2.3",
-  "build": 4,
+  "version": "0.2.4",
+  "build": 5,
   "capabilities": {
-    "host": ["steward.*"],
+    "host": ["steward.calendar.holidays"],
     "network": {
       "http": [
         {

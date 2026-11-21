@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager};
 use gpui::AnyWindowHandle;
 use nsh_package::PackageReceipt;
-use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginSessionId};
+use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginNotice, PluginSessionId};
 
 use crate::i18n::Localization;
 use crate::plugin_window::PluginProcess;
@@ -125,6 +125,11 @@ pub(crate) enum PluginRuntimeEvent {
         receipt: PackageReceipt,
         requested_at: std::time::Instant,
         first_frame_at: std::time::Instant,
+    },
+    Notice {
+        plugin_id: String,
+        session_id: PluginSessionId,
+        notice: PluginNotice,
     },
     Failed {
         plugin_id: String,

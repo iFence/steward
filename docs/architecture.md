@@ -131,22 +131,23 @@ to plugins.
 
 ## Rust Modules
 
-| Crate | Responsibility |
-|---|---|
-| `steward-app` | GPUI Fast shell, tray, hotkey, search, and isolated plugin host process entry |
-| `steward-core-engine` | application matching, calculator, URL detection |
-| `steward-search` | shared pinyin haystacks and fuzzy-search vocabulary |
-| `steward-plugin-contract` | versioned launch, process protocol, notice, error, and session DTOs |
-| `steward-plugin-registry` | strict `plugin.json` v2 parser and SQLite route cache |
-| `steward-plugin-host` | catalog/route facade, package trust, capability policy, asynchronous launch preparation |
-| `steward-plugin-store` | package inspection, local lifecycle/history, marketplace index, publisher and revocation operations |
-| `steward-plugin-cli` | `steward-plugin` scaffolding, inspection, policy, and lifecycle CLI |
-| `steward-storage` | SQLite settings, usage, app cache, and clipboard rows |
-| `steward-ui-components` | NSH Rust launcher rows and palette |
+| Crate                     | Responsibility                                                                                      |
+| ------------------------- | --------------------------------------------------------------------------------------------------- |
+| `steward-app`             | GPUI Fast shell, tray, hotkey, search, and isolated plugin host process entry                       |
+| `steward-core-engine`     | application matching, calculator, URL detection                                                     |
+| `steward-search`          | shared pinyin haystacks and fuzzy-search vocabulary                                                 |
+| `steward-plugin-contract` | versioned launch, process protocol, notice, error, and session DTOs                                 |
+| `steward-plugin-registry` | strict `plugin.json` v2 parser and SQLite route cache                                               |
+| `steward-plugin-host`     | catalog/route facade, package trust, capability policy, asynchronous launch preparation             |
+| `steward-plugin-store`    | package inspection, local lifecycle/history, marketplace index, publisher and revocation operations |
+| `steward-plugin-cli`      | `steward-plugin` scaffolding, inspection, policy, and lifecycle CLI                                 |
+| `steward-storage`         | SQLite settings, usage, app cache, and clipboard rows                                               |
+| `steward-ui-components`   | NSH Rust launcher rows and palette                                                                  |
 
 Steward's SQLite database records an explicit `PRAGMA user_version` and applies
 migrations incrementally. Schema v2 adds publisher/version-scoped capability
-grants and structured capability audit records. A database newer than the
+grants and structured capability audit records; schema v3 adds plugin-scoped
+host preference values. A database newer than the
 application's supported schema is rejected instead of being rewritten.
 
 The application splits launcher search into built-in, application, indexed
@@ -199,7 +200,8 @@ The installed layout is:
   plugin.nshpkg
 ```
 
-`plugin.json` is routing metadata only:
+`plugin.json` contains routing metadata and the optional host-rendered
+preference schema:
 
 ```json
 {
@@ -208,6 +210,17 @@ The installed layout is:
   "name": "Calendar",
   "version": "0.1.4",
   "package": "plugin.nshpkg",
+  "preferences": {
+    "schemaVersion": 1,
+    "fields": [
+      {
+        "key": "showHints",
+        "title": "Show hints",
+        "type": "boolean",
+        "default": true
+      }
+    ]
+  },
   "commands": [
     {
       "name": "calendar",
@@ -220,6 +233,7 @@ The installed layout is:
 ```
 
 Supported triggers are command name, longest matching prefix, and regex.
+Preference fields support text, boolean, select, folder, and application values.
 Dynamic triggers and inline plugin results no longer exist.
 
 The NSH package contains the TSX application and UI assets. Its package ID and
@@ -229,31 +243,62 @@ in [nsh-plugin-api.md](nsh-plugin-api.md) and
 
 ## Capability and Resource Policy
 
-Release packages receive only:
+The release policy ceiling still contains:
 
 - clipboard history;
 - read/write access scoped to `${dataDir}`;
+- user-selected file and folder roots with read or read-write grants;
+- bounded filesystem metadata walks, text read/write, and cancellation;
+- default-path open, Explorer reveal, and catalog-only open-with;
+- installed-application discovery;
 - opening https and mailto URLs;
-- host calls in the `steward.*` namespace.
+- named Steward host calls, with `steward.*` retained only for official
+  migration packages.
 
-Network, process execution, webview, and image-picker capabilities are denied.
+Network, process execution, webview, generic NSH image-picker, and unrestricted
+filesystem roots are denied.
 The policy is applied again when a package is prepared for launch; package
 metadata cannot grant itself extra capabilities.
 
 The current host bridge exposes clipboard history and writes, plugin-private
-string storage, command/theme events, and plugin-window close. Clipboard and
-storage calls are capability-gated by the signed package plus the release
+string storage, command/theme events, plugin-window close, resolved
+preferences, toast, confirmation, progress, user-selected filesystem roots,
+installed applications, and system-open operations. Clipboard, storage, and
+resource calls are capability-gated by the signed package plus the release
 policy; plugin-private storage is isolated under the plugin's data directory.
+
+PC-0 adds a semantic host API version, `minHostVersion`, feature discovery,
+stable errors, and launch-time intersection with active SQLite grants. New
+third-party packages cannot declare `steward.*`. Every launch records allowed
+and denied declarations, and Steward host-call handlers append payload-free
+allow audit events.
+
+PC-1 adds schema-bounded preferences and feedback APIs. Preference rows are
+keyed by plugin ID so they survive package updates, and Settings renders them
+without starting a VM. Toast and confirmation requests cross the
+session-scoped child protocol; the launcher owns confirmation resolution.
+Progress calls are delivered back to the plugin as `steward.progress` events.
+Folder and application preference values are path-validated but remain values:
+they do not create filesystem grants or launch targets.
+
+PC-2 adds native file/folder selection. A selection is canonicalized and stored
+as a resource-scoped grant in the existing capability table. Filesystem and
+system-open handlers query matching grants on every call, reject UNC and
+out-of-root paths, and treat symlinks, junctions, and other reparse points as
+non-traversable during walks. Path work runs on bounded worker queues; walks
+have depth, result, and deadline limits plus caller-driven cancellation.
+System opening accepts a path plus either the default handler or an exact
+installed-application ID, never a shell command line.
 
 VM limits:
 
-| Limit | Value |
-|---|---:|
-| Heap | 64 MiB |
-| Stack | 1 MiB |
-| Load | 2 s |
+| Limit       |  Value |
+| ----------- | -----: |
+| Heap        | 64 MiB |
+| Stack       |  1 MiB |
+| Load        |    2 s |
 | One JS call | 250 ms |
-| UI nodes | 20,000 |
+| UI nodes    | 20,000 |
 
 ## Trust and Packaging
 

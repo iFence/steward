@@ -1,9 +1,9 @@
 {
   "name": "UI Showcase",
   "id": "it.aspirin.ui-showcase",
-  "version": "1.0.0",
-  "build": 1,
+  "version": "1.0.2",
+  "build": 3,
   "capabilities": {
-    "host": ["steward.*"]
+    "host": ["steward.feedback.toast", "steward.feedback.confirm", "steward.feedback.progress"]
   }
 }

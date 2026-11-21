@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
+use steward_plugin_contract::HOST_API_VERSION;
 use steward_plugin_registry::{
     PluginCommand, PluginManifest, Trigger, TriggerType, MANIFEST_FILE, SCHEMA_VERSION,
 };
@@ -41,8 +42,10 @@ pub fn scaffold_plugin(options: ScaffoldOptions) -> Result<ScaffoldReport> {
         id: options.id.clone(),
         name: options.name.clone(),
         version: options.version.clone(),
+        min_host_version: Some(HOST_API_VERSION.into()),
         icon: None,
         package: steward_plugin_registry::PACKAGE_FILE.into(),
+        preferences: Default::default(),
         commands: vec![PluginCommand {
             name: command.clone(),
             title: options.name.clone(),

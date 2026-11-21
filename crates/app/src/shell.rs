@@ -69,6 +69,18 @@ pub fn StewardLauncher() -> impl IntoElement {
                         if generation.get() == reply.generation {
                             let mut items = reply.items;
                             if let Some(notice) = app.notice() {
+                                let action = match notice.kind {
+                                    steward_plugin_contract::PluginNoticeKind::Confirmation {
+                                        id,
+                                        confirm_label,
+                                        ..
+                                    } => RowAction::ConfirmNotice {
+                                        plugin_id: notice.plugin_id.unwrap_or_default(),
+                                        id,
+                                        label: confirm_label,
+                                    },
+                                    _ => RowAction::DismissNotice,
+                                };
                                 items.insert(
                                     0,
                                     LauncherItem::from_row(
@@ -81,7 +93,7 @@ pub fn StewardLauncher() -> impl IntoElement {
                                             icon: None,
                                             subtitle_placement: Default::default(),
                                         },
-                                        RowAction::DismissNotice,
+                                        action,
                                     ),
                                 );
                             }
@@ -341,6 +353,13 @@ pub fn StewardLauncher() -> impl IntoElement {
                 "escape" | "Escape" => {
                     if actions_open.get_untracked() {
                         set_actions_open(false);
+                    } else if app.notice().is_some_and(|notice| {
+                        matches!(
+                            notice.kind,
+                            steward_plugin_contract::PluginNoticeKind::Confirmation { .. }
+                        )
+                    }) {
+                        app.send_window_command(WindowCommand::Activate(RowAction::DismissNotice));
                     } else {
                         app.send_window_command(WindowCommand::Hide);
                     }
@@ -647,6 +666,7 @@ fn primary_action_label(action: Option<&RowAction>, strings: &crate::i18n::UiStr
         Some(RowAction::OpenUrl(_)) => strings.open_url.clone(),
         Some(RowAction::OpenSettings(_)) => strings.launcher_open_settings.clone(),
         Some(RowAction::DismissNotice) => strings.launcher_close.clone(),
+        Some(RowAction::ConfirmNotice { label, .. }) => label.clone(),
         Some(RowAction::OpenPlugin { .. }) => strings.launcher_open_plugin.clone(),
         Some(RowAction::RevealInExplorer(_) | RowAction::ShowProperties(_)) | None => {
             strings.launcher_open.clone()
@@ -734,6 +754,7 @@ fn primary_action_icon(action: Option<&RowAction>) -> ActionPanelIcon {
         Some(RowAction::OpenUrl(_)) => ActionPanelIcon::Globe,
         Some(RowAction::OpenSettings(_)) => ActionPanelIcon::Settings,
         Some(RowAction::DismissNotice) => ActionPanelIcon::Close,
+        Some(RowAction::ConfirmNotice { .. }) => ActionPanelIcon::Play,
         Some(RowAction::OpenPlugin { .. }) => ActionPanelIcon::Package,
         Some(RowAction::RevealInExplorer(_)) => ActionPanelIcon::FolderOpen,
         Some(RowAction::ShowProperties(_)) | None => ActionPanelIcon::Application,
@@ -1353,6 +1374,7 @@ mod tests {
             launcher_navigate: "Navigate".into(),
             launcher_open: "Open".into(),
             launcher_close: "Close".into(),
+            launcher_confirm: "Confirm".into(),
             launcher_actions: "Actions".into(),
             launcher_copy: "Copy".into(),
             launcher_open_application: "Open Application".into(),

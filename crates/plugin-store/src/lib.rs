@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context as _, Result};
 use nsh_package::TrustStore;
 use serde::{Deserialize, Serialize};
+use steward_plugin_contract::CapabilityDescriptor;
 use steward_plugin_registry::PluginManifest;
 
 pub use marketplace::{
@@ -76,6 +77,8 @@ pub struct PluginOperation {
     pub publisher_key_id: String,
     pub package_sha256: String,
     pub previous_version: Option<String>,
+    pub added_capabilities: Vec<CapabilityDescriptor>,
+    pub consent_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

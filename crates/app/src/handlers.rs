@@ -198,6 +198,25 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     );
                 }
             }
+            PluginRuntimeEvent::Notice {
+                plugin_id,
+                session_id,
+                notice,
+            } => {
+                if !plugin_session_is_current(state, &plugin_id, session_id) {
+                    continue;
+                }
+                let requires_confirmation = matches!(
+                    notice.kind,
+                    steward_plugin_contract::PluginNoticeKind::Confirmation { .. }
+                );
+                state.borrow().services.publish_notice(notice);
+                if requires_confirmation {
+                    show_launcher(cx, state);
+                } else {
+                    cx.update(|cx| cx.refresh_windows());
+                }
+            }
             PluginRuntimeEvent::Failed {
                 plugin_id,
                 session_id,
@@ -471,7 +490,25 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 let _ = handle.update(cx, |_, window, cx| crate::window::hide_window(window, cx));
             }
         }
-        RowAction::DismissNotice => state.borrow().services.clear_notice(),
+        RowAction::DismissNotice => {
+            let notice = state.borrow().services.notice();
+            if let Some(notice) = notice {
+                if let steward_plugin_contract::PluginNoticeKind::Confirmation { id, .. } =
+                    notice.kind
+                {
+                    if let Some(plugin_id) = notice.plugin_id {
+                        crate::plugin_window::resolve_confirmation(state, &plugin_id, id, false);
+                    }
+                }
+            }
+            state.borrow().services.clear_notice();
+            cx.update(|cx| cx.refresh_windows());
+        }
+        RowAction::ConfirmNotice { plugin_id, id, .. } => {
+            crate::plugin_window::resolve_confirmation(state, &plugin_id, id, true);
+            state.borrow().services.clear_notice();
+            cx.update(|cx| cx.refresh_windows());
+        }
         RowAction::OpenPlugin {
             plugin_id,
             command,
@@ -559,7 +596,9 @@ fn report_launch_failure(
         title,
         message: format!("{} - {}", request.title, code.as_str()),
         plugin_id: Some(request.plugin_id.clone()),
-        code,
+        code: Some(code),
+        level: steward_plugin_contract::PluginNoticeLevel::Error,
+        kind: steward_plugin_contract::PluginNoticeKind::Toast,
     });
 }
 

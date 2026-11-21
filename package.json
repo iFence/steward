@@ -4,8 +4,8 @@
   "private": true,
   "description": "Steward monorepo: GPUI Fast host with NSH Rust and TSX applications.",
   "scripts": {
-    "build": "pnpm --filter @steward/plugin-calendar build && pnpm --filter @steward/plugin-clipboard-history build && pnpm --filter @steward/plugin-ui-showcase build",
-    "typecheck": "pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck && pnpm --filter @steward/plugin-ui-showcase typecheck",
+    "build": "pnpm --filter @steward/plugin-calendar build && pnpm --filter @steward/plugin-clipboard-history build && pnpm --filter @steward/plugin-local-files build && pnpm --filter @steward/plugin-git-repos build && pnpm --filter @steward/plugin-ui-showcase build",
+    "typecheck": "pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck && pnpm --filter @steward/plugin-local-files typecheck && pnpm --filter @steward/plugin-git-repos typecheck && pnpm --filter @steward/plugin-ui-showcase typecheck",
     "lint": "eslint \"packages/**/*.{ts,tsx,js}\"",
     "format:check": "prettier --check \"packages/**/*.{ts,tsx,js,json,md}\""
   },

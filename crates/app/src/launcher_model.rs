@@ -16,6 +16,11 @@ pub(crate) enum RowAction {
     OpenUrl(String),
     OpenSettings(String),
     DismissNotice,
+    ConfirmNotice {
+        plugin_id: String,
+        id: u64,
+        label: String,
+    },
     OpenPlugin {
         plugin_id: String,
         command: String,

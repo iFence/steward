@@ -3,7 +3,16 @@ use std::collections::BTreeSet;
 use anyhow::{Context as _, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use nsh_core::access::{Capabilities, FileGrants};
+use semver::Version;
 use serde::{Deserialize, Serialize};
+use steward_plugin_contract::capabilities::{
+    describe_declared_capabilities, is_legacy_official_plugin_id, CALENDAR_HOLIDAYS,
+    CLIPBOARD_HISTORY, CLIPBOARD_WRITE, FEEDBACK_CONFIRM, FEEDBACK_PROGRESS, FEEDBACK_TOAST,
+    FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK, FS_WRITE_TEXT, PREFERENCES_ALL,
+    PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH,
+    SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+};
+use steward_plugin_contract::{CapabilityDescriptor, HOST_API_VERSION};
 use steward_plugin_registry::PluginManifest;
 
 use crate::archive::PreparedPackage;
@@ -44,6 +53,9 @@ pub struct PackageInspection {
     pub trusted: bool,
     pub trust_error: Option<String>,
     pub min_runtime: Option<String>,
+    pub min_host_version: Option<String>,
+    pub legacy_compatibility: bool,
+    pub declared_capabilities: Vec<CapabilityDescriptor>,
     pub policy: PackagePolicyReport,
 }
 
@@ -72,6 +84,21 @@ pub(crate) fn inspect_bytes(
     package_sha256: String,
 ) -> Result<PackageInspection> {
     let mut policy = PackagePolicyReport::empty();
+    let legacy_compatibility =
+        is_legacy_official_plugin_id(&manifest.id) && manifest.min_host_version.is_none();
+    check_host_api_requirement(&manifest, legacy_compatibility, &mut policy);
+    let declared_json = package_capabilities(bytes);
+    let mut declared_capabilities = declared_json
+        .as_ref()
+        .map(describe_declared_capabilities)
+        .unwrap_or_default();
+    check_wildcard_permission(
+        &manifest.id,
+        legacy_compatibility,
+        &declared_capabilities,
+        &mut policy,
+    );
+
     if bytes.len() as u64 > MAX_PACKAGE_BYTES {
         policy.passed = false;
         policy.errors.push(format!(
@@ -140,7 +167,7 @@ pub(crate) fn inspect_bytes(
                 trusted = true;
                 trust_error = None;
                 publisher_key_id = Some(package.receipt.key_id.clone());
-                if let Some(declared) = package_capabilities(bytes) {
+                if let Some(declared) = declared_json {
                     match Capabilities::from_json_lenient(&declared) {
                         Ok((declared, dropped)) => {
                             for capability in dropped {
@@ -148,7 +175,15 @@ pub(crate) fn inspect_bytes(
                                     "review unknown or invalid capability declaration '{capability}'"
                                 ));
                             }
+                            declared_capabilities =
+                                describe_declared_capabilities(&declared.to_json());
                             check_capabilities(&declared, &mut policy);
+                            check_wildcard_permission(
+                                &manifest.id,
+                                legacy_compatibility,
+                                &declared_capabilities,
+                                &mut policy,
+                            );
                         }
                         Err(error) => {
                             policy.passed = false;
@@ -176,6 +211,8 @@ pub(crate) fn inspect_bytes(
     policy.denied_capabilities.sort();
     policy.denied_capabilities.dedup();
     policy.passed &= policy.errors.is_empty();
+    declared_capabilities.sort();
+    declared_capabilities.dedup();
 
     let app = header_app.unwrap_or_else(|| nsh_package::App {
         id: manifest.id.clone(),
@@ -183,6 +220,7 @@ pub(crate) fn inspect_bytes(
         version: manifest.version.clone(),
         build: 0,
     });
+    let min_host_version = manifest.min_host_version.clone();
     Ok(PackageInspection {
         manifest,
         app_id: app.id,
@@ -196,8 +234,63 @@ pub(crate) fn inspect_bytes(
         trusted,
         trust_error,
         min_runtime,
+        min_host_version,
+        legacy_compatibility,
+        declared_capabilities,
         policy,
     })
+}
+
+fn check_host_api_requirement(
+    manifest: &PluginManifest,
+    legacy_compatibility: bool,
+    policy: &mut PackagePolicyReport,
+) {
+    if legacy_compatibility {
+        return;
+    }
+    let Some(required) = manifest.min_host_version.as_deref() else {
+        policy.passed = false;
+        policy.errors.push(format!(
+            "minHostVersion is required for new third-party packages; use host API {HOST_API_VERSION}"
+        ));
+        return;
+    };
+    let required = match Version::parse(required) {
+        Ok(required) => required,
+        Err(error) => {
+            policy.passed = false;
+            policy
+                .errors
+                .push(format!("invalid minHostVersion '{required}': {error}"));
+            return;
+        }
+    };
+    let current = Version::parse(HOST_API_VERSION).expect("host API version must be semver");
+    if required > current {
+        policy.passed = false;
+        policy.errors.push(format!(
+            "plugin requires host API {required}, but this Steward supports {current}"
+        ));
+    }
+}
+
+fn check_wildcard_permission(
+    plugin_id: &str,
+    legacy_compatibility: bool,
+    descriptors: &[CapabilityDescriptor],
+    policy: &mut PackagePolicyReport,
+) {
+    if !legacy_compatibility
+        && descriptors
+            .iter()
+            .any(|descriptor| descriptor.legacy_wildcard)
+    {
+        policy.passed = false;
+        policy.errors.push(format!(
+            "plugin '{plugin_id}' cannot declare wildcard host permissions; request named capabilities"
+        ));
+    }
 }
 
 fn check_capabilities(capabilities: &Capabilities, policy: &mut PackagePolicyReport) {
@@ -358,7 +451,31 @@ fn check_file_grants(
 }
 
 fn host_allowed(name: &str) -> bool {
-    name == "steward.*" || name.starts_with("steward.")
+    matches!(
+        name,
+        steward_plugin_contract::capabilities::LEGACY_HOST_ACCESS
+            | CLIPBOARD_HISTORY
+            | CLIPBOARD_WRITE
+            | STORAGE_GET
+            | STORAGE_SET
+            | CALENDAR_HOLIDAYS
+            | WINDOW_CLOSE
+            | PREFERENCES_GET
+            | PREFERENCES_ALL
+            | FEEDBACK_TOAST
+            | FEEDBACK_CONFIRM
+            | FEEDBACK_PROGRESS
+            | FS_PICK
+            | FS_WALK
+            | FS_READ_TEXT
+            | FS_WRITE_TEXT
+            | FS_GRANTS
+            | FS_CANCEL_WALK
+            | SYSTEM_OPEN_PATH
+            | SYSTEM_REVEAL_PATH
+            | SYSTEM_OPEN_WITH
+            | SYSTEM_APPLICATIONS
+    )
 }
 
 fn deny(
@@ -395,4 +512,27 @@ fn package_capabilities(bytes: &[u8]) -> Option<serde_json::Value> {
     let end = 12_usize.checked_add(header_len)?;
     let header = serde_json::from_slice::<serde_json::Value>(bytes.get(12..end)?).ok()?;
     header.get("capabilities").cloned()
+}
+
+#[cfg(test)]
+mod capability_policy_tests {
+    use super::*;
+
+    #[test]
+    fn filesystem_and_system_open_host_calls_are_in_the_release_allowlist() {
+        for name in [
+            FS_PICK,
+            FS_WALK,
+            FS_READ_TEXT,
+            FS_WRITE_TEXT,
+            FS_GRANTS,
+            FS_CANCEL_WALK,
+            SYSTEM_OPEN_PATH,
+            SYSTEM_REVEAL_PATH,
+            SYSTEM_OPEN_WITH,
+            SYSTEM_APPLICATIONS,
+        ] {
+            assert!(host_allowed(name), "{name}");
+        }
+    }
 }

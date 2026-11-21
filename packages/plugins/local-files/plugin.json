@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "id": "it.aspirin.local-files",
+  "name": "Local Files",
+  "version": "0.1.0",
+  "minHostVersion": "0.3.0",
+  "icon": "<svg viewBox=\"0 0 1024 1024\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1024\" height=\"1024\" rx=\"224\" fill=\"#176B87\"></rect><path d=\"M240 224h544a80 80 0 0 1 80 80v416a80 80 0 0 1-80 80H240a80 80 0 0 1-80-80V304a80 80 0 0 1 80-80Z\" fill=\"#DDF4FF\"></path><path d=\"M224 352h576v368a80 80 0 0 1-80 80H304a80 80 0 0 1-80-80V352Z\" fill=\"#FFFFFF\"></path><circle cx=\"512\" cy=\"536\" r=\"112\" fill=\"#176B87\"></circle><path d=\"m584 608 104 104\" stroke=\"#176B87\" stroke-width=\"48\" stroke-linecap=\"round\"></path></svg>",
+  "package": "plugin.nshpkg",
+  "commands": [
+    {
+      "name": "local-files",
+      "title": "Local File Inspector",
+      "keywords": ["files", "folder", "preview", "filesystem"],
+      "trigger": { "type": "command" }
+    }
+  ]
+}

@@ -103,19 +103,73 @@ fn shell_open(path: &std::path::Path) -> Result<()> {
     shell_execute(path, "open")
 }
 
+/// Open `resource` with the exact installed application discovered by
+/// Steward. Executables are started directly; shortcuts and shell application
+/// aliases go through their registered shell handler with the resource as the
+/// only parameter. A plugin never supplies a command line.
+#[cfg(target_os = "windows")]
+pub(crate) fn launch_with_resource(
+    application: &std::path::Path,
+    resource: &std::path::Path,
+) -> Result<()> {
+    use std::process::Command;
+
+    let application_text = application.to_string_lossy();
+    if application_text.to_ascii_lowercase().ends_with(".exe") {
+        let mut command = Command::new(application);
+        command.arg(resource);
+        if let Some(directory) = application.parent() {
+            command.current_dir(directory);
+        }
+        if command.spawn().is_ok() {
+            return Ok(());
+        }
+    }
+    shell_execute_with_parameters(application, "open", Some(resource))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn launch_with_resource(
+    application: &std::path::Path,
+    resource: &std::path::Path,
+) -> Result<()> {
+    let _ = (application, resource);
+    anyhow::bail!("opening a path with an installed application is only supported on Windows")
+}
+
 #[cfg(target_os = "windows")]
 fn shell_execute(path: &std::path::Path, verb: &str) -> Result<()> {
+    shell_execute_with_parameters(path, verb, None)
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute_with_parameters(
+    path: &std::path::Path,
+    verb: &str,
+    parameter: Option<&std::path::Path>,
+) -> Result<()> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let text = path.to_string_lossy();
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let verb: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
+    let parameters = parameter
+        .map(|parameter| quote_windows_parameter(&parameter.to_string_lossy()))
+        .transpose()?
+        .map(|parameters| {
+            parameters
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>()
+        });
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             verb.as_ptr(),
             wide.as_ptr(),
-            std::ptr::null(),
+            parameters
+                .as_ref()
+                .map_or(std::ptr::null(), |parameters| parameters.as_ptr()),
             std::ptr::null(),
             SW_SHOWNORMAL,
         )
@@ -124,6 +178,18 @@ fn shell_execute(path: &std::path::Path, verb: &str) -> Result<()> {
         anyhow::bail!("shell command failed for {}", text);
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn quote_windows_parameter(parameter: &str) -> Result<String> {
+    if parameter.contains('"') {
+        anyhow::bail!("path contains a quote that cannot be passed safely");
+    }
+    if parameter.contains(' ') || parameter.contains('\t') {
+        Ok(format!("\"{parameter}\""))
+    } else {
+        Ok(parameter.to_owned())
+    }
 }
 
 /// Open `url` in the user's default browser. The `open` verb routes `http` /
@@ -172,5 +238,15 @@ mod tests {
     #[test]
     fn settings_launch_is_rejected_off_windows() {
         assert!(super::open_settings("ms-settings:display").is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resource_parameters_are_quoted_without_shell_interpretation() {
+        assert_eq!(
+            super::quote_windows_parameter(r"D:\Projects\A & B\file.txt").unwrap(),
+            r#""D:\Projects\A & B\file.txt""#
+        );
+        assert!(super::quote_windows_parameter("D:\\bad\"name.txt").is_err());
     }
 }

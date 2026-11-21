@@ -38,6 +38,18 @@ importers:
         specifier: workspace:*
         version: link:../../extension-api
 
+  packages/plugins/git-repos:
+    dependencies:
+      '@steward/extension-api':
+        specifier: workspace:*
+        version: link:../../extension-api
+
+  packages/plugins/local-files:
+    dependencies:
+      '@steward/extension-api':
+        specifier: workspace:*
+        version: link:../../extension-api
+
   packages/plugins/ui-showcase:
     dependencies:
       '@steward/extension-api':

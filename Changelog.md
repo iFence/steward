@@ -27,6 +27,31 @@ Conventions:
 - **Automated policy checks**: package inspection reports the release
   capability ceiling, and the release workflow checks every production plugin
   archive with Steward's installability policy in addition to `nsh verify`.
+- **Capability contract foundation**: new third-party packages declare
+  `minHostVersion`, use named Steward permissions, and discover supported
+  features at runtime. Launches are narrowed by active user grants, revoked
+  grants take effect immediately, capability updates report new sensitive
+  permissions, and allowed/denied host operations are audited without storing
+  call payloads.
+- **Capability controls**: Settings > Plugins now lists each declared
+  capability with its explanation and Allow/Revoke controls. Calendar,
+  Clipboard History, and UI Showcase use named host permissions with
+  `minHostVersion`; older installed builds retain migration compatibility
+  until updated.
+- **Plugin preferences and feedback**: plugins can declare host-rendered text,
+  boolean, select, folder, and application preferences that survive updates.
+  Settings validates and edits these values without opening a plugin VM. The
+  extension API now provides hosted toast, confirmation, and progress helpers,
+  backed by the launcher across the isolated plugin process boundary.
+- **Scoped filesystem and system resources**: plugins can ask the user to pick
+  files or folders, then read, write, and recursively list bounded metadata
+  under those exact grants. Paths are canonicalized on every call, revocation
+  takes effect for open plugins, and walks support deadlines, result limits,
+  and cancellation without following reparse points.
+- **Host-owned system opening**: plugins can open a selected path, reveal it in
+  Explorer, or open it with an installed application from Steward's catalog.
+  The new Local File Inspector and Git Repositories examples validate the same
+  APIs from unrelated document and repository workflows.
 
 ### Security and Reliability
 

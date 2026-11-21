@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use semver::Version;
+use steward_plugin_contract::CapabilityDescriptor;
 use steward_plugin_registry::manifest::load_manifest;
 use steward_plugin_registry::Registry;
 
@@ -66,6 +67,8 @@ pub(crate) fn install(
     } else {
         None
     };
+    let added_capabilities = added_capabilities(previous.as_ref(), &inspection);
+    let consent_required = !added_capabilities.is_empty();
 
     let stage = store
         .data_dir()
@@ -149,6 +152,8 @@ pub(crate) fn install(
         publisher_key_id: inspection.publisher_key_id.unwrap_or_default(),
         package_sha256: inspection.package_sha256,
         previous_version: previous.map(|inspection| inspection.version),
+        added_capabilities,
+        consent_required,
     })
 }
 
@@ -241,6 +246,8 @@ pub(crate) fn remove(store: &PluginStore, plugin_id: &str) -> Result<PluginOpera
         publisher_key_id: inspection.publisher_key_id.unwrap_or_default(),
         package_sha256: inspection.package_sha256,
         previous_version: None,
+        added_capabilities: Vec::new(),
+        consent_required: false,
     })
 }
 
@@ -277,6 +284,8 @@ pub(crate) fn rollback(
     let source = path_from_record(store, &selected)?;
     let selected_inspection = store.inspect(&source)?;
     ensure_installable(&selected_inspection)?;
+    let added_capabilities = added_capabilities(Some(&current_inspection), &selected_inspection);
+    let consent_required = !added_capabilities.is_empty();
 
     let parked = history_path(
         store,
@@ -320,6 +329,8 @@ pub(crate) fn rollback(
         publisher_key_id: selected_inspection.publisher_key_id.unwrap_or_default(),
         package_sha256: selected_inspection.package_sha256,
         previous_version: Some(current_inspection.version),
+        added_capabilities,
+        consent_required,
     })
 }
 
@@ -362,6 +373,22 @@ fn ensure_plugin_id(plugin_id: &str) -> Result<()> {
         anyhow::bail!("invalid plugin id '{plugin_id}'");
     }
     Ok(())
+}
+
+fn added_capabilities(
+    previous: Option<&PackageInspection>,
+    incoming: &PackageInspection,
+) -> Vec<CapabilityDescriptor> {
+    let previous = previous
+        .map(|inspection| inspection.declared_capabilities.as_slice())
+        .unwrap_or_default();
+    incoming
+        .declared_capabilities
+        .iter()
+        .filter(|capability| capability.sensitive)
+        .filter(|capability| !previous.contains(capability))
+        .cloned()
+        .collect()
 }
 
 fn history_path(

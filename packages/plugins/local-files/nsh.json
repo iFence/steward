@@ -1,0 +1,17 @@
+{
+  "name": "Local Files",
+  "id": "it.aspirin.local-files",
+  "version": "0.1.0",
+  "build": 1,
+  "capabilities": {
+    "host": [
+      "steward.fs.pick",
+      "steward.fs.walk",
+      "steward.fs.readText",
+      "steward.system.openPath",
+      "steward.system.revealPath",
+      "steward.system.applications",
+      "steward.system.openWith"
+    ]
+  }
+}

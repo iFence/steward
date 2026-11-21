@@ -1,5 +1,6 @@
 //! Steward's NSH plugin catalog, route index, and signed-package launcher.
 
+mod authorization;
 mod catalog;
 mod launcher;
 mod policy;
@@ -18,6 +19,7 @@ use catalog::PluginCatalog;
 use launcher::LaunchMetadata;
 use trust::PackageTrust;
 
+pub use authorization::PluginAuthorization;
 pub use route::{RouteHit, RouteIndex};
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,8 @@ pub struct PluginLaunch {
     pub app_id: String,
     pub package: LoadedPackage,
     pub params: serde_json::Map<String, serde_json::Value>,
+    pub preferences: std::collections::BTreeMap<String, serde_json::Value>,
+    pub authorization: PluginAuthorization,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +61,12 @@ pub enum PluginHostError {
     VersionMismatch { expected: String, actual: String },
     #[error("no NSH trust root is configured")]
     NoTrustRoot,
+    #[error("plugin capability is not authorized: {0}")]
+    PermissionDenied(String),
+    #[error("plugin feature is unavailable: {0}")]
+    UnsupportedFeature(String),
+    #[error("plugin host service failed: {0}")]
+    HostFailure(String),
     #[error("plugin launch worker exited without a result")]
     WorkerExited,
 }
@@ -70,6 +80,9 @@ impl PluginHostError {
             Self::ReadFailed(_) => PluginErrorCode::ReadFailed,
             Self::IdMismatch { .. } => PluginErrorCode::IdMismatch,
             Self::VersionMismatch { .. } => PluginErrorCode::VersionMismatch,
+            Self::PermissionDenied(_) => PluginErrorCode::PermissionDenied,
+            Self::UnsupportedFeature(_) => PluginErrorCode::FeatureUnavailable,
+            Self::HostFailure(_) => PluginErrorCode::HostFailure,
             Self::WorkerExited => PluginErrorCode::RuntimeError,
         }
     }
@@ -185,6 +198,8 @@ impl PluginHost {
             package_path: meta.package.clone(),
             expected_id: meta.manifest.id.clone(),
             expected_version: meta.manifest.version.clone(),
+            min_host_version: meta.manifest.min_host_version.clone(),
+            preferences: meta.manifest.preferences.clone(),
         })
     }
 }

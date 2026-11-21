@@ -62,7 +62,7 @@ manifest/package 哈希，以及最近日志中的错误行。报告用于定位
 | 用例 | 状态 | 证据或未执行原因 |
 |---|---|---|
 | P0-A01 | 通过 | 本地脚本和生产 workflow 均校验通过；生产根 SHA-256 为 `569e4243fc43965650ba3e3c365c62f89425c09bfc476124ee0a1079d2e99b74` |
-| P0-A02 | 通过 | workflow 使用生产信任根签名并验证三个插件；下载 artifact 后本地再次验证通过 |
+| P0-A02 | 通过 | workflow 使用生产信任根签名并验证全部官方插件；下载 artifact 后本地再次验证通过 |
 | P0-A03 | 通过 | `cargo fmt`、workspace Clippy、workspace 测试全部通过 |
 | P0-A04 | 通过 | `pnpm lint`、`format:check`、`typecheck`、`build` 全部通过 |
 | P0-A05 | 通过（开发机） | 20 次采样呼出 p95 为 46 ms；正式干净 VM 证据仍需归档 |
@@ -87,7 +87,7 @@ manifest/package 哈希，以及最近日志中的错误行。报告用于定位
 | P0-M02 | 键盘启动器 | 全程只使用键盘搜索记事本、Windows 设置页和文件 | 选中项与可见列表始终同步；按 Enter 打开当前选中项 |
 | P0-M03 | 计算器与 URL | 输入 `8*8`，然后输入一个有效 URL | 计算器复制 `64`；URL 在默认浏览器中打开 |
 | P0-M04 | 热键冲突 | 在另一个应用中占用 Steward 的呼出热键，再把 Steward 改为同一组合键 | 界面明确报告冲突，Steward 保留原先可用的绑定 |
-| P0-M05 | 插件生命周期 | 打开三个官方插件，重复执行各自命令，关闭窗口后重新打开 | 每个插件只有一个 NSH 窗口和插件宿主进程；重复命令会聚焦窗口并发送命令；关闭后释放进程与 VM；外壳进程内 VM 数保持为 0 |
+| P0-M05 | 插件生命周期 | 打开五个官方插件，重复执行各自命令，关闭窗口后重新打开 | 每个插件只有一个 NSH 窗口和插件宿主进程；重复命令会聚焦窗口并发送命令；关闭后释放进程与 VM；外壳进程内 VM 数保持为 0 |
 | P0-M06 | 插件故障隔离 | 在测试数据目录中用无效或未签名包替换一个插件包，并终止一个已打开的插件宿主进程 | 启动失败并报告信任或包错误；插件进程退出不会关闭启动器、托盘或其他插件，并显示结构化失败提示 |
 | P0-M07 | 运行中升级 | Steward 运行时安装当前 MSI，覆盖上一版本 | 安装器关闭运行中的应用并完成升级；用户设置和开机自启行为保留 |
 | P0-M08 | 修复 | 删除已安装可执行文件后运行 MSI 修复 | 可执行文件和开始菜单快捷方式恢复；用户数据保持不变 |
@@ -131,7 +131,7 @@ archives, and trust root as P0.
 |---|---|---|---|
 | P3-A01 | Job Object assignment | `pwsh scripts/bench-plugins.ps1 -Plugin calendar -Iterations 20 -PackagePath <calendar nshpkg> -TrustRootFile <root>` | Containment backend is `windows_job_object`; memory limit is 256 MiB; CPU cap is 50%; active-process limit is 1; handle limit is 1,024 |
 | P3-A02 | Plugin performance and RSS | Same as P3-A01 | First-frame p95 is at most 500 ms, focus p95 is at most 50 ms, and summary contains peak host and aggregate RSS |
-| P3-A03 | All official plugins | Repeat P3-A01 and P3-A02 for Calendar, Clipboard History, and UI Showcase; then run `pwsh scripts/bench-plugin-set.ps1 -TrustRootFile <root>` | Every plugin opens once, the three-window run reports exactly three host processes and aggregate RSS, and no host process survives shell closure |
+| P3-A03 | All official plugins | Repeat P3-A01 and P3-A02 for Calendar, Clipboard History, Local Files, Git Repositories, and UI Showcase; then run `pwsh scripts/bench-plugin-set.ps1 -TrustRootFile <root>` | Every plugin opens once, the five-window run reports exactly five host processes and aggregate RSS, and no host process survives shell closure |
 | P3-A04 | Crash containment and backoff | `pwsh scripts/test-plugin-isolation.ps1 -Exe <release exe> -PackagePath <calendar nshpkg> -TrustRootFile <root>` | The shell survives the forced host crash, host count returns to zero, and the immediate repeated launch is rejected by backoff |
 | P3-A05 | Memory-limit enforcement | `pwsh scripts/test-plugin-isolation.ps1 -Exe <release exe> -PackagePath <calendar nshpkg> -TrustRootFile <root> -MemoryLimitMiB 32` | Host terminates with `resource_limit`; the shell remains alive and host count returns to zero |
 | P3-A06 | Clean-VM lifecycle | Run the P0 MSI lifecycle plus the signed install/upgrade/crash matrix | Install, launch, upgrade, repair, first-frame, crash, and uninstall pass on a clean Windows 11 23H2+ x64 VM |

@@ -2,8 +2,11 @@
 
 > Status: implementation tracked here. Phases 1 and 2 are complete. Phase 3
 > process isolation implementation is complete and blocked on clean-VM
-> acceptance; marketplace admission, host API negotiation, and user-managed
-> capability grants remain phase 4 work.
+> acceptance. Phase 4 PC-0 contract, inspection, persisted-grant launch
+> enforcement, feature discovery, audit hooks, Settings consent/revocation, and
+> official plugin migration are complete. PC-1 hosted preferences, toast,
+> confirmation, and progress APIs are also complete. Public marketplace
+> admission remains open.
 
 ## Invariants
 
@@ -19,12 +22,15 @@
 
 ## Status
 
-| Area | Status |
-|---|---|
-| Phase 1: launch and diagnostics hardening | Complete |
-| Phase 2: responsibility and dependency split | Complete |
-| Phase 3: one process per plugin window | Blocked on clean-VM acceptance |
-| Phase 4: third-party marketplace admission | Not started |
+| Area                                              | Status                         |
+| ------------------------------------------------- | ------------------------------ |
+| Phase 1: launch and diagnostics hardening         | Complete                       |
+| Phase 2: responsibility and dependency split      | Complete                       |
+| Phase 3: one process per plugin window            | Blocked on clean-VM acceptance |
+| Phase 4: capability foundation (PC-0)             | Complete                       |
+| Phase 4: preferences and feedback (PC-1)          | Complete                       |
+| Phase 4: scoped filesystem and system open (PC-2) | Complete                       |
+| Phase 4: third-party marketplace admission        | Not started                    |
 
 M5 local ecosystem infrastructure is complete: package scaffolding,
 inspection UI, staged lifecycle operations, rollback history, a local
@@ -37,31 +43,31 @@ hosted marketplace; that admission policy remains Phase 4 work.
 ### Plugin lifecycle
 
 - [x] `P1-LAUNCH-1`: package reads, verification, unpacking, and launch-policy
-  construction run on a worker thread.
+      construction run on a worker thread.
 - [x] `P1-LAUNCH-2`: plugin launch requests are coalesced by plugin ID while a
-  launch is pending.
+      launch is pending.
 - [x] `P1-LAUNCH-3`: a package receipt is accepted only after the first frame
-  and a 250 ms fatal-error grace period.
+      and a 250 ms fatal-error grace period.
 - [x] `P1-LAUNCH-4`: launch failures produce a dismissible launcher notice and
-  a structured log event.
+      a structured log event.
 - [x] `P1-LAUNCH-5`: opening an already-running plugin focuses its window and
-  forwards the newest command without creating another VM.
+      forwards the newest command without creating another VM.
 
 ### Search and routing
 
 - [x] `P1-SEARCH-1`: launcher input is debounced by 40 ms while generation
-  checks discard stale results.
+      checks discard stale results.
 - [x] `P1-SEARCH-2`: regex triggers are compiled when the route index changes.
 - [x] `P1-SEARCH-3`: each result source is capped at 32 candidates before UI
-  truncation.
+      truncation.
 
 ### Diagnostics
 
 - [x] `P1-LOG-1`: daily rolling logs are written under the Steward data
-  directory and retain seven days.
+      directory and retain seven days.
 - [x] `P1-LOG-2`: application errors use `tracing` instead of `eprintln!`.
 - [x] `P1-LOG-3`: panic location and payload are recorded before the release
-  process aborts.
+      process aborts.
 
 ### Evidence
 
@@ -96,29 +102,29 @@ Evidence:
 ### Shared crates
 
 - [x] `P2-SEARCH-1`: create `steward-search` for shared haystack generation and
-  matcher support.
+      matcher support.
 - [x] `P2-SEARCH-2`: `plugin-host` no longer depends on `steward-core-engine`.
 - [x] `P2-CONTRACT-1`: create `steward-plugin-contract` for launch, notice,
-  error, session, and protocol-version types.
+      error, session, and protocol-version types.
 
 ### Plugin host
 
 - [x] `P2-HOST-1`: split catalog, route, trust, policy, and launcher concerns
-  while preserving the `PluginHost` facade.
+      while preserving the `PluginHost` facade.
 - [x] `P2-HOST-2`: route updates and launch preparation have focused tests.
 
 ### Application services and search
 
 - [x] `P2-APP-1`: expose narrow launcher query, window-command, settings, and
-  notice ports from the application-service facade.
+      notice ports from the application-service facade.
 - [x] `P2-APP-2`: split built-in, application, and plugin search sources behind
-  a common contribution boundary.
+      a common contribution boundary.
 - [x] `P2-APP-3`: move plugin window/session state behind a dedicated manager.
 
 ### Storage
 
 - [x] `P2-STORAGE-1`: split settings, app usage/cache, clipboard, and schema
-  responsibilities without changing the public `Storage` API or schema.
+      responsibilities without changing the public `Storage` API or schema.
 
 ### Evidence
 
@@ -147,23 +153,23 @@ Evidence:
 ### Process boundary
 
 - [x] `P3-PROCESS-1`: the shell starts one `steward-app
-  --plugin-host-process` child per open plugin and keeps no NSH `AppView`.
+--plugin-host-process` child per open plugin and keeps no NSH `AppView`.
 - [x] `P3-PROCESS-2`: parent/child messages are versioned, session-scoped
-  NDJSON with separate control and lifecycle event directions.
+      NDJSON with separate control and lifecycle event directions.
 - [x] `P3-PROCESS-3`: the child independently reloads the cached route
-  metadata, verifies the signed package against the same trust roots, applies
-  the release capability policy, and only then creates its NSH window.
+      metadata, verifies the signed package against the same trust roots, applies
+      the release capability policy, and only then creates its NSH window.
 - [x] `P3-PROCESS-4`: the parent accepts the package receipt only after the
-  child reports an actual render and the existing 250 ms fatal-error grace
-  period.
+      child reports an actual render and the existing 250 ms fatal-error grace
+      period.
 - [x] `P3-PROCESS-5`: repeated commands, focus changes, theme changes, and
-  close requests cross the process boundary without creating another VM.
+      close requests cross the process boundary without creating another VM.
 - [x] `P3-PROCESS-6`: child exit and protocol failures become structured
-  launcher notices; closing a child is reaped by the shell.
+      launcher notices; closing a child is reaped by the shell.
 - [x] `P3-PROCESS-7`: enforce process memory/CPU/handle limits with a Windows
-  Job Object and define restart/backoff policy.
+      Job Object and define restart/backoff policy.
 - [ ] `P3-PROCESS-8`: blocked; Release measurements are complete, but the
-  signed-package crash/upgrade acceptance run requires a clean Windows VM.
+      signed-package crash/upgrade acceptance run requires a clean Windows VM.
 
 ### Isolation boundary
 
@@ -244,6 +250,17 @@ nsh test packages/plugins/ui-showcase
 - 2026-11-08: phases 1 and 2 intentionally retain the in-process NSH runtime.
 - 2026-11-20: phase 3 starts one `--plugin-host-process` child per open plugin;
   this supersedes the in-process runtime decision for plugin windows.
+- 2026-11-21: PC-0 completes with host API `0.1.0`, named permissions,
+  persisted-grant launch enforcement, Settings allow/revoke controls, and
+  migrated official plugins.
+- 2026-11-21: PC-1 completes with host API `0.2.0`, schema-bounded
+  `plugin.json` preferences, plugin-scoped SQLite values, and launcher-owned
+  toast/confirmation/progress feedback across the plugin-process boundary.
+- 2026-11-21: PC-2 completes with host API `0.3.0`. Native path pickers create
+  exact canonical grants; filesystem handlers recheck those grants on every
+  call; walks are bounded and never traverse reparse points; installed-app
+  discovery and host-owned open/open-with/reveal calls replace domain-specific
+  integration APIs.
 - 2026-11-08: no schema or plugin API migration is part of this work.
 - 2026-11-08: the application keeps one SQLite file during the storage split;
   repository ownership is separated inside the crate.

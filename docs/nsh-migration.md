@@ -3,7 +3,8 @@
 > Status: NSH-0 through NSH-3 complete; NSH-4 implementation complete, blocked
 > on clean-VM and production-artifact acceptance. M4 implementation is complete
 > and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run. M5 plugin
-> ecosystem v1 is complete.
+> ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-2 are
+> complete; PC-3 is the next implementation target.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -36,15 +37,15 @@ application runtime:
 
 ## Trade-offs
 
-| Area | Advantages | Costs and risks |
-|---|---|---|
-| UI capability | Full native TSX UI instead of a fixed view vocabulary | Larger runtime/API surface to learn |
-| Maintenance | Reuses NSH components, bundler, package format, and tests | NSH is young; exact revisions and compatibility checks matter |
-| Memory | Launcher starts no JavaScript VM; only open plugin windows allocate VMs | Each plugin host process still costs a 64 MiB VM allowance plus application assets |
-| Isolation | One process and VM per open plugin, per-VM quotas, Job Object resource limits, and signed packages | Runs as the current Windows user; not yet an OS filesystem/network sandbox |
-| Distribution | Standard signed package with certificate, revocation, and rollback checks | Production key ceremony and secret provisioning are required |
-| Migration | Direct cutover removes two protocols and the old runtime | Existing plugins and plugin storage are not compatible |
-| Performance | Route discovery is metadata-only and does not start a VM | Plugin first-frame performance depends on NSH startup and is still a release gate |
+| Area          | Advantages                                                                                         | Costs and risks                                                                    |
+| ------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| UI capability | Full native TSX UI instead of a fixed view vocabulary                                              | Larger runtime/API surface to learn                                                |
+| Maintenance   | Reuses NSH components, bundler, package format, and tests                                          | NSH is young; exact revisions and compatibility checks matter                      |
+| Memory        | Launcher starts no JavaScript VM; only open plugin windows allocate VMs                            | Each plugin host process still costs a 64 MiB VM allowance plus application assets |
+| Isolation     | One process and VM per open plugin, per-VM quotas, Job Object resource limits, and signed packages | Runs as the current Windows user; not yet an OS filesystem/network sandbox         |
+| Distribution  | Standard signed package with certificate, revocation, and rollback checks                          | Production key ceremony and secret provisioning are required                       |
+| Migration     | Direct cutover removes two protocols and the old runtime                                           | Existing plugins and plugin storage are not compatible                             |
+| Performance   | Route discovery is metadata-only and does not start a VM                                           | Plugin first-frame performance depends on NSH startup and is still a release gate  |
 
 ## Decisions
 
@@ -71,8 +72,10 @@ application runtime:
 8. Windows is the acceptance platform. Other `cfg` branches remain buildable
    but are not part of functional acceptance.
 9. The release capability policy is deny-by-default. It grants clipboard,
-   `${dataDir}` filesystem access, https/mailto URL opening, and `steward.*`
-   host calls. Network, process, webview, and picker capabilities are denied.
+   `${dataDir}` filesystem access, and https/mailto URL opening. Named Steward
+   host calls are intersected with active user grants at launch; `steward.*`
+   remains only for legacy official migration. Network, process, webview, and
+   picker capabilities are denied.
 
 ## Target Architecture
 
@@ -92,7 +95,7 @@ Windows app process
               +-- steward-app --plugin-host-process
               +-- signed plugin.nshpkg
               +-- one QuickJS VM
-              +-- host bridge: clipboard history, close, command, theme
+              +-- host bridge: clipboard, storage, preferences, feedback, close
 ```
 
 ## Public Contracts
@@ -101,7 +104,7 @@ Windows app process
 
 ```text
 plugins/<plugin-id>/
-  plugin.json       Steward routing metadata
+  plugin.json       Steward routing and hosted preference metadata
   plugin.nshpkg     signed NSH application package
 ```
 
@@ -115,6 +118,17 @@ Schema v2 manifest:
   "version": "0.1.4",
   "icon": "<svg ...>",
   "package": "plugin.nshpkg",
+  "preferences": {
+    "schemaVersion": 1,
+    "fields": [
+      {
+        "key": "showHints",
+        "title": "Show hints",
+        "type": "boolean",
+        "default": true
+      }
+    ]
+  },
   "commands": [
     {
       "name": "calendar",
@@ -130,13 +144,13 @@ Package `nsh.json` ID and version must match `plugin.json`.
 
 ### VM limits
 
-| Limit | Value |
-|---|---:|
-| JS heap | 64 MiB |
-| Interpreter stack | 1 MiB |
-| Bundle load | 2 seconds |
-| One JS call | 250 ms |
-| UI nodes | 20,000 |
+| Limit             |     Value |
+| ----------------- | --------: |
+| JS heap           |    64 MiB |
+| Interpreter stack |     1 MiB |
+| Bundle load       | 2 seconds |
+| One JS call       |    250 ms |
+| UI nodes          |    20,000 |
 
 ### Host bridge
 
@@ -149,7 +163,12 @@ Launch parameters:
   "input": "calendar",
   "locale": "en",
   "accent": "#863bff",
-  "dark": true
+  "dark": true,
+  "hostApiVersion": "0.3.0",
+  "features": ["host_info", "runtime_feature_discovery"],
+  "preferences": {
+    "showHints": true
+  }
 }
 ```
 
@@ -168,13 +187,13 @@ Host events:
 
 ## Milestones
 
-| Milestone | Status | Scope |
-|---|---|---|
-| NSH-0 | complete | Decisions, contracts, and migration ledger |
-| NSH-1 | complete | GPUI Fast/NSH dependency and embedding proof |
-| NSH-2 | complete | NSH Rust launcher and search; GPUI Kit settings |
-| NSH-3 | complete | Registry, host, SDK, and official plugin cutover |
-| NSH-4 | blocked | Implementation and local Release measurements complete; clean-VM and production-artifact acceptance unavailable |
+| Milestone | Status   | Scope                                                                                                           |
+| --------- | -------- | --------------------------------------------------------------------------------------------------------------- |
+| NSH-0     | complete | Decisions, contracts, and migration ledger                                                                      |
+| NSH-1     | complete | GPUI Fast/NSH dependency and embedding proof                                                                    |
+| NSH-2     | complete | NSH Rust launcher and search; GPUI Kit settings                                                                 |
+| NSH-3     | complete | Registry, host, SDK, and official plugin cutover                                                                |
+| NSH-4     | blocked  | Implementation and local Release measurements complete; clean-VM and production-artifact acceptance unavailable |
 
 ### NSH-0: Migration record
 
@@ -602,24 +621,24 @@ Files:
 Acceptance:
 
 - [x] `steward-plugin new` scaffolds an NSH TSX plugin with manifest, package,
-  capability, TypeScript, and build metadata.
+      capability, TypeScript, and build metadata.
 - [x] package inspection reports signature validity, trusted-root status,
-  manifest/package identity, build, minimum runtime, package hash, publisher
-  release-key ID, and release-policy review items.
+      manifest/package identity, build, minimum runtime, package hash, publisher
+      release-key ID, and release-policy review items.
 - [x] Settings > Plugins shows installed signature/trust state and exposes
-  install/update/remove/rollback operations through a background worker.
+      install/update/remove/rollback operations through a background worker.
 - [x] installs and updates require the two-file distribution contract and a
-  newer semantic version/build; activation uses staged writes and preserves up
-  to five verified rollback versions.
+      newer semantic version/build; activation uses staged writes and preserves up
+      to five verified rollback versions.
 - [x] rollback re-verifies the retained package and remains fail-closed under
-  NSH's accepted-build anti-downgrade rule.
+      NSH's accepted-build anti-downgrade rule.
 - [x] local marketplace archives are verified before indexing; artifact and
-  package hashes plus publisher key ID are checked again at installation.
+      package hashes plus publisher key ID are checked again at installation.
 - [x] publisher identity is the certified NSH release-key ID, and root-signed
-  revocation lists can be created and applied to the shared persistent trust
-  store.
+      revocation lists can be created and applied to the shared persistent trust
+      store.
 - [x] package policy checks run in Rust tests and against every
-  production-signed archive in the release workflow.
+      production-signed archive in the release workflow.
 
 Implementation is local-first. A hosted public marketplace, publisher
 registration service, and automatic public-marketplace admission policy remain
@@ -643,6 +662,112 @@ Local verification (2026-11-21):
   production-archive run remains part of the release workflow because the
   current checkout has no production-signed plugin archives.
 
+### PC-1: Preferences and User Feedback (2026-11-21, complete)
+
+Files:
+
+- `crates/plugin-registry/src/{lib.rs,manifest.rs}`
+- `crates/storage/src/{lib.rs,preferences.rs,schema.rs}`
+- `crates/plugin-contract/src/{lib.rs,capabilities.rs}`
+- `crates/plugin-host/src/{authorization.rs,launcher.rs,lib.rs}`
+- `crates/plugin-store/src/package.rs`
+- `crates/app/src/{handlers.rs,launcher_model.rs,plugin_management.rs,plugin_window.rs,settings.rs,state.rs}`
+- `crates/app/i18n/*/main.ftl`
+- `packages/extension-api/src/host.ts`
+- `packages/plugins/ui-showcase/{App.tsx,App.test.tsx,nsh.json,plugin.json}`
+- `docs/{architecture.md,extension-api.md,nsh-plugin-api.md,plugin-capability-roadmap.md,plugin-development-zh-CN.md,plugin-host-api-compatibility.md,plugin-manifest-spec.md}`
+- `Changelog.md`
+- `Changelog-zh-CN.md`
+
+Acceptance:
+
+- [x] `plugin.json` v2 carries a bounded preference schema with text, boolean,
+      select, folder, and application fields, defaults, validation, and migrations.
+- [x] Preferences are keyed by plugin ID in SQLite, isolated across plugins, and
+      preserved across package updates.
+- [x] Settings renders and edits declared preferences in the shell process
+      without loading QuickJS.
+- [x] Invalid values fail before persistence or host injection.
+- [x] Folder and application values use absolute-local-path validation; PC-2
+      remains responsible for persistent path grants and open APIs.
+- [x] Toast and confirmation cross the isolated child process protocol; the
+      launcher owns confirmation resolution.
+- [x] Progress calls are bounded and delivered back as `steward.progress`
+      events.
+- [x] UI Showcase declares all five preference kinds and exercises toast,
+      confirmation denial, and progress in headless NSH tests.
+- [x] The public host contract advances to `0.2.0` with stable invalid-input,
+      cancellation, confirmation-denial, and I/O error codes.
+
+Verification:
+
+- `cargo fmt --all --check` passed.
+- `cargo clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo test --workspace`: 173 passed, 2 intentionally ignored.
+- `cargo test -p steward-plugin-registry`: 8 passed.
+- `cargo test -p steward-storage`: 14 passed.
+- `cargo test -p steward-plugin-contract`: 8 passed.
+- `cargo test -p steward-plugin-host --lib`: 13 passed, 1 ignored benchmark.
+- `@steward/extension-api` TypeScript check, ESLint, and Prettier checks passed.
+- `nsh check App.tsx` and release builds passed for all three official plugins.
+- `nsh test .`: Calendar 13, Clipboard History 1, UI Showcase 3; all passed.
+
+### PC-2: Scoped Filesystem and System Resources (2026-11-21, complete)
+
+Files:
+
+- `crates/plugin-contract/src/{lib.rs,capabilities.rs}`
+- `crates/plugin-host/src/authorization.rs`
+- `crates/plugin-store/src/package.rs`
+- `crates/app/src/{main.rs,launch.rs,plugin_filesystem.rs,plugin_management.rs,plugin_system.rs,plugin_window.rs}`
+- `packages/extension-api/{package.json,src/host.ts}`
+- `packages/plugins/local-files/*`
+- `packages/plugins/git-repos/*`
+- `docs/plugin-capability-roadmap.md`
+
+Acceptance:
+
+- [x] Native folder and file pickers create persistent grants for the exact
+      canonical selection. A read-write folder grants both read and write access.
+- [x] Every filesystem read, write, walk, open, reveal, and open-with call
+      reloads active grants and revalidates the canonical path at execution time.
+- [x] UNC paths and roots outside active grants are rejected. Walks never
+      descend through symbolic links, junctions, or other Windows reparse points.
+- [x] Walks are bounded by result count, depth, deadline, and caller-controlled
+      cancellation, and run outside the QuickJS UI thread.
+- [x] Dynamic path grants appear in Settings and can be revoked while the
+      plugin process stays open.
+- [x] Path open and reveal require read access. Open-with accepts only one
+      installed-application ID plus one selected path, never a shell command line.
+- [x] Installed-application discovery reuses Steward's existing Start
+      Menu/AppsFolder catalog.
+- [x] The public host contract advances to `0.3.0`.
+- [x] `@steward/plugin-local-files` and `@steward/plugin-git-repos` consume the
+      same APIs from unrelated workloads and pass headless host-mocked tests.
+
+Remaining PC-2 boundary:
+
+- Filesystem operations run as the current Windows user. Canonicalization and
+  reparse-point checks prevent grant escapes and traversal, but do not turn the
+  plugin host into an OS-level sandbox against a same-user attacker.
+- Network fetch, controlled process execution, destructive recycle-bin
+  operations, and embedded presentation remain PC-3/PC-4 work.
+
+Local verification (2026-11-21):
+
+- `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace` passed. The workspace run reported 188 passed and 2
+  intentionally ignored tests.
+- `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build` passed
+  for all five official plugins.
+- `nsh test` passed Calendar (13), Clipboard History (1), Local Files (1), Git
+  Repositories (1), and UI Showcase (3).
+- Filesystem tests cover active-grant reads, live revocation, traversal and UNC
+  rejection, write grants, a directory symlink escape, bounded walks,
+  cancellation, deadlines, Unicode and extended-length paths, case-insensitive
+  duplicate roots, and shared use by two plugin identities.
+
 ## Verification Commands
 
 Rust:
@@ -662,6 +787,8 @@ pnpm typecheck
 pnpm build
 nsh test packages/plugins/calendar
 nsh test packages/plugins/clipboard-history
+nsh test packages/plugins/local-files
+nsh test packages/plugins/git-repos
 nsh test packages/plugins/ui-showcase
 ```
 
@@ -694,14 +821,14 @@ the mirror when needed.
 
 ## Performance Gates
 
-| Metric | Gate |
-|---|---:|
-| Cached cold start | previous release + 500 ms or less |
-| Summon p95 | 50 ms or less |
-| Idle RSS increase | 32 MiB or less |
-| Official plugin first frame p95 | 500 ms or less |
-| Existing plugin focus p95 | 50 ms or less |
-| Hidden plugin VMs | zero |
+| Metric                          |                              Gate |
+| ------------------------------- | --------------------------------: |
+| Cached cold start               | previous release + 500 ms or less |
+| Summon p95                      |                     50 ms or less |
+| Idle RSS increase               |                    32 MiB or less |
+| Official plugin first frame p95 |                    500 ms or less |
+| Existing plugin focus p95       |                     50 ms or less |
+| Hidden plugin VMs               |                              zero |
 
 The current benchmark file contains functional smoke evidence, not production
 release measurements. NSH-4 remains open until the gates above are measured.

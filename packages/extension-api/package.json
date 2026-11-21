@@ -1,6 +1,6 @@
 {
   "name": "@steward/extension-api",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Typed Steward host calls for NSH plugin applications.",
   "main": "src/host.ts",
   "types": "src/host.ts",

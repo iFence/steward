@@ -25,6 +25,7 @@ use crate::{
     services::{AppServices, WindowCommand},
     updates::UpdateState,
 };
+use steward_plugin_registry::PluginPreferenceKind;
 use steward_ui_components::palette;
 
 const LANGUAGES: [(&str, &str); 7] = [
@@ -168,6 +169,8 @@ impl Render for StewardSettings {
         let plugin_port = services.plugin_management();
         let plugin_snapshot = plugin_port.snapshot();
         let plugin_i18n = self.i18n.clone();
+        let plugin_preference_groups =
+            render_plugin_preferences(plugin_port.clone(), &plugin_snapshot);
         Settings::new(SharedString::from(format!(
             "steward-settings-{}",
             self.language
@@ -324,7 +327,8 @@ impl Render for StewardSettings {
                     move |_options, _window, cx| {
                         render_plugins(port.clone(), snapshot.clone(), i18n.clone(), cx)
                     }
-                }))),
+                })))
+                .groups(plugin_preference_groups),
             SettingPage::new(self.i18n.translate("settings-about"))
                 .resettable(false)
                 .icon(Icon::new(IconName::Info))
@@ -337,6 +341,161 @@ impl Render for StewardSettings {
                 }))),
         ])
     }
+}
+
+fn render_plugin_preferences(
+    port: PluginManagementPort,
+    snapshot: &PluginManagementSnapshot,
+) -> Vec<SettingGroup> {
+    snapshot
+        .catalog
+        .installed
+        .iter()
+        .filter(|plugin| !plugin.manifest.preferences.is_empty())
+        .map(|plugin| {
+            let plugin_id = plugin.manifest.id.clone();
+            let items = plugin
+                .manifest
+                .preferences
+                .fields
+                .iter()
+                .map(|field| {
+                    let description = field
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| field.key.clone());
+                    let field_item = match field.kind {
+                        PluginPreferenceKind::Boolean => {
+                            let read_port = port.clone();
+                            let write_port = port.clone();
+                            let read_plugin = plugin_id.clone();
+                            let write_plugin = plugin_id.clone();
+                            let read_key = field.key.clone();
+                            let write_key = field.key.clone();
+                            SettingItem::new(
+                                field.title.clone(),
+                                SettingField::switch(
+                                    move |_| {
+                                        read_port
+                                            .snapshot()
+                                            .preferences
+                                            .get(&read_plugin)
+                                            .and_then(|values| values.get(&read_key))
+                                            .and_then(serde_json::Value::as_bool)
+                                            .unwrap_or(false)
+                                    },
+                                    move |enabled, _| {
+                                        write_port.set_preference(
+                                            write_plugin.clone(),
+                                            write_key.clone(),
+                                            serde_json::json!(enabled),
+                                        );
+                                    },
+                                )
+                                .default_value(false),
+                            )
+                        }
+                        PluginPreferenceKind::Select => {
+                            let options = field
+                                .options
+                                .iter()
+                                .map(|option| {
+                                    (
+                                        SharedString::from(option.value.clone()),
+                                        SharedString::from(option.label.clone()),
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let read_port = port.clone();
+                            let write_port = port.clone();
+                            let read_plugin = plugin_id.clone();
+                            let write_plugin = plugin_id.clone();
+                            let read_key = field.key.clone();
+                            let write_key = field.key.clone();
+                            let default = field
+                                .default
+                                .as_ref()
+                                .and_then(serde_json::Value::as_str)
+                                .or_else(|| {
+                                    field.options.first().map(|option| option.value.as_str())
+                                })
+                                .unwrap_or_default()
+                                .to_owned();
+                            SettingItem::new(
+                                field.title.clone(),
+                                SettingField::dropdown(
+                                    options,
+                                    move |_| {
+                                        SharedString::from(
+                                            read_port
+                                                .snapshot()
+                                                .preferences
+                                                .get(&read_plugin)
+                                                .and_then(|values| values.get(&read_key))
+                                                .and_then(serde_json::Value::as_str)
+                                                .unwrap_or_default(),
+                                        )
+                                    },
+                                    move |value, _| {
+                                        write_port.set_preference(
+                                            write_plugin.clone(),
+                                            write_key.clone(),
+                                            serde_json::json!(value.to_string()),
+                                        );
+                                    },
+                                )
+                                .default_value(SharedString::from(default)),
+                            )
+                        }
+                        PluginPreferenceKind::Text
+                        | PluginPreferenceKind::Folder
+                        | PluginPreferenceKind::Application => {
+                            let read_port = port.clone();
+                            let write_port = port.clone();
+                            let read_plugin = plugin_id.clone();
+                            let write_plugin = plugin_id.clone();
+                            let read_key = field.key.clone();
+                            let write_key = field.key.clone();
+                            let default = field
+                                .default
+                                .as_ref()
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            SettingItem::new(
+                                field.title.clone(),
+                                SettingField::input(
+                                    move |_| {
+                                        SharedString::from(
+                                            read_port
+                                                .snapshot()
+                                                .preferences
+                                                .get(&read_plugin)
+                                                .and_then(|values| values.get(&read_key))
+                                                .and_then(serde_json::Value::as_str)
+                                                .unwrap_or_default(),
+                                        )
+                                    },
+                                    move |value, _| {
+                                        write_port.set_preference(
+                                            write_plugin.clone(),
+                                            write_key.clone(),
+                                            serde_json::json!(value.to_string()),
+                                        );
+                                    },
+                                )
+                                .default_value(SharedString::from(default)),
+                            )
+                        }
+                    };
+                    field_item.description(description)
+                })
+                .collect::<Vec<_>>();
+            SettingGroup::new()
+                .title(plugin.manifest.name.clone())
+                .items(items)
+        })
+        .collect()
 }
 
 fn render_plugins(
@@ -433,6 +592,11 @@ fn render_plugins(
     }
     for plugin in &snapshot.catalog.installed {
         let plugin_id = plugin.manifest.id.clone();
+        let capabilities = snapshot
+            .capabilities
+            .get(&plugin_id)
+            .cloned()
+            .unwrap_or_default();
         let (status, status_color) = match &plugin.inspection {
             Some(inspection) if inspection.trusted && inspection.policy.passed => (
                 i18n.translate("settings-plugin-trusted"),
@@ -608,6 +772,152 @@ fn render_plugins(
                         )
                     },
                 )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(i18n.translate("settings-plugin-capabilities")),
+                )
+                .when(capabilities.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(i18n.translate("settings-plugin-no-capabilities")),
+                    )
+                })
+                .children(capabilities.into_iter().map(|capability| {
+                    let allowed = capability.allowed();
+                    let grant_ids = capability.grant_ids;
+                    let automatic = capability.automatic;
+                    let legacy_compatible = capability.legacy_compatible;
+                    let release_allowed = capability.release_allowed;
+                    let descriptor = capability.descriptor;
+                    let (capability_status, capability_color) = if !release_allowed {
+                        (
+                            i18n.translate("settings-plugin-capability-blocked"),
+                            cx.theme().danger,
+                        )
+                    } else if automatic {
+                        (
+                            i18n.translate("settings-plugin-capability-automatic"),
+                            cx.theme().muted_foreground,
+                        )
+                    } else if legacy_compatible {
+                        (
+                            i18n.translate("settings-plugin-capability-legacy"),
+                            cx.theme().primary,
+                        )
+                    } else if allowed {
+                        (
+                            i18n.translate("settings-plugin-capability-granted"),
+                            cx.theme().primary,
+                        )
+                    } else {
+                        (
+                            i18n.translate("settings-plugin-capability-denied"),
+                            cx.theme().danger,
+                        )
+                    };
+                    let action = if descriptor.sensitive
+                        && release_allowed
+                        && !legacy_compatible
+                        && !automatic
+                    {
+                        if grant_ids.is_empty() {
+                            let grant_port = port.clone();
+                            let plugin_id = plugin_id.clone();
+                            let permission = descriptor.permission.clone();
+                            let scope = descriptor.scope.clone();
+                            let button_id = format!(
+                                "plugin-grant-{plugin_id}-{}-{}",
+                                descriptor.permission, descriptor.scope
+                            );
+                            Some(
+                                Button::new(button_id)
+                                    .label(i18n.translate("settings-plugin-capability-allow"))
+                                    .primary()
+                                    .compact()
+                                    .disabled(busy)
+                                    .on_click(move |_, _, _| {
+                                        grant_port.grant_capability(
+                                            plugin_id.clone(),
+                                            permission.clone(),
+                                            scope.clone(),
+                                        )
+                                    }),
+                            )
+                        } else {
+                            let revoke_port = port.clone();
+                            let plugin_id = plugin_id.clone();
+                            let permission = descriptor.permission.clone();
+                            let scope = descriptor.scope.clone();
+                            let button_id = format!(
+                                "plugin-revoke-{plugin_id}-{}-{}",
+                                descriptor.permission, descriptor.scope
+                            );
+                            Some(
+                                Button::new(button_id)
+                                    .label(i18n.translate("settings-plugin-capability-revoke"))
+                                    .outline()
+                                    .compact()
+                                    .disabled(busy)
+                                    .on_click(move |_, _, _| {
+                                        revoke_port.revoke_capability(
+                                            plugin_id.clone(),
+                                            permission.clone(),
+                                            scope.clone(),
+                                        )
+                                    }),
+                            )
+                        }
+                    } else {
+                        None
+                    };
+                    v_flex()
+                        .w_full()
+                        .gap_1()
+                        .p_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(11.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(descriptor.permission.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.0))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(descriptor.scope.clone()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(capability_color)
+                                        .child(capability_status),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(descriptor.description),
+                        )
+                        .when_some(action, |this, action| {
+                            this.child(h_flex().justify_end().child(action))
+                        })
+                }))
                 .child(actions),
         );
     }

@@ -344,6 +344,7 @@ impl LauncherServices {
                 launcher_navigate: "Navigate".into(),
                 launcher_open: "Open".into(),
                 launcher_close: "Close".into(),
+                launcher_confirm: "Confirm".into(),
                 launcher_actions: "Actions".into(),
                 launcher_copy: "Copy".into(),
                 launcher_open_application: "Open Application".into(),
@@ -597,7 +598,9 @@ mod tests {
     use std::rc::Rc;
     use std::sync::atomic::AtomicU64;
 
-    use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginNotice};
+    use steward_plugin_contract::{
+        LaunchRequest, PluginErrorCode, PluginNotice, PluginNoticeKind, PluginNoticeLevel,
+    };
 
     use super::*;
 
@@ -626,6 +629,7 @@ mod tests {
             launcher_navigate: "Navigate".into(),
             launcher_open: "Open".into(),
             launcher_close: "Close".into(),
+            launcher_confirm: "Confirm".into(),
             launcher_actions: "Actions".into(),
             launcher_copy: "Copy".into(),
             launcher_open_application: "Open Application".into(),
@@ -671,7 +675,9 @@ mod tests {
             title: "Failed".into(),
             message: "load_failed".into(),
             plugin_id: Some("com.example.test".into()),
-            code: PluginErrorCode::LoadFailed,
+            code: Some(PluginErrorCode::LoadFailed),
+            level: PluginNoticeLevel::Error,
+            kind: PluginNoticeKind::Toast,
         });
         assert_eq!(services.notice_port().notice().unwrap().title, "Failed");
         assert_eq!(services.search_revision(), 1);

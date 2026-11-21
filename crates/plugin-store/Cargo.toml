@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 steward-plugin-registry = { path = "../plugin-registry" }
+steward-plugin-contract = { path = "../plugin-contract" }
 nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-package.workspace = true

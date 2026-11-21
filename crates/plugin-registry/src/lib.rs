@@ -13,13 +13,14 @@ use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OpenFlags};
 
 pub use manifest::{
-    ManifestError, PluginCommand, PluginManifest, Trigger, TriggerType, MANIFEST_FILE,
-    PACKAGE_FILE, SCHEMA_VERSION,
+    ManifestError, PluginCommand, PluginManifest, PluginPreferenceField, PluginPreferenceKind,
+    PluginPreferenceOption, PluginPreferences, PreferenceMigration, Trigger, TriggerType,
+    MANIFEST_FILE, PACKAGE_FILE, SCHEMA_VERSION,
 };
 
 const DB_FILE: &str = "plugins.db";
 const PLUGINS_DIR: &str = "plugins";
-const CACHE_SCHEMA_VERSION: i64 = 2;
+const CACHE_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginMeta {
@@ -85,9 +86,11 @@ impl Registry {
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     version TEXT NOT NULL,
+                    min_host_version TEXT,
                     dir TEXT NOT NULL,
                     package TEXT NOT NULL,
                     icon TEXT,
+                    preferences TEXT NOT NULL,
                     commands TEXT NOT NULL,
                     scanned_at INTEGER NOT NULL
                  );",
@@ -168,7 +171,7 @@ impl Registry {
             }
             seen.push(dir.clone());
             match cached_by_id.get(&manifest.id) {
-                Some(old) if old.manifest.version == manifest.version && old.package == package => {
+                Some(old) if old.manifest == manifest && old.package == package => {
                     report.unchanged += 1;
                 }
                 Some(_) => {
@@ -202,19 +205,25 @@ impl Registry {
     ) -> Result<()> {
         let now = unix_seconds();
         self.conn.execute(
-            "INSERT INTO plugins (id,name,version,dir,package,icon,commands,scanned_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO plugins (
+                id,name,version,min_host_version,dir,package,icon,preferences,commands,scanned_at
+             )
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, version=excluded.version, dir=excluded.dir,
+               min_host_version=excluded.min_host_version,
                package=excluded.package, icon=excluded.icon,
-               commands=excluded.commands, scanned_at=excluded.scanned_at",
+               preferences=excluded.preferences, commands=excluded.commands,
+               scanned_at=excluded.scanned_at",
             (
                 &manifest.id,
                 &manifest.name,
                 &manifest.version,
+                &manifest.min_host_version,
                 &dir.to_string_lossy(),
                 &package.to_string_lossy(),
                 &manifest.icon,
+                &serde_json::to_string(&manifest.preferences).unwrap_or_default(),
                 &serde_json::to_string(&manifest.commands).unwrap_or_default(),
                 now,
             ),
@@ -242,7 +251,9 @@ fn unix_seconds() -> i64 {
 
 fn load_cached_plugins(conn: &Connection) -> Result<Vec<PluginMeta>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, version, dir, package, icon, commands, scanned_at FROM plugins",
+        "SELECT id, name, version, min_host_version, dir, package, icon, preferences,
+                commands, scanned_at
+         FROM plugins",
     )?;
     let rows = stmt.query_map([], |row| {
         let manifest = PluginManifest {
@@ -250,17 +261,19 @@ fn load_cached_plugins(conn: &Connection) -> Result<Vec<PluginMeta>> {
             id: row.get(0)?,
             name: row.get(1)?,
             version: row.get(2)?,
-            icon: row.get(5)?,
+            min_host_version: row.get(3)?,
+            icon: row.get(6)?,
             package: PACKAGE_FILE.to_string(),
-            commands: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+            preferences: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+            commands: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
         };
         let icon = manifest.icon.clone();
         Ok(PluginMeta {
             manifest,
-            dir: PathBuf::from(row.get::<_, String>(3)?),
-            package: PathBuf::from(row.get::<_, String>(4)?),
+            dir: PathBuf::from(row.get::<_, String>(4)?),
+            package: PathBuf::from(row.get::<_, String>(5)?),
             icon,
-            scanned_at: row.get(7)?,
+            scanned_at: row.get(9)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -282,6 +295,7 @@ mod tests {
                   "id": "{id}",
                   "name": "Plugin {id}",
                   "version": "{version}",
+                  "minHostVersion": "0.1.0",
                   "package": "plugin.nshpkg",
                   "commands": [{{
                     "name": "run",
@@ -316,6 +330,10 @@ mod tests {
         assert_eq!(first.inserted, 1);
         let cached = registry.cached_plugins().unwrap();
         assert_eq!(cached[0].manifest.id, "com.test.one");
+        assert_eq!(
+            cached[0].manifest.min_host_version.as_deref(),
+            Some("0.1.0")
+        );
         assert_eq!(cached[0].package, cached[0].dir.join(PACKAGE_FILE));
 
         write_plugin(registry.plugins_root(), "com.test.one", "1.1.0");

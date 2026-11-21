@@ -1,7 +1,7 @@
 use anyhow::{bail, Context as _, Result};
 use rusqlite::Connection;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 pub(crate) fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn
@@ -84,6 +84,22 @@ pub(crate) fn migrate(conn: &Connection) -> Result<()> {
         .context("apply schema migration 2")?;
         tx.pragma_update(None, "user_version", 2)
             .context("record schema migration 2")?;
+    }
+    if current < 3 {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugin_preferences (
+                plugin_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(plugin_id, key)
+            );
+            CREATE INDEX IF NOT EXISTS plugin_preferences_plugin
+                ON plugin_preferences(plugin_id);",
+        )
+        .context("apply schema migration 3")?;
+        tx.pragma_update(None, "user_version", 3)
+            .context("record schema migration 3")?;
     }
     tx.commit().context("commit schema migration")?;
     Ok(())

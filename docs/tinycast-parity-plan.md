@@ -62,7 +62,7 @@ Tinycast 当前已经形成以下能力群：
 - 启动器状态操作提示与可搜索的快捷操作菜单，可在资源管理器中定位应用和文件。
 - 签名 `.nshpkg`、插件路由缓存、命令/前缀/正则触发和每插件一个 NSH 窗口。
 - 极简宿主桥：剪贴板历史、关闭窗口、重复命令和主题变更。
-- 三个官方插件：Calendar、Clipboard History 和 UI Showcase。
+- 五个官方插件：Calendar、Clipboard History、Local Files、Git Repositories 和 UI Showcase。
 - 剪贴板后台轮询，只保存最近 50 条纯文本。
 
 当前明确缺失或不完整：

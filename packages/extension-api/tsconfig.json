@@ -1,4 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "nsh": ["./types/nsh.d.ts"]
+    }
+  },
+  "include": ["src", "types"]
 }

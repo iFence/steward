@@ -12,6 +12,7 @@ use rusqlite::{Connection, OpenFlags};
 mod apps;
 mod capabilities;
 mod clipboard;
+mod preferences;
 mod schema;
 mod settings;
 
@@ -191,6 +192,27 @@ impl Storage {
 
     pub fn capability_audit(&self, plugin_id: &str) -> Result<Vec<CapabilityAuditEntry>> {
         capabilities::audit_for_plugin(&self.conn, plugin_id)
+    }
+
+    /// Read every host-owned preference for one plugin. Preference rows are
+    /// keyed by plugin ID rather than package version so values survive
+    /// updates; the manifest schema determines defaults and migrations.
+    pub fn plugin_preferences(
+        &self,
+        plugin_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, serde_json::Value>> {
+        preferences::list(&self.conn, plugin_id)
+    }
+
+    /// Persist one host-owned preference for one plugin.
+    pub fn set_plugin_preference(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: &serde_json::Value,
+        updated_at: i64,
+    ) -> Result<()> {
+        preferences::set(&self.conn, plugin_id, key, value, updated_at)
     }
 
     /// Record that `path` was launched: bump the count and update last-used.
@@ -382,5 +404,24 @@ mod tests {
         let recent = storage.recent_clipboard(10).unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].text, "second");
+    }
+
+    #[test]
+    fn plugin_preferences_are_isolated_and_overwrite_in_place() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage
+            .set_plugin_preference("com.example.one", "theme", &serde_json::json!("dark"), 10)
+            .unwrap();
+        storage
+            .set_plugin_preference("com.example.two", "theme", &serde_json::json!("light"), 11)
+            .unwrap();
+        storage
+            .set_plugin_preference("com.example.one", "theme", &serde_json::json!("system"), 12)
+            .unwrap();
+
+        let one = storage.plugin_preferences("com.example.one").unwrap();
+        let two = storage.plugin_preferences("com.example.two").unwrap();
+        assert_eq!(one.get("theme"), Some(&serde_json::json!("system")));
+        assert_eq!(two.get("theme"), Some(&serde_json::json!("light")));
     }
 }

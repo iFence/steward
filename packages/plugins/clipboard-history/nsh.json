@@ -1,8 +1,8 @@
 {
   "name": "Clipboard History",
   "id": "it.aspirin.clipboard-history",
-  "version": "0.1.1",
-  "build": 1,
+  "version": "0.1.2",
+  "build": 2,
   "capabilities": {
     "host": [
       "steward.clipboard.history",

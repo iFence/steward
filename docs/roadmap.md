@@ -6,17 +6,18 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 
 ## Current Status
 
-| Milestone | Status |
-|---|---|
-| M0 core foundation | complete |
-| M1 application launcher MVP | complete |
-| NSH migration (NSH-0 to NSH-3) | complete |
-| NSH release hardening (NSH-4) | blocked: clean VM and production artifacts |
-| Plugin process isolation (Phase 3) | blocked: clean VM acceptance |
-| Windows support polish (M4) | blocked: clean-VM and interactive IME/display acceptance |
-| Plugin ecosystem v1 (M5) | complete |
-| AI capability and MCP layers (M6-M8) | planned |
-| External runtime compatibility (M9-M10) | later |
+| Milestone                               | Status                                                   |
+| --------------------------------------- | -------------------------------------------------------- |
+| M0 core foundation                      | complete                                                 |
+| M1 application launcher MVP             | complete                                                 |
+| NSH migration (NSH-0 to NSH-3)          | complete                                                 |
+| NSH release hardening (NSH-4)           | blocked: clean VM and production artifacts               |
+| Plugin process isolation (Phase 3)      | blocked: clean VM acceptance                             |
+| Windows support polish (M4)             | blocked: clean-VM and interactive IME/display acceptance |
+| Plugin ecosystem v1 (M5)                | complete                                                 |
+| Plugin capability layer (PC-0, PC-1)    | complete; PC-2 next                                      |
+| AI capability and MCP layers (M6-M8)    | planned                                                  |
+| External runtime compatibility (M9-M10) | later                                                    |
 
 Legacy M2/M3 records for QuickJS, JSON-RPC, JSON View, Virtual UI Tree, and
 dock workspaces are historical only. They are preserved in
@@ -52,15 +53,15 @@ Required before the NSH release is considered complete:
 - [x] provision the CI release key and certificate;
 - [x] replace the empty development trust-root file;
 - [x] add unified launcher/action, hotkey, settings, and schema-migration
-  foundations;
+      foundations;
 - [x] add capability grant, revocation, and audit storage;
 - [x] add automated trust, signed-package, performance, and MSI lifecycle
-  acceptance tooling;
+      acceptance tooling;
 - [x] measure release cold start, RSS, summon latency, plugin first frame, plugin
-  focus, and hidden VM count;
+      focus, and hidden VM count;
 - [ ] blocked: install the MSI on a clean Windows machine;
 - [ ] blocked: install and launch all official plugins through the production
-  trust root.
+      trust root.
 
 Local Release evidence is recorded in [benchmarks.md](benchmarks.md). The final
 local summon run measured 60 ms p95, above the 50 ms gate, so measurement is
@@ -74,14 +75,14 @@ elevated installer lifecycle, or production-signed plugin artifacts.
 - [x] keep launcher and settings windows free of plugin VMs;
 - [x] verify signed packages independently in each child;
 - [x] route command, focus, theme, and close actions across the process
-  boundary;
+      boundary;
 - [x] surface exit and protocol failures without taking down the launcher;
 - [x] enforce Windows Job Object memory, CPU, process-count, and handle limits;
 - [x] implement per-plugin restart/backoff policy;
 - [x] measure first frame, focus, host count, aggregate RSS, crash containment,
-  memory-limit enforcement, and route scaling on a Release build;
+      memory-limit enforcement, and route scaling on a Release build;
 - [ ] blocked: run signed-package install/upgrade/crash acceptance on a clean
-  Windows VM;
+      Windows VM;
 - [ ] blocked: complete production-root plugin installation acceptance.
 
 The implementation and local Release measurements are complete. Phase 3 is
@@ -95,18 +96,18 @@ VM with the release MSI and at least one mixed-DPI or multi-monitor display
 configuration.
 
 - [x] clean install, upgrade, repair, and uninstall paths are automated by
-  `scripts/test-msi-lifecycle.ps1`;
+      `scripts/test-msi-lifecycle.ps1`;
 - [x] mixed-DPI and multi-monitor summon geometry is implemented and covered by
-  native geometry tests plus `scripts/test-windows-support.ps1`;
+      native geometry tests plus `scripts/test-windows-support.ps1`;
 - [x] focused Unicode keyboard input, navigation events, IME context
-  attachment, and foreground focus are covered by the Windows support suite;
+      attachment, and foreground focus are covered by the Windows support suite;
 - [x] tray/hotkey creation and destruction, single-instance activation, and
-  autostart repair/removal regression coverage is automated;
+      autostart repair/removal regression coverage is automated;
 - [x] `steward-app.exe --write-diagnostics <path>` emits a support report with
-  display DPI, autostart state, trust-root identity, plugin package hashes,
-  database schema, and recent error lines;
+      display DPI, autostart state, trust-root identity, plugin package hashes,
+      database schema, and recent error lines;
 - [ ] blocked: run the support suite and real Chinese IME composition on the
-  acceptance VM;
+      acceptance VM;
 - [ ] blocked: finish the clean-VM MSI install/upgrade/repair/uninstall matrix.
 
 ## M5 - Plugin Ecosystem v1
@@ -164,7 +165,8 @@ adapters or sidecars. They must not add a permanent Node runtime to the shell.
 
 1. Finish NSH-4 and make Windows installation trustworthy.
 2. Finish plugin process isolation, resource containment, and restart policy.
-3. Improve plugin authoring and package management.
-4. Add AI-callable capabilities with explicit consent and diagnostics.
-5. Add MCP and external ecosystem adapters only where they preserve the
+3. Deliver PC-3 network and controlled process execution.
+4. Improve plugin authoring and package management.
+5. Add AI-callable capabilities with explicit consent and diagnostics.
+6. Add MCP and external ecosystem adapters only where they preserve the
    launcher's latency and memory goals.

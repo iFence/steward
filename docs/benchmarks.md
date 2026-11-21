@@ -181,10 +181,10 @@ stopped. This replaces functional smoke output as the Phase 3 measurement
 input, but the production gate still requires execution on the clean acceptance
 VM.
 
-`scripts/bench-plugin-set.ps1` opens all three official plugins in one shell.
-Its summary records the three child PIDs, plugin-host process count, per-plugin
+`scripts/bench-plugin-set.ps1` opens all five official plugins in one shell.
+Its summary records the five child PIDs, plugin-host process count, per-plugin
 first-frame/focus timings, shell RSS, host RSS, and aggregate RSS. Use it to
-fill the zero/one/three-host sections of this file; use
+fill the zero/one/five-host sections of this file; use
 `bench-plugins.ps1` for the per-plugin cold-window p95 gates.
 
 For crash containment and restart policy, run:

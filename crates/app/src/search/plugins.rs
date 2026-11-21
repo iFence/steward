@@ -76,8 +76,10 @@ mod tests {
                 id: "it.aspirin.calendar".into(),
                 name: "Calendar".into(),
                 version: "0.2.3".into(),
+                min_host_version: None,
                 icon: Some(icon.into()),
                 package: PACKAGE_FILE.into(),
+                preferences: Default::default(),
                 commands: vec![PluginCommand {
                     name: "calendar".into(),
                     title: "Calendar".into(),

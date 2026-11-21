@@ -2,6 +2,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use nsh_package::{build as build_package, certify, Contents, SecretKey};
+use steward_plugin_contract::HOST_API_VERSION;
 use steward_plugin_store::{
     create_revocation_list, scaffold_plugin, PluginOperationKind, PluginStore, PluginStoreConfig,
     ScaffoldOptions,
@@ -64,7 +65,7 @@ impl Signer {
             directory,
             version,
             build,
-            serde_json::json!({ "host": ["steward.*"] }),
+            serde_json::json!({ "host": ["steward.storage.get"] }),
         )
     }
 
@@ -75,8 +76,19 @@ impl Signer {
         build: u64,
         capabilities: serde_json::Value,
     ) -> PathBuf {
+        self.zip_with_host_version(directory, version, build, capabilities, Some("0.1.0"))
+    }
+
+    fn zip_with_host_version(
+        &self,
+        directory: &Path,
+        version: &str,
+        build: u64,
+        capabilities: serde_json::Value,
+        min_host_version: Option<&str>,
+    ) -> PathBuf {
         std::fs::create_dir_all(directory).unwrap();
-        let manifest = serde_json::json!({
+        let mut manifest = serde_json::json!({
             "schemaVersion": 2,
             "id": "com.example.test",
             "name": "Test Plugin",
@@ -88,6 +100,9 @@ impl Signer {
                 "trigger": { "type": "command" }
             }]
         });
+        if let Some(min_host_version) = min_host_version {
+            manifest["minHostVersion"] = serde_json::Value::String(min_host_version.into());
+        }
         let path = directory.join(format!("test-{version}.zip"));
         let file = std::fs::File::create(&path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
@@ -153,6 +168,7 @@ fn scaffold_writes_a_buildable_two_file_ready_plugin() {
         serde_json::from_slice(&std::fs::read(report.directory.join("plugin.json")).unwrap())
             .unwrap();
     assert_eq!(manifest.commands[0].name, "scaffold");
+    assert_eq!(manifest.min_host_version.as_deref(), Some(HOST_API_VERSION));
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -186,6 +202,49 @@ fn inspection_reports_signature_publisher_and_policy_review() {
         .policy
         .denied_capabilities
         .contains(&"process".into()));
+    assert!(inspection
+        .declared_capabilities
+        .iter()
+        .any(|capability| capability.permission == "steward.net.fetch"));
+    assert!(inspection
+        .declared_capabilities
+        .iter()
+        .any(|capability| capability.permission == "steward.exec.run"));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn third_party_packages_require_a_host_version_and_named_host_permissions() {
+    let root = temp_root("contract-policy");
+    let signer = Signer::new();
+    let zip = signer.zip_with_capabilities(
+        &root,
+        "1.0.0",
+        1,
+        serde_json::json!({ "host": ["steward.*"] }),
+    );
+    let inspection = store(&root, &signer).inspect(&zip).unwrap();
+    assert!(!inspection.installable());
+    assert!(inspection
+        .policy
+        .errors
+        .iter()
+        .any(|error| error.contains("cannot declare wildcard host permissions")));
+
+    let missing_version = signer.zip_with_host_version(
+        &root,
+        "1.0.0",
+        1,
+        serde_json::json!({ "host": ["steward.storage.get"] }),
+        None,
+    );
+    let inspection = store(&root, &signer).inspect(&missing_version).unwrap();
+    assert!(!inspection.installable());
+    assert!(inspection
+        .policy
+        .errors
+        .iter()
+        .any(|error| error.contains("minHostVersion is required")));
     std::fs::remove_dir_all(root).ok();
 }
 
@@ -203,6 +262,8 @@ fn install_update_and_rollback_restore_verified_history() {
     let updated = store.install(&v2).unwrap();
     assert_eq!(updated.action, PluginOperationKind::Update);
     assert_eq!(updated.previous_version.as_deref(), Some("1.0.0"));
+    assert!(updated.added_capabilities.is_empty());
+    assert!(!updated.consent_required);
 
     let history = store.history("com.example.test").unwrap();
     assert_eq!(history.len(), 1);
@@ -224,6 +285,42 @@ fn install_update_and_rollback_restore_verified_history() {
     assert_eq!(
         store.history("com.example.test").unwrap()[0].version,
         "1.0.0"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn updates_surface_new_sensitive_capabilities_for_renewed_consent() {
+    let root = temp_root("capability-upgrade");
+    let signer = Signer::new();
+    let store = store(&root, &signer);
+    let v1 = signer.zip_with_capabilities(
+        &root,
+        "1.0.0",
+        1,
+        serde_json::json!({ "host": ["steward.storage.get"] }),
+    );
+    let v2 = signer.zip_with_capabilities(
+        &root,
+        "1.1.0",
+        2,
+        serde_json::json!({
+            "host": [
+                "steward.storage.get",
+                "steward.clipboard.write"
+            ]
+        }),
+    );
+    store.install(&v1).unwrap();
+    let update = store.update(&v2).unwrap();
+    assert!(update.consent_required);
+    assert_eq!(
+        update
+            .added_capabilities
+            .iter()
+            .map(|capability| capability.permission.as_str())
+            .collect::<Vec<_>>(),
+        vec!["steward.clipboard.write"]
     );
     std::fs::remove_dir_all(root).ok();
 }

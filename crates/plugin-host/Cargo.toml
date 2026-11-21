@@ -8,6 +8,7 @@ autotests = false
 steward-plugin-registry = { path = "../plugin-registry" }
 steward-plugin-contract = { path = "../plugin-contract" }
 steward-search = { path = "../search" }
+steward-storage = { path = "../storage" }
 nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-package.workspace = true
@@ -17,3 +18,4 @@ anyhow.workspace = true
 regex.workspace = true
 nucleo.workspace = true
 crossbeam-channel.workspace = true
+semver.workspace = true
