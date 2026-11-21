@@ -50,6 +50,11 @@ foreach ($plugin in $Plugins) {
         pluginId = [string]$manifest.id
         command = $command
         title = [string]$manifest.name
+        presentation = if ($manifest.commands[0].presentation) {
+            [string]$manifest.commands[0].presentation
+        } else {
+            "windowed"
+        }
     }
 }
 

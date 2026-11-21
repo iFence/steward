@@ -40,6 +40,7 @@ $environmentNames = @(
     "STEWARD_SMOKE_PLUGIN",
     "STEWARD_SMOKE_COMMAND",
     "STEWARD_SMOKE_TITLE",
+    "STEWARD_SMOKE_PRESENTATION",
     "STEWARD_NSH_TRUST_ROOT",
     "STEWARD_INSTANCE_SUFFIX",
     "STEWARD_SUMMON_HOTKEY"
@@ -61,6 +62,7 @@ $env:STEWARD_SUMMON_HOTKEY = if ($SummonHotkey) {
 Remove-Item Env:STEWARD_SMOKE_PLUGIN -ErrorAction SilentlyContinue
 Remove-Item Env:STEWARD_SMOKE_COMMAND -ErrorAction SilentlyContinue
 Remove-Item Env:STEWARD_SMOKE_TITLE -ErrorAction SilentlyContinue
+Remove-Item Env:STEWARD_SMOKE_PRESENTATION -ErrorAction SilentlyContinue
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $runValueName = "Steward"

@@ -714,6 +714,7 @@ mod tests {
                     kind: TriggerType::Command,
                     value: None,
                 },
+                presentation: None,
             }],
         };
         let inspection = PackageInspection {

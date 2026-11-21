@@ -1,4 +1,4 @@
-//! Steward plugin manifest v2.
+//! Steward plugin manifest v2/v3.
 //!
 //! The manifest contains only routing metadata. Executable code and native
 //! capabilities live in the signed NSH package referenced by `package`.
@@ -8,8 +8,10 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use steward_plugin_contract::PresentationMode;
 
-pub const SCHEMA_VERSION: u16 = 2;
+pub const SCHEMA_VERSION: u16 = 3;
+pub const MIN_SUPPORTED_SCHEMA_VERSION: u16 = 2;
 pub const MANIFEST_FILE: &str = "plugin.json";
 pub const PACKAGE_FILE: &str = "plugin.nshpkg";
 
@@ -37,9 +39,9 @@ pub struct PluginManifest {
 
 impl PluginManifest {
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.schema_version != SCHEMA_VERSION {
+        if !(MIN_SUPPORTED_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&self.schema_version) {
             return Err(ManifestError(format!(
-                "unsupported schemaVersion {}; expected {SCHEMA_VERSION}",
+                "unsupported schemaVersion {}; expected {MIN_SUPPORTED_SCHEMA_VERSION} through {SCHEMA_VERSION}",
                 self.schema_version
             )));
         }
@@ -86,6 +88,12 @@ impl PluginManifest {
         let mut names = std::collections::HashSet::new();
         for command in &self.commands {
             command.validate()?;
+            if self.schema_version == 2 && command.presentation.is_some() {
+                return Err(ManifestError(format!(
+                    "command '{}' requires schemaVersion 3 for presentation",
+                    command.name
+                )));
+            }
             if !names.insert(command.name.as_str()) {
                 return Err(ManifestError(format!(
                     "duplicate command name '{}'",
@@ -483,9 +491,15 @@ pub struct PluginCommand {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
     pub trigger: Trigger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<PresentationMode>,
 }
 
 impl PluginCommand {
+    pub fn presentation(&self) -> PresentationMode {
+        self.presentation.unwrap_or_default()
+    }
+
     fn validate(&self) -> Result<(), ManifestError> {
         if self.name.trim().is_empty() {
             return Err(ManifestError("command name must not be empty".into()));
@@ -615,6 +629,7 @@ mod tests {
                     kind: TriggerType::Command,
                     value: None,
                 },
+                presentation: None,
             }],
         }
     }
@@ -638,6 +653,41 @@ mod tests {
         bad = manifest();
         bad.package = "../plugin.nshpkg".into();
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn schema_v2_remains_readable_and_v3_adds_presentation() {
+        let legacy = r#"{
+          "schemaVersion": 2,
+          "id": "com.example.legacy",
+          "name": "Legacy",
+          "version": "1.0.0",
+          "package": "plugin.nshpkg",
+          "commands": [{
+            "name": "run",
+            "title": "Run",
+            "trigger": { "type": "command" }
+          }]
+        }"#;
+        let legacy: PluginManifest = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            legacy.commands[0].presentation(),
+            PresentationMode::Windowed
+        );
+
+        let mut embedded = manifest();
+        embedded.schema_version = 3;
+        embedded.commands[0].presentation = Some(PresentationMode::Embedded);
+        embedded.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&embedded).unwrap()["commands"][0]["presentation"],
+            serde_json::json!("embedded")
+        );
+
+        let mut invalid_v2 = manifest();
+        invalid_v2.schema_version = 2;
+        invalid_v2.commands[0].presentation = Some(PresentationMode::Embedded);
+        assert!(invalid_v2.validate().is_err());
     }
 
     #[test]

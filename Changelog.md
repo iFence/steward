@@ -57,6 +57,11 @@ Conventions:
   The launcher owns process-tree limits, timeout, cancellation, environment
   scrubbing, and bounded output while the plugin VM remains isolated. Network
   Check and Git Repositories validate the new APIs across unrelated workloads.
+- **Embedded plugin pages**: schema-v3 manifests can open a command as a
+  launcher-positioned embedded page instead of a separate window. Back, Esc,
+  and close restore launcher focus and destroy the isolated plugin process.
+  Plugins can update the page title and observe visibility changes, while the
+  QuickJS VM remains outside the launcher process.
 
 ### Launcher
 

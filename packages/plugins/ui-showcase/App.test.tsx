@@ -7,6 +7,7 @@ const params = {
   input: "",
   locale: "en-US",
   pluginId: "it.aspirin.ui-showcase",
+  presentation: "embedded",
   preferences: {
     density: "compact",
     editor: "",
@@ -33,6 +34,8 @@ test("showcase mocks hosted feedback without a desktop host", async () => {
         "steward.feedback.toast": {},
         "steward.feedback.confirm": () => ({ confirmed: true }),
         "steward.feedback.progress": {},
+        "steward.navigation.back": {},
+        "steward.navigation.setTitle": {},
       },
     },
   });
@@ -54,6 +57,27 @@ test("showcase mocks hosted feedback without a desktop host", async () => {
     total: 4,
   });
   expect(app.texts()).toContain("Downloading");
+});
+
+test("showcase uses presentation navigation and visibility lifecycle", async () => {
+  const app = await open("./App.tsx", {
+    host: {
+      params,
+      handlers: {
+        "steward.navigation.back": {},
+        "steward.navigation.setTitle": {},
+      },
+    },
+  });
+
+  expect(app.texts()).toContain("Presentation: embedded / visible");
+  await app.host.send("steward.visibility", { visible: false });
+  expect(app.texts()).toContain("Presentation: embedded / inactive");
+  await app.press("text:Back");
+  expect(app.host.calls().map((call) => call.name)).toEqual([
+    "steward.navigation.setTitle",
+    "steward.navigation.back",
+  ]);
 });
 
 test("showcase handles a denied confirmation", async () => {

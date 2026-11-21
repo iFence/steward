@@ -225,6 +225,7 @@ mod tests {
                 command: "calendar".into(),
                 title: "Calendar".into(),
                 input: "calendar".into(),
+                presentation: steward_plugin_contract::PresentationMode::Windowed,
             },
         );
         contribution.push(

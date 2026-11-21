@@ -140,3 +140,21 @@ Store each `summary.json`, raw metrics JSONL, MSI log, executable SHA-256, plugi
 archive SHA-256, trust-root SHA-256, VM image identifier, and machine details
 under the release evidence directory. Do not mark Phase 3 complete from a
 development-machine run alone.
+
+## PC-4 Embedded Presentation Acceptance
+
+Run these checks with UI Showcase `1.1.0` or another schema-v3 package whose
+command declares `presentation: "embedded"`.
+
+| ID | Check | Pass criteria |
+|---|---|---|
+| P4-A01 | Page entry | The selected launcher route opens at the launcher's upper-third position, at launcher width, with no native resize controls or in-shell QuickJS VM. Exactly one plugin host process exists. |
+| P4-A02 | Back and Esc | The plugin Back action and Esc both restore and focus the launcher, remove the plugin window, and return plugin host process count to zero. |
+| P4-A03 | Window close | Closing the hosted surface restores the launcher and leaves no hidden plugin VM or host process. |
+| P4-A04 | Visibility lifecycle | Focusing and deactivating the surface deliver `steward.visibility` false/true transitions; leaving the page stops delivery because the process is gone. |
+| P4-A05 | Title | `steward.navigation.setTitle` accepts bounded text and rejects empty or oversized titles with `invalid_input`. |
+| P4-A06 | Keyboard and IME | Unicode text and IME composition enter the plugin without reaching the launcher; Esc returns to the launcher. |
+| P4-A07 | DPI and monitor change | At 100%, 125%, 150%, and mixed DPI, the hosted surface remains inside the work area, preserves logical sizing, and moves its GPUI surface without clipping. |
+| P4-A08 | Activation | Switching away and back does not create another window or process; the launcher stays hidden while the embedded page is active. |
+| P4-A09 | Process isolation | A crash or forced exit in an embedded plugin leaves the launcher, tray, hotkey, and other plugins alive; no embedded request gains in-shell execution. |
+| P4-A10 | Mode validation | Changing the launch mode without changing the signed manifest fails before package verification. |

@@ -87,6 +87,7 @@ fn launch_params(
         "locale": params.locale,
         "accent": params.accent,
         "dark": params.dark,
+        "presentation": params.presentation,
         "hostApiVersion": params.host_api_version,
         "features": params.features,
         "preferences": params.preferences,
@@ -99,6 +100,7 @@ fn launch_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use steward_plugin_contract::PresentationMode;
 
     #[test]
     fn launch_parameters_use_the_public_camel_case_shape() {
@@ -110,6 +112,7 @@ mod tests {
             locale: "en".into(),
             accent: "#863bff".into(),
             dark: true,
+            presentation: PresentationMode::Embedded,
         };
         let params = launch_params(
             &request,
@@ -123,6 +126,10 @@ mod tests {
         assert_eq!(
             params.get("input").and_then(|value| value.as_str()),
             Some("hello")
+        );
+        assert_eq!(
+            params.get("presentation").and_then(|value| value.as_str()),
+            Some("embedded")
         );
         assert!(params
             .get("features")
@@ -141,6 +148,7 @@ mod tests {
             locale: "en".into(),
             accent: "#863bff".into(),
             dark: true,
+            presentation: PresentationMode::Windowed,
         };
         let preferences =
             std::collections::BTreeMap::from([("theme".into(), serde_json::json!("dark"))]);

@@ -7,7 +7,8 @@
 > official plugin migration are complete. PC-1 hosted preferences, toast,
 > confirmation, and progress APIs are complete. PC-2 scoped filesystem and
 > system-open APIs and PC-3 scoped HTTPS plus controlled execution are also
-> complete. Public marketplace admission remains open.
+> complete. PC-4 managed embedded presentation and navigation are complete.
+> Public marketplace admission remains open.
 
 ## Invariants
 
@@ -32,6 +33,7 @@
 | Phase 4: preferences and feedback (PC-1)          | Complete                       |
 | Phase 4: scoped filesystem and system open (PC-2) | Complete                       |
 | Phase 4: network and controlled execution (PC-3)  | Complete                       |
+| Phase 4: embedded presentation and navigation (PC-4) | Complete                    |
 | Phase 4: third-party marketplace admission        | Not started                    |
 
 M5 local ecosystem infrastructure is complete: package scaffolding,
@@ -269,6 +271,10 @@ nsh test packages/plugins/ui-showcase
   kill-on-close Job Object, scrubbed environment, bounded output, cancellation,
   and process-tree cleanup. Network Check and Git Repositories validate the
   new APIs from unrelated workloads.
+- 2026-11-21: PC-4 completes with host API `0.5.0`. Manifest v3 adds
+  per-command windowed/embedded presentation. Embedded pages remain in the
+  isolated plugin host, restore launcher focus on back/close/Esc, expose
+  title/visibility lifecycle events, and destroy the child process when left.
 - 2026-11-08: no schema or plugin API migration is part of this work.
 - 2026-11-08: the application keeps one SQLite file during the storage split;
   repository ownership is separated inside the crate.

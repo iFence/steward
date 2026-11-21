@@ -7,21 +7,35 @@ pub mod capabilities;
 pub use capabilities::{CapabilityDescriptor, LEGACY_HOST_ACCESS};
 
 /// Version of the parent/plugin-host protocol.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Semantic version of the public Steward plugin host API.
-pub const HOST_API_VERSION: &str = "0.4.0";
+pub const HOST_API_VERSION: &str = "0.5.0";
 
 /// Features that are always available independently of package grants.
 pub const BASE_HOST_FEATURES: &[&str] = &[
     "host_info",
     "runtime_feature_discovery",
     "steward.feedback",
+    "steward.navigation",
     "steward.preferences",
 ];
 
 /// Stable identifier for one plugin launch session.
 pub type PluginSessionId = u64;
+
+/// How a plugin command presents its NSH surface.
+///
+/// Both modes run in the isolated plugin-host process. `Embedded` uses a
+/// frameless, launcher-positioned hosted surface so the command feels like a
+/// launcher page without moving plugin code into the shell process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresentationMode {
+    #[default]
+    Windowed,
+    Embedded,
+}
 
 /// User intent that asks Steward to open a plugin command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +48,8 @@ pub struct LaunchRequest {
     pub locale: String,
     pub accent: String,
     pub dark: bool,
+    #[serde(default)]
+    pub presentation: PresentationMode,
 }
 
 /// Launch parameters made available to plugin code through NSH's host bridge.
@@ -46,6 +62,7 @@ pub struct PluginLaunchParams {
     pub locale: String,
     pub accent: String,
     pub dark: bool,
+    pub presentation: PresentationMode,
     pub host_api_version: String,
     pub features: Vec<String>,
     pub preferences: std::collections::BTreeMap<String, serde_json::Value>,
@@ -60,6 +77,7 @@ impl From<&LaunchRequest> for PluginLaunchParams {
             locale: request.locale.clone(),
             accent: request.accent.clone(),
             dark: request.dark,
+            presentation: request.presentation,
             host_api_version: HOST_API_VERSION.into(),
             features: BASE_HOST_FEATURES
                 .iter()
@@ -107,6 +125,10 @@ pub enum PluginProcessAction {
     },
     Focus,
     Close,
+    Back,
+    SetTitle {
+        title: String,
+    },
     ResolveConfirmation {
         id: u64,
         confirmed: bool,
@@ -155,6 +177,26 @@ pub enum PluginProcessEvent {
         session_id: PluginSessionId,
         request_id: u64,
     },
+    Presentation {
+        protocol_version: u16,
+        session_id: PluginSessionId,
+        event: PluginPresentationEvent,
+    },
+}
+
+/// Navigation and visibility notifications emitted by a plugin presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type",
+    deny_unknown_fields
+)]
+pub enum PluginPresentationEvent {
+    Back,
+    Close,
+    TitleChanged { title: String },
+    VisibilityChanged { visible: bool },
 }
 
 /// One exact-executable request sent from an isolated plugin host to the
@@ -333,11 +375,13 @@ mod tests {
             locale: "en".into(),
             accent: "#863bff".into(),
             dark: true,
+            presentation: PresentationMode::Embedded,
         };
         let params = PluginLaunchParams::from(&request);
         assert_eq!(params.plugin_id, request.plugin_id);
         assert_eq!(params.input, request.input);
         assert_eq!(params.host_api_version, HOST_API_VERSION);
+        assert_eq!(params.presentation, PresentationMode::Embedded);
         assert!(params.features.iter().any(|feature| feature == "host_info"));
     }
 
@@ -351,6 +395,7 @@ mod tests {
             "locale": "en",
             "accent": "#000000",
             "dark": true,
+            "presentation": "embedded",
             "unexpected": 1
         });
         assert!(serde_json::from_value::<LaunchRequest>(value).is_err());
@@ -366,6 +411,7 @@ mod tests {
             locale: "en".into(),
             accent: "#863bff".into(),
             dark: true,
+            presentation: PresentationMode::Windowed,
         };
         let start = PluginProcessStart {
             protocol_version: PROTOCOL_VERSION,
@@ -406,6 +452,32 @@ mod tests {
     fn process_actions_use_a_tagged_shape() {
         let value = serde_json::to_value(PluginProcessAction::Focus).unwrap();
         assert_eq!(value, serde_json::json!({ "type": "focus" }));
+    }
+
+    #[test]
+    fn presentation_modes_and_lifecycle_events_roundtrip() {
+        assert_eq!(
+            serde_json::to_value(PresentationMode::Embedded).unwrap(),
+            serde_json::json!("embedded")
+        );
+        let action = PluginProcessAction::SetTitle {
+            title: "Repositories".into(),
+        };
+        assert_eq!(
+            serde_json::from_str::<PluginProcessAction>(&serde_json::to_string(&action).unwrap())
+                .unwrap(),
+            action
+        );
+        let event = PluginProcessEvent::Presentation {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: 7,
+            event: PluginPresentationEvent::VisibilityChanged { visible: false },
+        };
+        assert_eq!(
+            serde_json::from_str::<PluginProcessEvent>(&serde_json::to_string(&event).unwrap())
+                .unwrap(),
+            event
+        );
     }
 
     #[test]
@@ -498,6 +570,7 @@ mod tests {
                 "host_info",
                 "runtime_feature_discovery",
                 "steward.feedback",
+                "steward.navigation",
                 "steward.preferences",
                 "steward.storage.get"
             ]

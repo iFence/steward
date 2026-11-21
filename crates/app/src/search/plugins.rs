@@ -20,6 +20,7 @@ impl SearchSource for PluginSource<'_> {
             title,
             icon,
             input,
+            presentation,
             ..
         } in self.host.query(query).into_iter().take(MAX_ROUTE_RESULTS)
         {
@@ -38,6 +39,7 @@ impl SearchSource for PluginSource<'_> {
                     command,
                     title,
                     input,
+                    presentation,
                 },
             );
         }
@@ -88,6 +90,7 @@ mod tests {
                         kind: TriggerType::Command,
                         value: None,
                     },
+                    presentation: None,
                 }],
             },
             dir: plugin_dir.clone(),

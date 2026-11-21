@@ -58,6 +58,7 @@ $oldMetrics = $env:STEWARD_METRICS_PATH
 $oldPlugin = $env:STEWARD_SMOKE_PLUGIN
 $oldCommand = $env:STEWARD_SMOKE_COMMAND
 $oldTitle = $env:STEWARD_SMOKE_TITLE
+$oldPresentation = $env:STEWARD_SMOKE_PRESENTATION
 $oldRepeat = $env:STEWARD_SMOKE_REPEAT
 $oldRepeatDelay = $env:STEWARD_SMOKE_REPEAT_DELAY_MS
 $oldMemoryLimit = $env:STEWARD_PLUGIN_MEMORY_LIMIT_MIB
@@ -109,6 +110,11 @@ try {
     $env:STEWARD_SMOKE_PLUGIN = [string]$manifest.id
     $env:STEWARD_SMOKE_COMMAND = $command
     $env:STEWARD_SMOKE_TITLE = [string]$manifest.name
+    $env:STEWARD_SMOKE_PRESENTATION = if ($manifest.commands[0].presentation) {
+        [string]$manifest.commands[0].presentation
+    } else {
+        "windowed"
+    }
     $env:STEWARD_SMOKE_REPEAT = "1"
     $env:STEWARD_SMOKE_REPEAT_DELAY_MS = "2000"
     if ($MemoryLimitMiB -gt 0) {
@@ -188,6 +194,7 @@ try {
     $env:STEWARD_SMOKE_PLUGIN = $oldPlugin
     $env:STEWARD_SMOKE_COMMAND = $oldCommand
     $env:STEWARD_SMOKE_TITLE = $oldTitle
+    $env:STEWARD_SMOKE_PRESENTATION = $oldPresentation
     $env:STEWARD_SMOKE_REPEAT = $oldRepeat
     $env:STEWARD_SMOKE_REPEAT_DELAY_MS = $oldRepeatDelay
     $env:STEWARD_PLUGIN_MEMORY_LIMIT_MIB = $oldMemoryLimit

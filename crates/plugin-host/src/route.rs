@@ -1,6 +1,7 @@
 //! Route launcher queries without loading any plugin VM.
 
 use nucleo::{Config, Matcher, Utf32Str, Utf32String};
+use steward_plugin_contract::PresentationMode;
 use steward_plugin_registry::{PluginCommand, TriggerType};
 use steward_search::search_haystacks;
 
@@ -14,6 +15,7 @@ pub struct RouteHit {
     pub title: String,
     pub icon: Option<String>,
     pub input: String,
+    pub presentation: PresentationMode,
     pub fuzzy: bool,
     pub score: u16,
 }
@@ -24,6 +26,7 @@ struct Route {
     command: String,
     title: String,
     icon: Option<String>,
+    presentation: PresentationMode,
     value: Option<String>,
     kind: TriggerType,
     regex: Option<regex::Regex>,
@@ -61,6 +64,7 @@ impl RouteIndex {
                 command: command.name.clone(),
                 title: command.title.clone(),
                 icon: icon.map(str::to_owned),
+                presentation: command.presentation(),
                 value: command.trigger.value.clone(),
                 kind: command.trigger.kind,
                 regex: (command.trigger.kind == TriggerType::Regex)
@@ -109,6 +113,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         icon: route.icon.clone(),
                         input: query.to_owned(),
+                        presentation: route.presentation,
                         fuzzy: !strong_match(route, &needle_text),
                         score,
                     },
@@ -134,6 +139,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         icon: route.icon.clone(),
                         input: rest.trim().to_owned(),
+                        presentation: route.presentation,
                         fuzzy: false,
                         score: u16::MAX,
                     });
@@ -151,6 +157,7 @@ impl RouteIndex {
                         title: route.title.clone(),
                         icon: route.icon.clone(),
                         input: query.to_owned(),
+                        presentation: route.presentation,
                         fuzzy: false,
                         score: u16::MAX,
                     });
@@ -222,6 +229,7 @@ mod tests {
                 kind,
                 value: value.map(str::to_owned),
             },
+            presentation: None,
         }
     }
 
@@ -270,6 +278,17 @@ mod tests {
     }
 
     #[test]
+    fn route_hits_preserve_the_command_presentation_mode() {
+        let mut embedded = command("repos", TriggerType::Command, None);
+        embedded.presentation = Some(PresentationMode::Embedded);
+        let mut index = RouteIndex::new();
+        index.add_plugin("git", None, &[embedded]);
+
+        let hit = index.match_query("repos").into_iter().next().unwrap();
+        assert_eq!(hit.presentation, PresentationMode::Embedded);
+    }
+
+    #[test]
     fn invalid_regexes_are_never_returned() {
         let mut index = RouteIndex::new();
         index.add_plugin(
@@ -295,6 +314,7 @@ mod tests {
                     kind: TriggerType::Command,
                     value: None,
                 },
+                presentation: None,
             }],
         );
 

@@ -51,6 +51,10 @@ pub enum PluginHostError {
     NotFound(String),
     #[error("plugin '{plugin_id}' has no command '{command}'")]
     CommandNotFound { plugin_id: String, command: String },
+    #[error(
+        "plugin '{plugin_id}' command '{command}' requests a presentation mode that does not match its signed manifest"
+    )]
+    PresentationMismatch { plugin_id: String, command: String },
     #[error("plugin package failed verification: {0}")]
     Package(String),
     #[error("read plugin package: {0}")]
@@ -76,6 +80,7 @@ impl PluginHostError {
         match self {
             Self::NotFound(_) => PluginErrorCode::NotFound,
             Self::CommandNotFound { .. } => PluginErrorCode::CommandNotFound,
+            Self::PresentationMismatch { .. } => PluginErrorCode::InvalidInput,
             Self::Package(_) | Self::NoTrustRoot => PluginErrorCode::TrustFailure,
             Self::ReadFailed(_) => PluginErrorCode::ReadFailed,
             Self::IdMismatch { .. } => PluginErrorCode::IdMismatch,
@@ -179,13 +184,17 @@ impl PluginHost {
             .catalog
             .get(&request.plugin_id)
             .ok_or_else(|| PluginHostError::NotFound(request.plugin_id.clone()))?;
-        if !meta
+        let command = meta
             .manifest
             .commands
             .iter()
-            .any(|command| command.name == request.command)
-        {
-            return Err(PluginHostError::CommandNotFound {
+            .find(|command| command.name == request.command)
+            .ok_or_else(|| PluginHostError::CommandNotFound {
+                plugin_id: request.plugin_id.clone(),
+                command: request.command.clone(),
+            })?;
+        if command.presentation() != request.presentation {
+            return Err(PluginHostError::PresentationMismatch {
                 plugin_id: request.plugin_id.clone(),
                 command: request.command.clone(),
             });
@@ -209,7 +218,64 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::time::{Duration, Instant};
-    use steward_plugin_registry::Registry;
+    use steward_plugin_contract::PresentationMode;
+    use steward_plugin_registry::{PluginCommand, PluginManifest, PluginMeta, Registry, Trigger};
+
+    #[test]
+    fn launch_rejects_presentation_mode_that_does_not_match_signed_metadata() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "steward-presentation-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut host = PluginHost::new(HostConfig::new(data_dir.clone())).unwrap();
+        let plugin_dir = data_dir.join("plugins").join("com.example.embedded");
+        host.set_plugins(&[PluginMeta {
+            manifest: PluginManifest {
+                schema_version: 3,
+                id: "com.example.embedded".into(),
+                name: "Embedded".into(),
+                version: "1.0.0".into(),
+                min_host_version: Some("0.5.0".into()),
+                icon: None,
+                package: "plugin.nshpkg".into(),
+                preferences: Default::default(),
+                commands: vec![PluginCommand {
+                    name: "open".into(),
+                    title: "Open".into(),
+                    keywords: Vec::new(),
+                    trigger: Trigger {
+                        kind: steward_plugin_registry::TriggerType::Command,
+                        value: None,
+                    },
+                    presentation: Some(PresentationMode::Embedded),
+                }],
+            },
+            package: plugin_dir.join("plugin.nshpkg"),
+            dir: plugin_dir,
+            icon: None,
+            scanned_at: 0,
+        }]);
+        let request = LaunchRequest {
+            plugin_id: "com.example.embedded".into(),
+            command: "open".into(),
+            title: "Open".into(),
+            input: String::new(),
+            locale: "en".into(),
+            accent: "#863bff".into(),
+            dark: true,
+            presentation: PresentationMode::Windowed,
+        };
+
+        assert!(matches!(
+            host.launch_metadata(&request),
+            Err(PluginHostError::PresentationMismatch { .. })
+        ));
+        std::fs::remove_dir_all(data_dir).ok();
+    }
 
     #[test]
     #[ignore = "release performance benchmark"]

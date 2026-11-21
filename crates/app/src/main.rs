@@ -357,6 +357,8 @@ struct SmokePluginRequest {
     plugin_id: String,
     command: String,
     title: String,
+    #[serde(default)]
+    presentation: steward_plugin_contract::PresentationMode,
 }
 
 fn smoke_plugin_requests() -> Vec<SmokePluginRequest> {
@@ -375,10 +377,18 @@ fn smoke_plugin_requests() -> Vec<SmokePluginRequest> {
     };
     let command = std::env::var("STEWARD_SMOKE_COMMAND").unwrap_or_else(|_| plugin_id.clone());
     let title = std::env::var("STEWARD_SMOKE_TITLE").unwrap_or_else(|_| command.clone());
+    let presentation = match std::env::var("STEWARD_SMOKE_PRESENTATION")
+        .unwrap_or_else(|_| "windowed".into())
+        .as_str()
+    {
+        "embedded" => steward_plugin_contract::PresentationMode::Embedded,
+        _ => steward_plugin_contract::PresentationMode::Windowed,
+    };
     vec![SmokePluginRequest {
         plugin_id,
         command,
         title,
+        presentation,
     }]
 }
 
@@ -388,5 +398,6 @@ fn smoke_plugin_action(request: &SmokePluginRequest) -> crate::services::RowActi
         command: request.command.clone(),
         title: request.title.clone(),
         input: String::new(),
+        presentation: request.presentation,
     }
 }

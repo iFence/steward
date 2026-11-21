@@ -13,6 +13,9 @@ the system tray, summons a focused launcher with a global hotkey, searches
 installed applications, Windows Settings pages, built-in actions, and installed
 plugin routes, and opens each plugin as a full NSH application window. On
 Windows, it also searches files indexed by the system Windows Search service.
+Route metadata may select an embedded presentation, which uses a
+launcher-positioned frameless hosted surface while retaining the same isolated
+plugin-host process.
 
 The product's performance target is:
 
@@ -79,9 +82,10 @@ steward-app.exe
         |     +-- GPUI Kit Root + Settings
         |     +-- language, accent, autostart, hotkeys, update status
         |
-        +-- plugin host process (one per open plugin window)
+        +-- plugin host process (one per open plugin presentation)
               +-- steward-app --plugin-host-process
               +-- nsh-platform-gpui AppView
+              +-- windowed or managed embedded surface
               +-- one QuickJS VM
               +-- signed plugin.nshpkg
               +-- HostChannel bridge
@@ -148,7 +152,7 @@ to plugins.
 | `steward-core-engine`     | application matching, calculator, URL detection                                                     |
 | `steward-search`          | shared pinyin haystacks and fuzzy-search vocabulary                                                 |
 | `steward-plugin-contract` | versioned launch, process protocol, notice, error, and session DTOs                                 |
-| `steward-plugin-registry` | strict `plugin.json` v2 parser and SQLite route cache                                               |
+| `steward-plugin-registry` | strict `plugin.json` v2/v3 parser and SQLite route cache                                            |
 | `steward-plugin-host`     | catalog/route facade, package trust, capability policy, asynchronous launch preparation             |
 | `steward-plugin-store`    | package inspection, local lifecycle/history, marketplace index, publisher and revocation operations |
 | `steward-plugin-cli`      | `steward-plugin` scaffolding, inspection, policy, and lifecycle CLI                                 |
@@ -216,7 +220,7 @@ preference schema:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
@@ -237,13 +241,17 @@ preference schema:
       "name": "calendar",
       "title": "Calendar",
       "keywords": ["calendar"],
-      "trigger": { "type": "command" }
+      "trigger": { "type": "command" },
+      "presentation": "embedded"
     }
   ]
 }
 ```
 
 Supported triggers are command name, longest matching prefix, and regex.
+Protected command metadata selects `windowed` or `embedded` presentation.
+Schema v2 remains readable and defaults to `windowed`; schema v3 is required
+for `embedded`.
 Preference fields support text, boolean, select, folder, and application values.
 Dynamic triggers and inline plugin results no longer exist.
 
@@ -277,8 +285,9 @@ metadata cannot grant itself extra capabilities.
 The current host bridge exposes clipboard history and writes, plugin-private
 string storage, command/theme events, plugin-window close, resolved
 preferences, toast, confirmation, progress, user-selected filesystem roots,
-installed applications, system-open operations, scoped HTTPS, and controlled
-execution. Clipboard, storage, network, process, and resource calls are
+installed applications, system-open operations, scoped HTTPS, controlled
+execution, and presentation navigation. Clipboard, storage, network, process,
+and resource calls are
 capability-gated by the signed package plus the release policy; plugin-private
 storage is isolated under the plugin's data directory.
 
@@ -314,6 +323,13 @@ storing request or response payloads. Network redirects are checked
 individually against the same grant. Execution arguments remain a string array
 through `Command`, and both network and process operations have bounded
 concurrency, timeout, and output or response limits.
+
+PC-4 adds schema-v3 per-command presentation. `embedded` starts the same
+isolated plugin-host child as `windowed`, but renders a launcher-positioned
+frameless, non-resizable surface. Back, Esc, close, and plugin-requested
+navigation flush a lifecycle event, destroy the child process, and restore
+launcher focus. The design intentionally does not move the QuickJS VM into the
+shell or claim a cross-process render bridge.
 
 VM limits:
 

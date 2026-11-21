@@ -1,6 +1,6 @@
-# Steward Extension API v4
+# Steward Extension API v5
 
-> Host API version: `0.4.0`. See
+> Host API version: `0.5.0`. See
 > [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md) for
 > version negotiation, feature discovery, and stable error codes.
 
@@ -20,7 +20,9 @@ import { Input, mount, signal, Text, View } from "nsh";
 import { Switch } from "nsh/base";
 import {
   calendarHolidays,
+  backToLauncher,
   clipboardHistory,
+  closePage,
   closeWindow,
   confirm,
   filesystemGrants,
@@ -32,6 +34,7 @@ import {
   onCommand,
   onProgress,
   onTheme,
+  onVisibility,
   openPath,
   openWith,
   pickFile,
@@ -39,6 +42,7 @@ import {
   preference,
   preferences,
   reportProgress,
+  setPageTitle,
   readText,
   revealPath,
   runProcess,
@@ -65,6 +69,7 @@ interface StewardLaunchParams {
   locale: string;
   accent: string;
   dark: boolean;
+  presentation: "windowed" | "embedded";
   hostApiVersion: string;
   features: string[];
   preferences: Record<string, unknown>;
@@ -92,6 +97,9 @@ for a regex trigger. A plugin window is reused by plugin ID, so handle
 | `storageSet(key, value)`         | Persists plugin-private string storage                                 |
 | `calendarHolidays(year)`         | Reads Steward's cached holiday schedule for a year                     |
 | `closeWindow()`                  | Close the current plugin window                                        |
+| `backToLauncher()`               | Leave the plugin page and restore launcher focus                       |
+| `closePage()`                    | Close the current plugin page                                          |
+| `setPageTitle(title)`            | Set a bounded plugin-page title                                        |
 | `preferences()` / `preference()` | Read host-resolved plugin preferences                                  |
 | `toast(options)`                 | Show a transient launcher notice                                       |
 | `confirm(options)`               | Ask the launcher to confirm an action; resolves to `false` when denied |
@@ -113,6 +121,7 @@ for a regex trigger. A plugin window is reused by plugin ID, so handle
 | `onProgress(cb)`                 | Receive host progress events                                           |
 | `onCommand(cb)`                  | Receive focus/command events while the window stays open               |
 | `onTheme(cb)`                    | Receive accent and dark-mode changes                                   |
+| `onVisibility(cb)`               | Receive page visibility changes                                        |
 | `hostInfo()`                     | Read the host API version and available feature names                  |
 | `supportsFeature(name)`          | Test one available feature before calling it                           |
 | `requireFeature(name)`           | Throw `StewardError("feature_unavailable")` when absent                |
@@ -144,6 +153,37 @@ automatic named capabilities:
 
 Confirmation is host-owned and must be used before destructive or externally
 visible actions.
+
+## Presentation and navigation
+
+The command manifest declares `presentation: "windowed"` or `"embedded"`.
+`launchParams().presentation` exposes the verified value. Embedded commands
+still run in the isolated plugin-host child process and use a
+launcher-positioned frameless hosted surface.
+
+```json
+{
+  "capabilities": {
+    "host": ["steward.navigation.back", "steward.navigation.setTitle"]
+  }
+}
+```
+
+```tsx
+import { backToLauncher, onVisibility, setPageTitle } from "@steward/extension-api";
+
+const visible = signal(true);
+onVisibility((next) => visible.set(next));
+
+async function leavePage() {
+  await setPageTitle("Repositories");
+  await backToLauncher();
+}
+```
+
+Back, Esc, or `closePage()` destroys the plugin host process. The launcher is
+shown and focused again only for embedded presentations. `onVisibility`
+reports activation changes without exposing window handles.
 
 ## Filesystem and system resources
 
@@ -265,4 +305,5 @@ mount(App);
 ```
 
 Old `permissions`, `entry`, `runtime`, detached panel, and dynamic trigger
-manifest fields are rejected by schema v2.
+manifest fields are rejected. Presentation requires schema v3; schema-v2
+manifests remain readable as `windowed`.

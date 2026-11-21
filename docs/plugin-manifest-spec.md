@@ -1,6 +1,6 @@
-# Steward Plugin Manifest v2
+# Steward Plugin Manifest v3
 
-> Status: implemented by the NSH migration.
+> Status: implemented. Schema v2 remains readable for existing packages.
 
 `plugin.json` describes Steward launcher routing and optional host-rendered
 preference metadata. Executable code, capabilities, assets, and UI come from
@@ -8,11 +8,11 @@ the signed `plugin.nshpkg` referenced by the manifest.
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
-  "minHostVersion": "0.4.0",
+  "minHostVersion": "0.5.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,
@@ -33,7 +33,8 @@ the signed `plugin.nshpkg` referenced by the manifest.
     {
       "name": "calendar",
       "title": "Calendar",
-      "trigger": { "type": "command" }
+      "trigger": { "type": "command" },
+      "presentation": "embedded"
     }
   ]
 }
@@ -43,7 +44,7 @@ Fields:
 
 | Field            | Type   | Required    | Meaning                                                                                                                |
 | ---------------- | ------ | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `schemaVersion`  | number | yes         | Must be `2`.                                                                                                           |
+| `schemaVersion`  | number | yes         | `3` for new packages; `2` remains accepted for installed compatibility.                                                |
 | `id`             | string | yes         | Reverse-domain id; must match `nsh.json`.                                                                              |
 | `name`           | string | yes         | Display name.                                                                                                          |
 | `version`        | string | yes         | Must match the package app version.                                                                                    |
@@ -53,8 +54,18 @@ Fields:
 | `preferences`    | object | no          | Host-rendered preference schema. It is read without loading the plugin VM.                                             |
 | `commands`       | array  | yes         | At least one command.                                                                                                  |
 
-Commands contain `name`, `title`, optional `keywords`, and `trigger`.
-Supported triggers are `command`, `prefix`, and `regex`.
+Commands contain `name`, `title`, optional `keywords`, `trigger`, and optional
+`presentation`. Supported triggers are `command`, `prefix`, and `regex`.
+Supported presentations are:
+
+| Value       | Behavior                                                                                                                              |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `windowed`  | Default. Opens a normal resizable plugin window in the isolated plugin-host process.                                                   |
+| `embedded`  | Opens a launcher-positioned frameless hosted surface in the same isolated plugin-host process. Back and Esc return to the launcher. |
+
+The presentation value is part of signed routing metadata. Schema-v2 manifests
+remain `windowed`; `presentation` requires schema v3. A launch request whose
+mode does not match the signed command is rejected before package verification.
 
 ## Preferences
 
@@ -102,6 +113,6 @@ Installation layout:
 Old `permissions`, `fs_roots`, `http`, `isolation`, `detachable`, and JSON View
 fields are rejected.
 
-The current host API is `0.4.0`. Existing official packages may omit
+The current host API is `0.5.0`. Existing official packages may omit
 `minHostVersion` during migration. See
 [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md).

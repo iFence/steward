@@ -54,6 +54,7 @@ pub fn scaffold_plugin(options: ScaffoldOptions) -> Result<ScaffoldReport> {
                 kind: TriggerType::Command,
                 value: None,
             },
+            presentation: None,
         }],
     };
     manifest

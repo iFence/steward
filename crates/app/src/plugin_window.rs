@@ -11,20 +11,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    px, size, App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, PathPromptOptions,
-    Render, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, px, size, App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement,
+    IntoElement, ParentElement, PathPromptOptions, Render, Styled, TitlebarOptions, Window,
+    WindowBounds, WindowKind, WindowOptions,
 };
 use nsh_engine::{HostCall, HostChannel, HostReply};
 use nsh_platform_gpui::{AppOptions, AppView};
 use steward_plugin_contract::capabilities::{
     EXEC_CANCEL, EXEC_RUN, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK,
-    FS_WRITE_TEXT, NET_FETCH, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH,
-    SYSTEM_REVEAL_PATH,
+    FS_WRITE_TEXT, NAVIGATION_BACK, NAVIGATION_CLOSE, NAVIGATION_SET_TITLE, NET_FETCH,
+    SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH,
 };
 use steward_plugin_contract::{
     LaunchRequest, PluginErrorCode, PluginExecutionRequest, PluginExecutionResult, PluginNotice,
-    PluginNoticeKind, PluginNoticeLevel, PluginProcessAction, PluginProcessCommand,
-    PluginProcessEvent, PluginProcessStart, PluginSessionId, PROTOCOL_VERSION,
+    PluginNoticeKind, PluginNoticeLevel, PluginPresentationEvent, PluginProcessAction,
+    PluginProcessCommand, PluginProcessEvent, PluginProcessStart, PluginSessionId,
+    PresentationMode, PROTOCOL_VERSION,
 };
 use steward_plugin_host::{HostConfig, PluginAuthorization, PluginHost, PluginLaunch};
 use steward_plugin_registry::Registry;
@@ -41,6 +43,8 @@ use crate::state::{AppState, PluginRuntimeEvent};
 const PLUGIN_PROCESS_ARG: &str = "--plugin-host-process";
 const PLUGIN_WINDOW_WIDTH: f32 = 900.0;
 const PLUGIN_WINDOW_HEIGHT: f32 = 660.0;
+const PLUGIN_EMBEDDED_WIDTH: f32 = 760.0;
+const PLUGIN_EMBEDDED_HEIGHT: f32 = 660.0;
 const PLUGIN_WINDOW_MIN_WIDTH: f32 = 720.0;
 const PLUGIN_WINDOW_MIN_HEIGHT: f32 = 600.0;
 const FIRST_FRAME_GRACE: Duration = Duration::from_millis(250);
@@ -81,6 +85,10 @@ impl PluginProcess {
 
     pub(crate) fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    pub(crate) fn request(&self) -> &LaunchRequest {
+        &self.request
     }
 
     fn send(&mut self, action: PluginProcessAction) -> std::io::Result<()> {
@@ -386,6 +394,22 @@ impl ChildEventSink {
         });
     }
 
+    fn presentation(&self, session_id: PluginSessionId, event: PluginPresentationEvent) {
+        self.send(PluginProcessEvent::Presentation {
+            protocol_version: PROTOCOL_VERSION,
+            session_id,
+            event,
+        });
+    }
+
+    fn presentation_and_flush(&self, session_id: PluginSessionId, event: PluginPresentationEvent) {
+        self.send_and_flush(PluginProcessEvent::Presentation {
+            protocol_version: PROTOCOL_VERSION,
+            session_id,
+            event,
+        });
+    }
+
     fn failed_and_flush(
         &self,
         session_id: PluginSessionId,
@@ -427,6 +451,8 @@ struct PluginFrameView {
     app: Entity<AppView>,
     session_id: PluginSessionId,
     events: ChildEventSink,
+    embedded: bool,
+    escape_requested: Arc<AtomicBool>,
     fatal_error: Arc<Mutex<Option<String>>>,
     first_frame_reported: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
@@ -453,7 +479,16 @@ impl Render for PluginFrameView {
             })
             .detach();
         }
-        self.app.clone()
+        let escape_requested = self.escape_requested.clone();
+        let embedded = self.embedded;
+        div()
+            .size_full()
+            .child(self.app.clone())
+            .on_key_down(move |event, _window, _cx| {
+                if embedded && event.keystroke.key.eq_ignore_ascii_case("escape") {
+                    escape_requested.store(true, Ordering::Release);
+                }
+            })
     }
 }
 
@@ -1234,6 +1269,32 @@ fn run_child_window(
             call.resolve(serde_json::json!({ "cancelled": exists }));
         }
     });
+    host.handle(NAVIGATION_BACK, {
+        let control = control_tx.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record(NAVIGATION_BACK);
+            let _ = control.try_send(PluginProcessCommand {
+                protocol_version: PROTOCOL_VERSION,
+                session_id,
+                action: PluginProcessAction::Back,
+            });
+            call.resolve(serde_json::json!({}));
+        }
+    });
+    host.handle(NAVIGATION_CLOSE, {
+        let control = control_tx.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record(NAVIGATION_CLOSE);
+            let _ = control.try_send(PluginProcessCommand {
+                protocol_version: PROTOCOL_VERSION,
+                session_id,
+                action: PluginProcessAction::Close,
+            });
+            call.resolve(serde_json::json!({}));
+        }
+    });
     host.handle("steward.window.close", {
         let control = control_tx.clone();
         let audit = audit.clone();
@@ -1242,7 +1303,32 @@ fn run_child_window(
             let _ = control.try_send(PluginProcessCommand {
                 protocol_version: PROTOCOL_VERSION,
                 session_id,
-                action: PluginProcessAction::Close,
+                action: PluginProcessAction::Back,
+            });
+            call.resolve(serde_json::json!({}));
+        }
+    });
+    host.handle(NAVIGATION_SET_TITLE, {
+        let control = control_tx.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record(NAVIGATION_SET_TITLE);
+            let title = call
+                .data()
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty() && title.len() <= 128);
+            let Some(title) = title else {
+                call.reject("setTitle requires a non-empty title of at most 128 bytes");
+                return;
+            };
+            let _ = control.try_send(PluginProcessCommand {
+                protocol_version: PROTOCOL_VERSION,
+                session_id,
+                action: PluginProcessAction::SetTitle {
+                    title: title.to_owned(),
+                },
             });
             call.resolve(serde_json::json!({}));
         }
@@ -1260,14 +1346,23 @@ fn run_child_window(
                 let title = initial.title.clone();
                 let app_id = launch.app_id.clone();
                 let package = launch.package;
-                let bounds = Bounds::centered(
-                    None,
-                    size(px(PLUGIN_WINDOW_WIDTH), px(PLUGIN_WINDOW_HEIGHT)),
-                    cx,
-                );
+                let presentation = initial.presentation;
+                let embedded = presentation == PresentationMode::Embedded;
+                let width = if embedded {
+                    PLUGIN_EMBEDDED_WIDTH
+                } else {
+                    PLUGIN_WINDOW_WIDTH
+                };
+                let height = if embedded {
+                    PLUGIN_EMBEDDED_HEIGHT
+                } else {
+                    PLUGIN_WINDOW_HEIGHT
+                };
+                let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
                 let fatal_error = Arc::new(Mutex::new(None::<String>));
                 let healthy = Arc::new(AtomicBool::new(false));
                 let first_frame_reported = Arc::new(AtomicBool::new(false));
+                let escape_requested = Arc::new(AtomicBool::new(false));
                 let request = initial.clone();
                 let handle = cx
                     .open_window(
@@ -1275,15 +1370,22 @@ fn run_child_window(
                             window_bounds: Some(WindowBounds::Windowed(bounds)),
                             titlebar: Some(TitlebarOptions {
                                 title: Some(title.clone().into()),
+                                appears_transparent: embedded,
                                 ..Default::default()
                             }),
-                            is_resizable: true,
-                            window_min_size: Some(size(
+                            is_resizable: !embedded,
+                            is_minimizable: !embedded,
+                            window_min_size: (!embedded).then_some(size(
                                 px(PLUGIN_WINDOW_MIN_WIDTH),
                                 px(PLUGIN_WINDOW_MIN_HEIGHT),
                             )),
-                            show: true,
-                            focus: true,
+                            kind: if embedded {
+                                WindowKind::PopUp
+                            } else {
+                                WindowKind::Normal
+                            },
+                            show: !embedded,
+                            focus: !embedded,
                             ..Default::default()
                         },
                         {
@@ -1292,6 +1394,7 @@ fn run_child_window(
                             let fatal_error = fatal_error.clone();
                             let healthy = healthy.clone();
                             let first_frame_reported = first_frame_reported.clone();
+                            let escape_requested = escape_requested.clone();
                             move |window, cx| {
                                 let app = cx.new(|cx| {
                                     let options = AppOptions {
@@ -1338,12 +1441,32 @@ fn run_child_window(
                                     });
                                     view.run_package(&package);
                                     view.focus_handle(cx).focus(window, cx);
+                                    let _ = host.send(
+                                        "steward.visibility",
+                                        serde_json::json!({ "visible": true }),
+                                    );
+                                    let visibility_host = host.clone();
+                                    let visibility_events = events.clone();
+                                    cx.observe_window_activation(window, move |_, window, _| {
+                                        let visible = window.is_window_active();
+                                        let _ = visibility_host.send(
+                                            "steward.visibility",
+                                            serde_json::json!({ "visible": visible }),
+                                        );
+                                        visibility_events.presentation(
+                                            session_id,
+                                            PluginPresentationEvent::VisibilityChanged { visible },
+                                        );
+                                    })
+                                    .detach();
                                     view
                                 });
                                 cx.new(|_| PluginFrameView {
                                     app,
                                     session_id,
                                     events: events.clone(),
+                                    embedded,
+                                    escape_requested: escape_requested.clone(),
                                     fatal_error: fatal_error.clone(),
                                     first_frame_reported: first_frame_reported.clone(),
                                     healthy: healthy.clone(),
@@ -1352,6 +1475,21 @@ fn run_child_window(
                         },
                     )
                     .expect("open plugin window");
+
+                if embedded {
+                    let shown = handle.update(cx, |_, window, _| {
+                        crate::platform::show(window, width, height)
+                    });
+                    if shown.is_ok() {
+                        cx.activate(true);
+                    }
+                    let close_events = events.clone();
+                    cx.on_window_closed(move |_, _| {
+                        close_events
+                            .presentation_and_flush(session_id, PluginPresentationEvent::Close);
+                    })
+                    .detach();
+                }
 
                 let timeout_events = events.clone();
                 let timeout_first_frame = first_frame_reported.clone();
@@ -1376,7 +1514,17 @@ fn run_child_window(
                 let control_host = host.clone();
                 let control_confirmations = ui_pending_confirmations.clone();
                 let control_executions = ui_pending_executions.clone();
+                let control_events = events.clone();
                 cx.spawn(async move |cx| loop {
+                    if embedded && escape_requested.swap(false, Ordering::AcqRel) {
+                        control_events
+                            .presentation_and_flush(session_id, PluginPresentationEvent::Back);
+                        let _ = handle.update(cx, |_, window, _| {
+                            window.remove_window();
+                        });
+                        cx.update(|cx| cx.quit());
+                        return;
+                    }
                     while let Ok(command) = control_rx.try_recv() {
                         match command.action {
                             PluginProcessAction::Command { command, input } => {
@@ -1396,20 +1544,40 @@ fn run_child_window(
                             }
                             PluginProcessAction::Focus => {
                                 let _ = handle.update(cx, |_, window, _| {
-                                    crate::platform::show(
-                                        window,
-                                        PLUGIN_WINDOW_WIDTH,
-                                        PLUGIN_WINDOW_HEIGHT,
-                                    );
+                                    crate::platform::show(window, width, height);
                                 });
                                 cx.update(|cx| cx.activate(true));
                             }
-                            PluginProcessAction::Close => {
+                            PluginProcessAction::Back => {
+                                control_events.presentation_and_flush(
+                                    session_id,
+                                    PluginPresentationEvent::Back,
+                                );
                                 let _ = handle.update(cx, |_, window, _| {
                                     window.remove_window();
                                 });
                                 cx.update(|cx| cx.quit());
                                 return;
+                            }
+                            PluginProcessAction::Close => {
+                                control_events.presentation_and_flush(
+                                    session_id,
+                                    PluginPresentationEvent::Close,
+                                );
+                                let _ = handle.update(cx, |_, window, _| {
+                                    window.remove_window();
+                                });
+                                cx.update(|cx| cx.quit());
+                                return;
+                            }
+                            PluginProcessAction::SetTitle { title } => {
+                                let _ = handle.update(cx, |_, window, _| {
+                                    window.set_window_title(&title);
+                                });
+                                control_events.presentation(
+                                    session_id,
+                                    PluginPresentationEvent::TitleChanged { title },
+                                );
                             }
                             PluginProcessAction::ResolveConfirmation { id, confirmed } => {
                                 if let Ok(mut pending) = control_confirmations.lock() {
@@ -1566,6 +1734,9 @@ pub(crate) fn focus_and_send(
     let Some(process) = state.plugin_windows.get_mut(&request.plugin_id) else {
         return false;
     };
+    if process.request().presentation != request.presentation {
+        return false;
+    }
     process
         .send(PluginProcessAction::Command {
             command: request.command.clone(),
@@ -1990,6 +2161,29 @@ fn spawn_event_reader(output: std::process::ChildStdout, context: ProcessEventCo
                         }
                         broker.cancel(request_id);
                     }
+                    PluginProcessEvent::Presentation {
+                        protocol_version,
+                        session_id: event_session,
+                        event,
+                    } => {
+                        if protocol_version != PROTOCOL_VERSION || event_session != session_id {
+                            report_protocol_failure(
+                                &events,
+                                &plugin_id,
+                                &request,
+                                session_id,
+                                &failure_reported,
+                                PluginErrorCode::RuntimeError,
+                                "plugin host sent a presentation event for another session".into(),
+                            );
+                            return;
+                        }
+                        let _ = events.send(PluginRuntimeEvent::Presentation {
+                            plugin_id: plugin_id.clone(),
+                            session_id,
+                            event,
+                        });
+                    }
                 }
             }
             broker.cancel_all();
@@ -2022,21 +2216,32 @@ fn report_protocol_failure(
 
 pub(crate) fn poll_processes(state: &Rc<RefCell<AppState>>) {
     let mut exited = Vec::new();
+    let mut stopped = Vec::new();
     state
         .borrow_mut()
         .plugin_windows
         .retain(|_, process| match process.poll_exit() {
             PluginProcessExit::Running => true,
-            PluginProcessExit::Clean => false,
+            PluginProcessExit::Clean => {
+                stopped.push((process.request().clone(), process.session_id));
+                false
+            }
             PluginProcessExit::Failed { code, error } => {
                 exited.push((process.request.clone(), process.session_id, code, error));
                 false
             }
         });
-    if exited.is_empty() {
+    if exited.is_empty() && stopped.is_empty() {
         return;
     }
     let event_sender = state.borrow().plugin_events.clone();
+    for (request, session_id) in stopped {
+        let _ = event_sender.send(PluginRuntimeEvent::Stopped {
+            plugin_id: request.plugin_id.clone(),
+            session_id,
+            request,
+        });
+    }
     for (request, session_id, code, error) in exited {
         let _ = event_sender.send(PluginRuntimeEvent::Exited {
             plugin_id: request.plugin_id.clone(),

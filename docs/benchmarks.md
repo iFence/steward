@@ -11,7 +11,7 @@ Environment: Windows development machine, debug build. Recorded 2026-10-27.
 | Settings surface | NSH Rust settings root opened without a process crash |
 | Calendar | Signed NSH package opened a full plugin window |
 | Clipboard History | Signed NSH package opened a full plugin window |
-| UI Showcase | Signed NSH package opened a full plugin window |
+| UI Showcase | Signed NSH package opened an embedded hosted surface |
 | Headless plugin tests | 3 plugins, 3 tests passed |
 | Package verification | All three `.nshpkg` files verified with the development root |
 | Package layout | Each zip contained only `plugin.json` and `plugin.nshpkg` |

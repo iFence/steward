@@ -182,11 +182,11 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "com.example.my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "minHostVersion": "0.4.0",
+  "minHostVersion": "0.5.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,
@@ -219,7 +219,8 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
       "name": "my-plugin",
       "title": "My Plugin",
       "keywords": ["example"],
-      "trigger": { "type": "command" }
+      "trigger": { "type": "command" },
+      "presentation": "embedded"
     }
   ]
 }
@@ -231,7 +232,8 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
 - `prefix`：关键字前缀匹配。
 - `regex`：正则表达式匹配。
 
-完整字段见 [Plugin Manifest v2](plugin-manifest-spec.md)。
+完整字段见 [Plugin Manifest v3](plugin-manifest-spec.md)。schema v2 仍可读取，
+但 `presentation` 需要 schema v3。
 
 偏好支持 `text`、`boolean`、`select`、`folder` 和 `application`。Steward
 会在 Settings 中直接渲染这些字段，无需打开插件窗口。值按插件 ID 持久化，
@@ -684,7 +686,7 @@ Get-ChildItem -Force -Recurse $plugin
 确认：
 
 - 插件位于 `plugins` 的直接子目录中。
-- `plugin.json` 存在且是 schema v2。
+- `plugin.json` 存在且是 schema v2 或 v3。
 - `package` 字段等于 `plugin.nshpkg`。
 - `commands` 至少包含一个命令。
 - 插件的 `manifest.id` 和包内 ID 一致。

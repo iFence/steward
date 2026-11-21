@@ -1,9 +1,9 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "it.aspirin.ui-showcase",
   "name": "UI Showcase",
-  "version": "1.0.2",
-  "minHostVersion": "0.2.0",
+  "version": "1.1.0",
+  "minHostVersion": "0.5.0",
   "icon": "<svg viewBox=\"0 0 1024 1024\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1024\" height=\"1024\" rx=\"224\" fill=\"#7C4DFF\"></rect><rect x=\"176\" y=\"176\" width=\"304\" height=\"264\" rx=\"48\" fill=\"#FFFFFF\"></rect><rect x=\"544\" y=\"176\" width=\"304\" height=\"264\" rx=\"48\" fill=\"#D8CCFF\"></rect><rect x=\"176\" y=\"504\" width=\"304\" height=\"344\" rx=\"48\" fill=\"#D8CCFF\"></rect><rect x=\"544\" y=\"504\" width=\"304\" height=\"344\" rx=\"48\" fill=\"#FFFFFF\"></rect><circle cx=\"648\" cy=\"676\" r=\"72\" fill=\"#7C4DFF\"></circle></svg>",
   "package": "plugin.nshpkg",
   "preferences": {
@@ -54,7 +54,8 @@
       "name": "uishowcase",
       "title": "UI Showcase",
       "keywords": ["ui", "showcase"],
-      "trigger": { "type": "command" }
+      "trigger": { "type": "command" },
+      "presentation": "embedded"
     }
   ]
 }

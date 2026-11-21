@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager};
 use gpui::AnyWindowHandle;
 use nsh_package::PackageReceipt;
-use steward_plugin_contract::{LaunchRequest, PluginErrorCode, PluginNotice, PluginSessionId};
+use steward_plugin_contract::{
+    LaunchRequest, PluginErrorCode, PluginNotice, PluginPresentationEvent, PluginSessionId,
+};
 
 use crate::i18n::Localization;
 use crate::plugin_window::PluginProcess;
@@ -21,6 +23,10 @@ pub(crate) struct PluginWindowManager {
 }
 
 impl PluginWindowManager {
+    pub(crate) fn get(&self, plugin_id: &str) -> Option<&PluginProcess> {
+        self.windows.get(plugin_id)
+    }
+
     pub(crate) fn get_mut(&mut self, plugin_id: &str) -> Option<&mut PluginProcess> {
         self.windows.get_mut(plugin_id)
     }
@@ -130,6 +136,16 @@ pub(crate) enum PluginRuntimeEvent {
         plugin_id: String,
         session_id: PluginSessionId,
         notice: PluginNotice,
+    },
+    Presentation {
+        plugin_id: String,
+        session_id: PluginSessionId,
+        event: PluginPresentationEvent,
+    },
+    Stopped {
+        plugin_id: String,
+        session_id: PluginSessionId,
+        request: LaunchRequest,
     },
     Failed {
         plugin_id: String,

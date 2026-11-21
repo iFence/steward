@@ -1,8 +1,9 @@
 # UI Showcase
 
 Official NSH TSX plugin demonstrating native components, signals, input,
-buttons, and the NSH `Switch` control. It is a full plugin window, not a
-serialized UI tree rendered by the launcher.
+buttons, hosted presentation navigation, and the NSH `Switch` control. It is
+opened as an embedded presentation, but still runs in Steward's isolated
+plugin-host process rather than inside the launcher process.
 
 Development:
 

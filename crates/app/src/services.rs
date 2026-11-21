@@ -613,6 +613,7 @@ mod tests {
             locale: "en".into(),
             accent: "#863bff".into(),
             dark: true,
+            presentation: steward_plugin_contract::PresentationMode::Windowed,
         }
     }
 

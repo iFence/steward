@@ -1,7 +1,7 @@
 # Steward Plugin Capability Roadmap
 
-> Status: PC-0 through PC-3 are implemented. PC-4 and PC-5 are next. This document defines a
-> general third-party plugin capability roadmap. `git-repos` is one reference
+> Status: PC-0 through PC-4 are implemented. PC-5 is next. This document defines
+> a general third-party plugin capability roadmap. `git-repos` is one reference
 > workload used to validate the platform, not the boundary of the API design.
 >
 > This work belongs to Phase 4 platform admission and follows the completed M5
@@ -66,10 +66,10 @@ and tools that operate on user-selected projects.
 | Process isolation            | One plugin host process per open plugin, disposable child process, Job Object limits, and crash containment are implemented | A plugin crash does not take down the shell                                                                                                |
 | Capability storage           | Persistent grants, revocation, audit records, and Settings allow/revoke controls are implemented                            | Grants are resolved for every plugin launch and scoped by publisher, version, capability, and resource                                     |
 | Release policy               | Deny-by-default ceiling intersected with active user grants; legacy wildcard only for unupdated official installs           | Scoped HTTPS and exact non-shell executables are available; unrestricted roots, raw sockets, and unrestricted process access remain denied |
-| Host bridge                  | Clipboard, storage, calendar, preferences, feedback, scoped filesystem, system-open, scoped HTTPS, and controlled execution | Embedded navigation is not yet available                                                                                                   |
+| Host bridge                  | Clipboard, storage, calendar, preferences, feedback, scoped filesystem, system-open, scoped HTTPS, controlled execution, and presentation navigation | Page lifecycle and visibility events are available without moving plugin code into the shell                                             |
 | Host permission granularity  | Official plugins now use named host calls; unupdated installs retain legacy `steward.*`                                     | Third-party packages cannot declare wildcard host permissions                                                                              |
-| Plugin manifest              | Strict schema v2 with routing commands, optional `minHostVersion`, and hosted preference schema                             | No presentation mode                                                                                                                       |
-| Plugin window                | The plugin host child opens its own GPUI window                                                                             | The launcher and a plugin cannot currently share one OS window                                                                             |
+| Plugin manifest              | Strict schema v3 with routing commands, optional host-rendering preferences, and per-command presentation modes               | Schema v2 remains readable; only v3 commands can select `embedded`                                                                         |
+| Plugin window                | The plugin host child opens its own GPUI window; embedded commands use a launcher-positioned frameless hosted surface       | Plugin code remains in its isolated child process; this is not an in-shell NSH surface                                                     |
 | Process containment          | Each plugin process has an active-process limit of one; execution requests cross to a launcher-owned broker                 | The broker owns executable validation, Job Object lifetime, output, timeout, and cancellation                                              |
 | Public marketplace admission | Not started                                                                                                                 | Public third-party publication remains blocked                                                                                             |
 
@@ -219,7 +219,7 @@ domain.
 | Clone repository                  | Controlled `git` execution and network-capable process policy | Yes                              |
 | Move repository to Recycle Bin    | Host-owned destructive filesystem operation                   | No                               |
 | Enter plugin from launcher        | Existing command routing                                      | Yes, as a separate plugin window |
-| Enter plugin on the launcher page | Embedded presentation and cross-process surface design        | No                               |
+| Enter plugin on the launcher page | Managed embedded presentation in the isolated plugin host     | Yes, as a launcher-positioned hosted surface |
 
 ## 5. Milestones
 
@@ -430,8 +430,7 @@ Implementation evidence (2026-11-21):
 
 ### PC-4: Embedded Presentation and Navigation
 
-Status: planned, technical design required. May run in parallel with PC-1
-through PC-3.
+Status: complete. May run in parallel with PC-1 through PC-3.
 
 Deliverables:
 
@@ -443,17 +442,16 @@ Deliverables:
 - Destroy the plugin host after leaving the embedded page.
 - Preserve the zero-hidden-plugin-process invariant.
 
-A true single-window implementation cannot directly embed the current plugin
-host child's `AppView`: the child owns a separate GPUI application and window.
-The design milestone must choose one of:
+Decision:
 
-1. a trusted first-party embedded mode that runs the plugin VM in the shell;
-2. a cross-process render/surface bridge;
-3. a closely managed frameless hosted window that visually matches the launcher.
-
-Option 1 is simplest but weakens process isolation. Option 2 preserves isolation
-but has the highest engineering cost. Option 3 is an interim UX approximation,
-not a true single-window implementation.
+- PC-4 uses option 3, a closely managed frameless hosted window. The child
+  process positions the surface in the launcher's upper-third location with the
+  launcher width, hides native resize controls, and gives keyboard focus to the
+  plugin. The launcher hides through its normal activation handling.
+- This is deliberately not a cross-process render bridge or an in-shell VM.
+  It preserves the Phase 3 isolation boundary and avoids presenting a hosted
+  surface as if it had a stronger same-window security boundary. A future
+  true single-window renderer remains a separate, reviewed architecture change.
 
 Acceptance:
 
@@ -464,6 +462,30 @@ Acceptance:
   documented acceptance matrix.
 - Third-party plugins cannot bypass process isolation by requesting embedded
   mode.
+
+Implementation evidence (2026-11-21):
+
+- `plugin.json` schema v3 remains backward compatible with v2. Commands may
+  declare `"presentation": "windowed"` or `"presentation": "embedded"`;
+  omission means `windowed`. The registry, route index, launch request, and
+  verified package metadata carry the same mode, and a launch whose requested
+  mode does not match the signed manifest fails before package verification.
+- Host API `0.5.0` and protocol version `2` add
+  `steward.navigation.back`, `.close`, `.setTitle`, a
+  `steward.visibility` event, and `presentation` in launch parameters.
+  Navigation calls are automatic named permissions and produce capability
+  audit records.
+- An embedded command opens in its existing plugin-host child process with a
+  frameless, non-resizable, launcher-positioned surface. Back, Esc, native
+  close (including Alt-F4), and plugin-requested close all flush a presentation event,
+  remove the child window, drop the process, and restore and focus the launcher.
+- Visibility changes are delivered to the plugin as stable events. Every
+  presentation retains a `plugin_host_process_count` metric and continues to
+  report `hidden_plugin_vm_count = 0`.
+- UI Showcase `1.1.0` is a headless-tested embedded consumer of back, title,
+  and visibility APIs. Manifest, route, contract, host authorization, and SDK
+  tests cover the new surface. The Windows acceptance matrix records keyboard,
+  IME, DPI, monitor-change, and activation checks.
 
 ### PC-5: Third-Party Admission
 
@@ -582,5 +604,6 @@ Each milestone must include:
    action-oriented `git-repos` workload. (Done: Network Check and Git
    Repositories)
 7. Prototype PC-4 separately and record the isolation-versus-embedding decision.
+   (Done: isolated managed hosted surface)
 8. Start public third-party admission only after PC-0 through PC-3, validation
    across multiple plugin domains, and the Phase 3 clean-VM gate are complete.

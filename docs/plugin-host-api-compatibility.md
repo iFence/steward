@@ -1,6 +1,6 @@
 # Steward Plugin Host API Compatibility
 
-> Status: PC-0 through PC-3 implemented. The host API version is `0.4.0`.
+> Status: PC-0 through PC-4 implemented. The host API version is `0.5.0`.
 
 Steward uses semantic versions for the public plugin host contract. The current
 version is exported as `HOST_API_VERSION` from `steward-plugin-contract` and
@@ -32,6 +32,7 @@ The base features are:
 - `host_info`
 - `runtime_feature_discovery`
 - `steward.feedback`
+- `steward.navigation`
 - `steward.preferences`
 
 Capability-derived features use stable names such as
@@ -74,8 +75,8 @@ steward.net.fetch [host=api.example.com;schemes=https;methods=GET;...]
 steward.exec.run [executable=git.exe]
 ```
 
-Private `${dataDir}` access, plugin-private string storage, and window-close
-are automatic when declared. Sensitive permissions require an active grant
+Private `${dataDir}` access, plugin-private string storage, window-close, and
+navigation lifecycle calls are automatic when declared. Sensitive permissions require an active grant
 matching plugin ID, publisher key ID, semantic version range, permission, and
 scope. Declaring `steward.*` or any other wildcard host permission is rejected
 for new third-party packages.
@@ -181,6 +182,26 @@ Both calls append payload-free capability audit records with allowed, denied,
 failed, or cancelled outcomes. Request and response bodies, arguments, headers,
 and process output are not copied into audit storage.
 
+## Presentation And Navigation
+
+The `0.5.0` API adds:
+
+```text
+steward.navigation.back
+steward.navigation.close
+steward.navigation.setTitle
+```
+
+`launchParams().presentation` is `windowed` or `embedded`. Both modes retain
+the isolated plugin-host process. Embedded commands use a frameless,
+non-resizable, launcher-positioned hosted surface; they do not run the VM in
+the shell process and do not create a render bridge.
+
+The plugin receives `steward.visibility` events with `{ visible: boolean }`.
+Back or Esc closes the page, destroys the plugin host process, and restores
+launcher focus. `setTitle` accepts 1 to 128 bytes. Navigation calls are
+automatic named permissions and append payload-free audit events.
+
 ## Compatibility Tests
 
 The current test baseline covers:
@@ -206,4 +227,7 @@ The current test baseline covers:
   environment, argument limits, output caps, cancellation, and Windows
   process-tree termination;
 - headless Network Check and Git Repositories consumers of the new APIs;
+- manifest presentation routing, protocol lifecycle round trips, and host-API
+  mode mismatch rejection;
+- headless UI Showcase navigation, title, and visibility mocks;
 - package inspection policy and signed-package lifecycle tests.

@@ -11,6 +11,9 @@ pub const STORAGE_GET: &str = "steward.storage.get";
 pub const STORAGE_SET: &str = "steward.storage.set";
 pub const CALENDAR_HOLIDAYS: &str = "steward.calendar.holidays";
 pub const WINDOW_CLOSE: &str = "steward.window.close";
+pub const NAVIGATION_BACK: &str = "steward.navigation.back";
+pub const NAVIGATION_CLOSE: &str = "steward.navigation.close";
+pub const NAVIGATION_SET_TITLE: &str = "steward.navigation.setTitle";
 pub const PREFERENCES_GET: &str = "steward.preferences.get";
 pub const PREFERENCES_ALL: &str = "steward.preferences.all";
 pub const FEEDBACK_TOAST: &str = "steward.feedback.toast";
@@ -342,6 +345,9 @@ fn is_sensitive(permission: &str, scope: &str) -> bool {
         STORAGE_GET
             | STORAGE_SET
             | WINDOW_CLOSE
+            | NAVIGATION_BACK
+            | NAVIGATION_CLOSE
+            | NAVIGATION_SET_TITLE
             | PREFERENCES_GET
             | PREFERENCES_ALL
             | FEEDBACK_TOAST
@@ -371,6 +377,9 @@ fn describe(permission: &str, scope: &str) -> String {
         STORAGE_SET => "Write this plugin's private Steward storage.".into(),
         CALENDAR_HOLIDAYS => "Read Steward's cached holiday schedule.".into(),
         WINDOW_CLOSE => "Close this plugin window.".into(),
+        NAVIGATION_BACK => "Return from this plugin page to the launcher.".into(),
+        NAVIGATION_CLOSE => "Close this plugin page.".into(),
+        NAVIGATION_SET_TITLE => "Set the title of this plugin page.".into(),
         PREFERENCES_GET => "Read a declared preference for this plugin.".into(),
         PREFERENCES_ALL => "Read this plugin's declared preferences.".into(),
         FEEDBACK_TOAST => "Show a transient Steward notification.".into(),

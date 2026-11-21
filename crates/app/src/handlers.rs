@@ -217,6 +217,72 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     cx.update(|cx| cx.refresh_windows());
                 }
             }
+            PluginRuntimeEvent::Presentation {
+                plugin_id,
+                session_id,
+                event,
+            } => {
+                if !plugin_session_is_current(state, &plugin_id, session_id) {
+                    continue;
+                }
+                match event {
+                    steward_plugin_contract::PluginPresentationEvent::Back
+                    | steward_plugin_contract::PluginPresentationEvent::Close => {
+                        let embedded =
+                            state
+                                .borrow()
+                                .plugin_windows
+                                .get(&plugin_id)
+                                .is_some_and(|process| {
+                                    process.request().presentation
+                                        == steward_plugin_contract::PresentationMode::Embedded
+                                });
+                        cx.update(|cx| crate::plugin_window::close(cx, state, &plugin_id));
+                        if embedded {
+                            show_launcher(cx, state);
+                        }
+                    }
+                    steward_plugin_contract::PluginPresentationEvent::VisibilityChanged {
+                        visible,
+                    } => {
+                        crate::metrics::value(
+                            "plugin_presentation_visibility",
+                            u64::from(visible),
+                            serde_json::json!({
+                                "plugin_id": plugin_id,
+                                "session_id": session_id,
+                            }),
+                        );
+                    }
+                    steward_plugin_contract::PluginPresentationEvent::TitleChanged { title } => {
+                        crate::metrics::value(
+                            "plugin_presentation_title_length",
+                            title.len() as u64,
+                            serde_json::json!({
+                                "plugin_id": plugin_id,
+                                "session_id": session_id,
+                            }),
+                        );
+                    }
+                }
+            }
+            PluginRuntimeEvent::Stopped {
+                plugin_id,
+                session_id,
+                request,
+            } => {
+                if state
+                    .borrow()
+                    .plugin_windows
+                    .session_id(&plugin_id)
+                    .is_some_and(|current| current != session_id)
+                {
+                    continue;
+                }
+                if request.presentation == steward_plugin_contract::PresentationMode::Embedded {
+                    show_launcher(cx, state);
+                }
+            }
             PluginRuntimeEvent::Failed {
                 plugin_id,
                 session_id,
@@ -228,8 +294,20 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     continue;
                 }
                 record_plugin_process_failure(state, &plugin_id, session_id, code);
+                let embedded =
+                    state
+                        .borrow()
+                        .plugin_windows
+                        .get(&plugin_id)
+                        .is_some_and(|process| {
+                            process.request().presentation
+                                == steward_plugin_contract::PresentationMode::Embedded
+                        });
                 cx.update(|cx| crate::plugin_window::close(cx, state, &plugin_id));
                 report_launch_failure(state, &request, code, &error);
+                if embedded {
+                    show_launcher(cx, state);
+                }
             }
             PluginRuntimeEvent::Exited {
                 plugin_id,
@@ -251,6 +329,9 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                 }
                 record_plugin_process_failure(state, &plugin_id, session_id, code);
                 report_launch_failure(state, &request, code, &error);
+                if request.presentation == steward_plugin_contract::PresentationMode::Embedded {
+                    show_launcher(cx, state);
+                }
             }
         }
     }
@@ -514,6 +595,7 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
             command,
             title,
             input,
+            presentation,
         } => {
             let activation_started = std::time::Instant::now();
             let (locale, accent) = {
@@ -528,6 +610,7 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 locale,
                 accent,
                 dark: true,
+                presentation,
             };
             let focused = cx.update(|cx| crate::plugin_window::focus_and_send(cx, state, &request));
             if focused {

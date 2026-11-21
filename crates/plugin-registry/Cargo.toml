@@ -11,3 +11,4 @@ anyhow.workspace = true
 dirs.workspace = true
 regex.workspace = true
 semver.workspace = true
+steward-plugin-contract = { path = "../plugin-contract" }

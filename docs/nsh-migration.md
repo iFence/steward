@@ -3,8 +3,8 @@
 > Status: NSH-0 through NSH-3 complete; NSH-4 implementation complete, blocked
 > on clean-VM and production-artifact acceptance. M4 implementation is complete
 > and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run. M5 plugin
-> ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-3 are
-> complete; PC-4 and public third-party admission are the next targets.
+> ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-4 are
+> complete; public third-party admission is the next target.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -59,11 +59,14 @@ application runtime:
 3. NSH crates are pinned to published version `0.6.1`. The published
    `nsh-platform-gpui` crate works with GPUI Fast's blanket `IntoElement`
    implementation, so Steward does not vendor a compatibility patch.
-4. Each plugin command opens one full NSH application window. A second command
-   for the same plugin ID focuses the existing window and emits
+4. Each plugin command opens one isolated plugin-host presentation. Schema-v3
+   commands select `windowed` or `embedded`; embedded uses a managed frameless
+   hosted surface without moving the VM into the shell. A second command for
+   the same plugin ID and mode focuses the existing presentation and emits
    `steward.command`.
-5. `plugin.json` schema v2 is routing metadata only. Executable code and
-   capability policy live in the signed `plugin.nshpkg`.
+5. `plugin.json` schema v2/v3 is routing metadata only. Schema v2 remains
+   readable and defaults to `windowed`; schema v3 may select `embedded`.
+   Executable code and capability policy live in the signed `plugin.nshpkg`.
 6. The cutover is intentionally breaking. JSON Views, Virtual UI Trees,
    dynamic triggers, inline plugin results, detached panels, dock workspaces,
    the old runtime, IPC crate, and esbuild plugin build are removed.
@@ -112,11 +115,11 @@ plugins/<plugin-id>/
   plugin.nshpkg     signed NSH application package
 ```
 
-Schema v2 manifest:
+Schema v3 manifest:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
@@ -168,7 +171,8 @@ Launch parameters:
   "locale": "en",
   "accent": "#863bff",
   "dark": true,
-  "hostApiVersion": "0.4.0",
+  "presentation": "windowed",
+  "hostApiVersion": "0.5.0",
   "features": ["host_info", "runtime_feature_discovery"],
   "preferences": {
     "showHints": true
@@ -311,9 +315,10 @@ Files:
 
 Acceptance:
 
-- Manifest v2 discovery and routing do not start a VM.
-- A verified package opens one full plugin window.
-- A repeat command focuses the existing window and emits `steward.command`.
+- Manifest v2/v3 discovery and routing do not start a VM.
+- A verified package opens the signed command's windowed or embedded presentation.
+- A repeat command in the same presentation mode focuses the existing surface
+  and emits `steward.command`.
 - Package ID/version mismatches, missing trust roots, and invalid packages are
   rejected before creating a window.
 - Capability grants, OOM, call timeout, and node quota are enforced by the
@@ -754,8 +759,7 @@ Remaining PC-2 boundary:
 - Filesystem operations run as the current Windows user. Canonicalization and
   reparse-point checks prevent grant escapes and traversal, but do not turn the
   plugin host into an OS-level sandbox against a same-user attacker.
-- Destructive recycle-bin operations remain later filesystem work;
-  embedded presentation remains PC-4 work.
+- Destructive recycle-bin operations remain later filesystem work.
 
 Local verification (2026-11-21):
 
@@ -836,8 +840,46 @@ Remaining PC-3 boundary:
   what it starts and owns the resulting tree, but it is not an OS security
   sandbox against a same-user attacker or an approved tool's own subprocess
   behavior.
-- Host-owned Recycle Bin removal and embedded presentation remain outside the
-  PC-3 implementation.
+- Host-owned Recycle Bin removal remains outside the PC-3 implementation.
+
+### PC-4: Embedded Presentation and Navigation (2026-11-21, complete)
+
+Files:
+
+- `crates/plugin-contract/src/{lib.rs,capabilities.rs}`
+- `crates/plugin-registry/src/{lib.rs,manifest.rs}`
+- `crates/plugin-host/src/{lib.rs,route.rs}`
+- `crates/app/src/{plugin_window.rs,handlers.rs,state.rs}`
+- `packages/extension-api/src/host.ts`
+- `packages/plugins/ui-showcase/`
+- `docs/windows-acceptance.md`
+
+Delivered:
+
+- [x] Schema v3 adds optional per-command `windowed` or `embedded`
+      presentation while keeping schema v2 readable as `windowed`.
+- [x] The verified manifest mode flows through the route index and launch
+      request. A mode mismatch is rejected before package verification.
+- [x] Host API `0.5.0` and protocol v2 add back, close, title, and visibility
+      lifecycle events. Navigation permissions are named, automatic, and
+      audited.
+- [x] Embedded commands open a launcher-positioned frameless surface in the
+      existing isolated plugin-host child process.
+- [x] Back, Esc, host-window close, crash, and process shutdown remove the
+      presentation. Back/Esc/window close restore and focus the launcher.
+- [x] `steward.visibility` reports activation changes to plugin code without
+      exposing native window handles.
+- [x] UI Showcase `1.1.0` is an embedded consumer and passes headless
+      navigation, title, and visibility tests.
+- [x] The Windows acceptance matrix covers keyboard/IME, DPI, monitor changes,
+      activation, teardown, and process-isolation checks.
+
+Design decision:
+
+- This milestone uses a closely managed hosted window, not an in-shell VM or a
+  cross-process render bridge. It preserves process isolation and reports the
+  zero-hidden-VM invariant. A true single-window renderer remains a separate
+  architecture change.
 
 ## Verification Commands
 

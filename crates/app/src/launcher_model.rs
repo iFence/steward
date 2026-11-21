@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use steward_plugin_contract::PresentationMode;
 use steward_ui_components::{LauncherRow, SubtitlePlacement};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,7 @@ pub(crate) enum RowAction {
         command: String,
         title: String,
         input: String,
+        presentation: PresentationMode,
     },
 }
 

@@ -1,5 +1,7 @@
 import { host } from "nsh";
 
+export type PresentationMode = "windowed" | "embedded";
+
 export interface StewardLaunchParams {
   pluginId: string;
   command: string;
@@ -7,6 +9,7 @@ export interface StewardLaunchParams {
   locale: string;
   accent: string;
   dark: boolean;
+  presentation: PresentationMode;
   hostApiVersion: string;
   features: string[];
   preferences: Record<string, unknown>;
@@ -140,6 +143,7 @@ export function launchParams(): StewardLaunchParams {
     locale: value.locale ?? "en",
     accent: value.accent ?? "#863bff",
     dark: value.dark ?? true,
+    presentation: value.presentation === "embedded" ? "embedded" : "windowed",
     hostApiVersion: value.hostApiVersion ?? "0.0.0",
     features: value.features ?? [],
     preferences: value.preferences ?? {},
@@ -237,6 +241,41 @@ export async function calendarHolidays(year: number): Promise<HolidaySchedule> {
 
 export function closeWindow(): void {
   host.post("steward.window.close", null);
+}
+
+export async function backToLauncher(): Promise<void> {
+  try {
+    await host.call("steward.navigation.back");
+  } catch (error) {
+    throw hostCallError("steward.navigation.back", error);
+  }
+}
+
+export async function closePage(): Promise<void> {
+  try {
+    await host.call("steward.navigation.close");
+  } catch (error) {
+    throw hostCallError("steward.navigation.close", error);
+  }
+}
+
+export async function setPageTitle(title: string): Promise<void> {
+  const value = title.trim();
+  if (!value || value.length > 128) {
+    throw new StewardError("invalid_input", "page title must contain 1 to 128 characters");
+  }
+  try {
+    await host.call("steward.navigation.setTitle", { title: value });
+  } catch (error) {
+    throw hostCallError("steward.navigation.setTitle", error);
+  }
+}
+
+export function onVisibility(listener: (visible: boolean) => void): () => void {
+  return host.on("steward.visibility", (value) => {
+    const event = value as { visible?: unknown };
+    listener(event.visible === true);
+  });
 }
 
 export interface ToastOptions {

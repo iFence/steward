@@ -15,7 +15,7 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 | Plugin process isolation (Phase 3)      | blocked: clean VM acceptance                             |
 | Windows support polish (M4)             | blocked: clean-VM and interactive IME/display acceptance |
 | Plugin ecosystem v1 (M5)                | complete                                                 |
-| Plugin capability layer (PC-0 to PC-3)  | complete; PC-4 and PC-5 next                             |
+| Plugin capability layer (PC-0 to PC-4)  | complete; PC-5 next                                      |
 | AI capability and MCP layers (M6-M8)    | planned                                                  |
 | External runtime compatibility (M9-M10) | later                                                    |
 
@@ -167,7 +167,8 @@ adapters or sidecars. They must not add a permanent Node runtime to the shell.
 2. Finish plugin process isolation, resource containment, and restart policy.
 3. Complete PC-3 network, controlled process execution, and cross-domain
    validation. (Done)
-4. Improve plugin authoring and package management.
-5. Add AI-callable capabilities with explicit consent and diagnostics.
-6. Add MCP and external ecosystem adapters only where they preserve the
+4. Complete PC-4 embedded presentation and navigation. (Done)
+5. Improve plugin authoring and package management.
+6. Add AI-callable capabilities with explicit consent and diagnostics.
+7. Add MCP and external ecosystem adapters only where they preserve the
    launcher's latency and memory goals.

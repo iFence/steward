@@ -7,9 +7,9 @@ use steward_plugin_contract::capabilities::{
     declaration_is_auto_granted, describe_declared_capabilities, is_legacy_official_plugin_id,
     CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM,
     FEEDBACK_PROGRESS, FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ, FS_READ_TEXT,
-    FS_WALK, FS_WRITE, FS_WRITE_TEXT, NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET,
-    STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH,
-    SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    FS_WALK, FS_WRITE, FS_WRITE_TEXT, NAVIGATION_BACK, NAVIGATION_CLOSE, NAVIGATION_SET_TITLE,
+    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS,
+    SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::{CapabilityDescriptor, HostInfo, HOST_API_VERSION};
 use steward_storage::{NewCapabilityAuditEntry, Storage};
@@ -23,6 +23,9 @@ const CURRENT_HOST_CALLS: &[&str] = &[
     STORAGE_SET,
     CALENDAR_HOLIDAYS,
     WINDOW_CLOSE,
+    NAVIGATION_BACK,
+    NAVIGATION_CLOSE,
+    NAVIGATION_SET_TITLE,
     PREFERENCES_GET,
     PREFERENCES_ALL,
     FEEDBACK_TOAST,
@@ -722,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn preferences_and_feedback_are_automatic_named_capabilities() {
+    fn preferences_feedback_and_navigation_are_automatic_named_capabilities() {
         let dir = temp_dir("feedback-preferences");
         let declared = Capabilities::from_json(&serde_json::json!({
             "host": [
@@ -730,7 +733,10 @@ mod tests {
                 PREFERENCES_ALL,
                 FEEDBACK_TOAST,
                 FEEDBACK_CONFIRM,
-                FEEDBACK_PROGRESS
+                FEEDBACK_PROGRESS,
+                NAVIGATION_BACK,
+                NAVIGATION_CLOSE,
+                NAVIGATION_SET_TITLE
             ]
         }))
         .unwrap();
@@ -749,6 +755,9 @@ mod tests {
             FEEDBACK_TOAST,
             FEEDBACK_CONFIRM,
             FEEDBACK_PROGRESS,
+            NAVIGATION_BACK,
+            NAVIGATION_CLOSE,
+            NAVIGATION_SET_TITLE,
         ] {
             assert!(result.granted.host.iter().any(|name| name == feature));
             assert!(result
