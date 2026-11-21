@@ -9,7 +9,7 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-use crate::config::{MENU_QUIT, MENU_SETTINGS};
+use crate::config::{MENU_QUIT, MENU_SETTINGS, MENU_VERSION};
 use crate::i18n::Localization;
 
 pub(crate) struct TrayHandle {
@@ -17,14 +17,24 @@ pub(crate) struct TrayHandle {
     tray: TrayIcon,
 }
 
+fn version_label(i18n: &Localization) -> String {
+    format!(
+        "{} {}",
+        i18n.translate("settings-version"),
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn build_menu(i18n: &Localization) -> Result<Menu> {
     let settings = MenuItem::with_id(MENU_SETTINGS, i18n.translate("app-settings"), true, None);
+    let version = MenuItem::with_id(MENU_VERSION, version_label(i18n), true, None);
     let quit = MenuItem::with_id(MENU_QUIT, i18n.translate("app-quit"), true, None);
     let separator = PredefinedMenuItem::separator();
 
     let menu = Menu::new();
     menu.append(&settings)?;
+    menu.append(&version)?;
     menu.append(&separator)?;
     menu.append(&quit)?;
     Ok(menu)
@@ -79,5 +89,20 @@ impl TrayHandle {
     pub(crate) fn set_language(&self, i18n: &Localization) -> Result<()> {
         let _ = i18n;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_label_uses_the_build_package_version() {
+        let i18n = Localization::new_with_language(Some("en")).unwrap();
+
+        assert_eq!(
+            version_label(&i18n),
+            format!("Version {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 }

@@ -79,6 +79,8 @@ Conventions:
 
 - **SVG result icons**: calendar plugin results and URL actions once again show
   their SVG icons instead of leaving the icon column blank.
+- **Tray version**: the tray context menu now shows the running Steward version
+  using the same system menu style as the other items.
 
 ### Security and Reliability
 

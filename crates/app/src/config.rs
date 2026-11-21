@@ -24,6 +24,8 @@ pub const LAUNCHER_MARGIN: f32 = 4.0;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub const MENU_SETTINGS: &str = "settings";
 #[cfg(any(target_os = "windows", target_os = "macos"))]
+pub const MENU_VERSION: &str = "version";
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub const MENU_QUIT: &str = "quit";
 /// Whether hiding the launcher destroys its window — reclaiming the
 /// per-window renderer, swapchain and GPU atlas — instead of keeping it
