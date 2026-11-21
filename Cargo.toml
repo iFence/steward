@@ -30,7 +30,10 @@ nsh-core = "=0.6.1"
 nsh-base = { version = "=0.6.1", default-features = false }
 nsh-engine = "=0.6.1"
 nsh-package = "=0.6.1"
-nsh-platform-gpui = { version = "=0.6.1", default-features = false, features = ["js"] }
+nsh-platform-gpui = { version = "=0.6.1", default-features = false, features = [
+    "js",
+    "svg",
+] }
 nsh-testing = { version = "=0.6.1", default-features = false }
 thiserror = "2"
 global-hotkey = "0.8"

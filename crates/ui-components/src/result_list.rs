@@ -37,8 +37,12 @@ pub enum PressedKey {
     Chrome,
 }
 
+fn is_svg_icon(icon: &str) -> bool {
+    icon.trim_start().starts_with("<svg")
+}
+
 fn row_image_source(icon: String) -> ImageSrc {
-    if icon.trim_start().starts_with("<svg") {
+    if is_svg_icon(&icon) {
         ImageSrc::svg_markup(&icon)
     } else {
         ImageSrc::from(icon)
@@ -61,7 +65,9 @@ pub fn result_list(
             let index = at.index();
             rows.with(|rows| row_at(rows, index))
         });
-        let has_icon = move || row.with(|row| row.icon.is_some());
+        let has_svg_icon = move || row.with(|row| row.icon.as_deref().is_some_and(is_svg_icon));
+        let has_image_icon =
+            move || row.with(|row| row.icon.as_deref().is_some_and(|icon| !is_svg_icon(icon)));
         let icon_src =
             move || row.with(|row| row_image_source(row.icon.clone().unwrap_or_default()));
         let subtitle_is_trailing =
@@ -89,7 +95,13 @@ pub fn result_list(
                 selected.set(index);
                 activate(index);
             });
-        result = result.child(when(has_icon, move || {
+        result = result.child(when(has_svg_icon, move || {
+            svg(icon_src)
+                .w(px(ICON_SIZE))
+                .h(px(ICON_SIZE))
+                .flex_shrink_0()
+        }));
+        result = result.child(when(has_image_icon, move || {
             image(icon_src)
                 .w(px(ICON_SIZE))
                 .h(px(ICON_SIZE))
@@ -150,7 +162,7 @@ mod tests {
     use nsh_engine::{EngineConfig, Root};
     use nsh_testing::Headless;
 
-    use super::{result_list, row_at, row_image_source, LauncherRow};
+    use super::{is_svg_icon, result_list, row_at, row_image_source, LauncherRow};
 
     #[test]
     fn an_out_of_range_result_row_is_empty() {
@@ -162,8 +174,11 @@ mod tests {
     }
 
     #[test]
-    fn raw_svg_icons_are_encoded_as_svg_markup() {
+    fn raw_svg_icons_are_rendered_by_the_svg_element() {
         let icon = r#"<svg viewBox="0 0 1 1"><rect width="1" height="1"/></svg>"#;
+        assert!(is_svg_icon(icon));
+        assert!(is_svg_icon(&format!("\n  {icon}")));
+        assert!(!is_svg_icon("data:image/png;base64,test"));
         assert_eq!(row_image_source(icon.into()), ImageSrc::svg_markup(icon));
         assert_eq!(
             row_image_source("data:image/png;base64,test".into()),

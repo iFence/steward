@@ -58,6 +58,11 @@ Conventions:
   scrubbing, and bounded output while the plugin VM remains isolated. Network
   Check and Git Repositories validate the new APIs across unrelated workloads.
 
+### Launcher
+
+- **SVG result icons**: calendar plugin results and URL actions once again show
+  their SVG icons instead of leaving the icon column blank.
+
 ### Security and Reliability
 
 - **Contained plugin processes**: each open plugin now runs under a Windows Job
