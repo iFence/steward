@@ -70,6 +70,10 @@ Conventions:
   title and Back navigation, supports Monday or Sunday week starts and optional
   week numbers, refreshes the current-day marker when shown again, retries
   unavailable holiday data, and refreshes stale holiday-schedule caches.
+- **Clipboard History refresh**: Clipboard History now opens directly as an
+  embedded launcher page with search, pinned-first ordering, keyboard
+  selection and copy, localized labels, theme-aware styling, and refresh when
+  the page becomes visible again.
 
 ### Launcher
 
