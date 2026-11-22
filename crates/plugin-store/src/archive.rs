@@ -118,7 +118,11 @@ fn prepare_zip(path: &Path) -> Result<PreparedPackage> {
         }
         if name.ends_with('/') {
             let top = name.trim_end_matches('/');
-            if top.is_empty() || top.contains(['/', ':', '.']) || top == ".." {
+            if top.is_empty()
+                || top.contains(['/', ':'])
+                || matches!(top, "." | "..")
+                || top.starts_with('.')
+            {
                 anyhow::bail!("plugin archive contains nested directory entries");
             }
             if top_level.as_deref().is_some_and(|existing| existing != top) {
@@ -175,6 +179,13 @@ fn prepare_zip(path: &Path) -> Result<PreparedPackage> {
     manifest
         .validate()
         .map_err(|error| anyhow::anyhow!("plugin.json: {error}"))?;
+    if top_level.as_deref() != Some(manifest.id.as_str()) {
+        anyhow::bail!(
+            "plugin archive top-level directory '{}' must match manifest id '{}'",
+            top_level.as_deref().unwrap_or(""),
+            manifest.id
+        );
+    }
     Ok(finish(manifest, package))
 }
 

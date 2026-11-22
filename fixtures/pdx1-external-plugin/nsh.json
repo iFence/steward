@@ -1,0 +1,9 @@
+{
+  "name": "PDX-1 External Fixture",
+  "id": "com.example.pdx1-external",
+  "version": "0.1.0",
+  "build": 1,
+  "capabilities": {
+    "host": ["steward.feedback.toast"]
+  }
+}

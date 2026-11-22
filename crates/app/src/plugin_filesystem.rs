@@ -15,7 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nsh_engine::HostReply;
 use steward_plugin_contract::capabilities::{FS_READ, FS_WRITE};
+use steward_plugin_contract::host_api::{HostCallError, HostErrorCode};
 use steward_storage::{NewCapabilityAuditEntry, NewCapabilityGrant, Storage};
+
+use crate::host_errors::RejectHostError;
 
 const FILE_WORKERS: usize = 2;
 const FILE_QUEUE_DEPTH: usize = 16;
@@ -42,15 +45,6 @@ pub(crate) enum PickerMode {
 }
 
 impl PickerMode {
-    pub(crate) fn from_name(value: Option<&str>) -> Option<Self> {
-        match value.unwrap_or("folderRead") {
-            "folderRead" | "readFolder" => Some(Self::FolderRead),
-            "folderWrite" | "writeFolder" | "readWriteFolder" => Some(Self::FolderWrite),
-            "fileRead" | "readFile" => Some(Self::FileRead),
-            _ => None,
-        }
-    }
-
     pub(crate) fn selects_files(self) -> bool {
         self == Self::FileRead
     }
@@ -73,18 +67,37 @@ pub(crate) enum FileError {
 }
 
 impl FileError {
+    pub(crate) fn code(&self) -> HostErrorCode {
+        match self {
+            Self::PermissionDenied(_) => HostErrorCode::PermissionDenied,
+            Self::InvalidInput(_) => HostErrorCode::InvalidInput,
+            Self::NotFound(_) | Self::IoFailure(_) => HostErrorCode::IoFailure,
+            Self::ResourceExhausted(_) => HostErrorCode::ResourceExhausted,
+            Self::Timeout(_) => HostErrorCode::Timeout,
+            Self::Cancelled(_) => HostErrorCode::Cancelled,
+            Self::HostFailure(_) => HostErrorCode::HostFailure,
+        }
+    }
+
+    pub(crate) fn message_text(&self) -> &str {
+        match self {
+            Self::PermissionDenied(message)
+            | Self::InvalidInput(message)
+            | Self::NotFound(message)
+            | Self::ResourceExhausted(message)
+            | Self::Timeout(message)
+            | Self::Cancelled(message)
+            | Self::HostFailure(message)
+            | Self::IoFailure(message) => message,
+        }
+    }
+
+    pub(crate) fn into_host_error(self) -> HostCallError {
+        HostCallError::new(self.code(), self.message_text())
+    }
+
     pub(crate) fn host_message(&self) -> String {
-        let (code, message) = match self {
-            Self::PermissionDenied(message) => ("permission_denied", message),
-            Self::InvalidInput(message) => ("invalid_input", message),
-            Self::NotFound(message) => ("io_failure", message),
-            Self::ResourceExhausted(message) => ("resource_exhausted", message),
-            Self::Timeout(message) => ("timeout", message),
-            Self::Cancelled(message) => ("cancelled", message),
-            Self::HostFailure(message) => ("host_failure", message),
-            Self::IoFailure(message) => ("io_failure", message),
-        };
-        format!("[{code}] {message}")
+        format!("[{}] {}", self.code().as_str(), self.message_text())
     }
 }
 
@@ -213,25 +226,31 @@ impl FileService {
         reply: HostReply,
     ) {
         if !valid_walk_id(&id) {
-            reply.reject("[invalid_input] walk id must be 1 to 128 safe characters");
+            reply.reject_code(
+                HostErrorCode::InvalidInput,
+                "walk id must be 1 to 128 safe characters",
+            );
             return;
         }
         if max_results == 0 || max_results > MAX_WALK_RESULTS {
-            reply.reject(format!(
-                "[invalid_input] maxResults must be between 1 and {MAX_WALK_RESULTS}"
-            ));
+            reply.reject_code(
+                HostErrorCode::InvalidInput,
+                format!("maxResults must be between 1 and {MAX_WALK_RESULTS}"),
+            );
             return;
         }
         if max_depth == 0 || max_depth > MAX_WALK_DEPTH {
-            reply.reject(format!(
-                "[invalid_input] maxDepth must be between 1 and {MAX_WALK_DEPTH}"
-            ));
+            reply.reject_code(
+                HostErrorCode::InvalidInput,
+                format!("maxDepth must be between 1 and {MAX_WALK_DEPTH}"),
+            );
             return;
         }
         if timeout_ms == 0 || timeout_ms > MAX_WALK_TIMEOUT_MS {
-            reply.reject(format!(
-                "[invalid_input] timeoutMs must be between 1 and {MAX_WALK_TIMEOUT_MS}"
-            ));
+            reply.reject_code(
+                HostErrorCode::InvalidInput,
+                format!("timeoutMs must be between 1 and {MAX_WALK_TIMEOUT_MS}"),
+            );
             return;
         }
         if let Ok(mut cancelled) = self.cancelled_walks.lock() {
@@ -264,9 +283,10 @@ impl FileService {
 
     pub(crate) fn enqueue_read(&self, path: String, max_bytes: u64, reply: HostReply) {
         if max_bytes == 0 || max_bytes > MAX_READ_BYTES {
-            reply.reject(format!(
-                "[invalid_input] maxBytes must be between 1 and {MAX_READ_BYTES}"
-            ));
+            reply.reject_code(
+                HostErrorCode::InvalidInput,
+                format!("maxBytes must be between 1 and {MAX_READ_BYTES}"),
+            );
             return;
         }
         self.enqueue(FileTask::Read(ReadRequest {
@@ -278,9 +298,10 @@ impl FileService {
 
     pub(crate) fn enqueue_write(&self, path: String, contents: String, reply: HostReply) {
         if contents.len() > MAX_WRITE_BYTES {
-            reply.reject(format!(
-                "[resource_exhausted] text content exceeds {MAX_WRITE_BYTES} bytes"
-            ));
+            reply.reject_code(
+                HostErrorCode::ResourceExhausted,
+                format!("text content exceeds {MAX_WRITE_BYTES} bytes"),
+            );
             return;
         }
         self.enqueue(FileTask::Write(WriteRequest {
@@ -301,18 +322,22 @@ impl FileService {
             | Err(crossbeam_channel::TrySendError::Disconnected(task)) => task,
         };
         match task {
-            FileTask::Walk(request) => request
-                .reply
-                .reject("[resource_exhausted] the filesystem walk queue is full; retry later"),
-            FileTask::Read(request) => request
-                .reply
-                .reject("[resource_exhausted] the filesystem read queue is full; retry later"),
-            FileTask::Write(request) => request
-                .reply
-                .reject("[resource_exhausted] the filesystem write queue is full; retry later"),
-            FileTask::Grants(request) => request
-                .reply
-                .reject("[resource_exhausted] the filesystem grants queue is full; retry later"),
+            FileTask::Walk(request) => request.reply.reject_code(
+                HostErrorCode::ResourceExhausted,
+                "the filesystem walk queue is full; retry later",
+            ),
+            FileTask::Read(request) => request.reply.reject_code(
+                HostErrorCode::ResourceExhausted,
+                "the filesystem read queue is full; retry later",
+            ),
+            FileTask::Write(request) => request.reply.reject_code(
+                HostErrorCode::ResourceExhausted,
+                "the filesystem write queue is full; retry later",
+            ),
+            FileTask::Grants(request) => request.reply.reject_code(
+                HostErrorCode::ResourceExhausted,
+                "the filesystem grants queue is full; retry later",
+            ),
         }
     }
 
@@ -413,7 +438,7 @@ fn complete_walk(
                 },
                 &format!("walk_id={};error={}", request.id, error.host_message()),
             );
-            request.reply.reject(error.host_message());
+            request.reply.reject_host_error(error.into_host_error());
         }
     }
 }
@@ -442,7 +467,7 @@ fn complete_read(access: &FileAccess, request: ReadRequest) {
                 },
                 &format!("error={}", error.host_message()),
             );
-            request.reply.reject(error.host_message());
+            request.reply.reject_host_error(error.into_host_error());
         }
     }
 }
@@ -475,7 +500,7 @@ fn complete_write(access: &FileAccess, request: WriteRequest) {
                 },
                 &format!("error={}", error.host_message()),
             );
-            request.reply.reject(error.host_message());
+            request.reply.reject_host_error(error.into_host_error());
         }
     }
 }
@@ -485,7 +510,7 @@ fn complete_grants(access: &FileAccess, request: GrantsRequest) {
         Ok(grants) => request
             .reply
             .resolve(serde_json::to_value(grants).unwrap_or_default()),
-        Err(error) => request.reply.reject(error.host_message()),
+        Err(error) => request.reply.reject_host_error(error.into_host_error()),
     }
 }
 

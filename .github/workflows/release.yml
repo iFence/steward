@@ -198,11 +198,37 @@ jobs:
             target/plugins/SHA256SUMS-plugins.txt
           if-no-files-found: error
 
+  package-sdk:
+    name: Package extension SDK
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: install
+        run: pnpm install --frozen-lockfile
+      - name: Package versioned SDK
+        run: pnpm sdk:pack
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steward-plugin-sdk
+          path: |
+            target/sdk/*.tgz
+            target/sdk/SHA256SUMS-sdk.txt
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
     # Manual runs have no tag to attach assets to; they stop after the uploads.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [validate, build-msi, package-plugins]
+    needs: [validate, build-msi, package-plugins, package-sdk]
     # Windows-only pipeline: the publisher runs on the same platform the app
     # ships on, so no Linux runner is needed anywhere. Release-note extraction
     # is POSIX shell, run through Git Bash (`shell: bash`).
@@ -237,4 +263,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "Steward $GITHUB_REF_NAME" \
             --notes-file release-notes.md \
-            dist/*.msi dist/*.zip dist/SHA256SUMS-*.txt
+            dist/*.msi dist/*.zip dist/*.tgz dist/SHA256SUMS-*.txt

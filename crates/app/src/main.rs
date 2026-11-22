@@ -6,10 +6,13 @@ mod app_icons;
 mod autostart;
 mod clipboard_history;
 mod config;
+mod developer_diagnostics;
+mod developer_mode;
 mod diagnostics;
 mod events;
 mod handlers;
 mod holiday_schedule;
+mod host_errors;
 mod hotkey_registry;
 mod hotkeys;
 mod i18n;
@@ -62,13 +65,11 @@ fn main() {
         plugin_window::run_plugin_host();
         return;
     }
-    let data_dir = std::env::var_os("STEWARD_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_dir()
-                .expect("no OS data directory available")
-                .join("Steward")
-        });
+    let args = std::env::args().collect::<Vec<_>>();
+    let developer_profile = developer_mode::DeveloperProfile::resolve(&args)
+        .expect("failed to resolve Steward runtime profile");
+    developer_profile.apply_environment();
+    let data_dir = developer_profile.data_dir.clone();
     if let Some(position) = std::env::args().position(|arg| arg == "--write-diagnostics") {
         let output = std::env::args()
             .nth(position + 1)
@@ -157,7 +158,7 @@ fn main() {
         )
         .expect("failed to initialize launcher search"),
     ));
-    let trust_roots = load_trust_roots(&search);
+    let trust_roots = load_trust_roots(&search, &developer_profile);
     search.borrow_mut().start();
     let search_revision = search.borrow().revision_handle();
 
@@ -177,11 +178,11 @@ fn main() {
         ),
         search_revision,
     ));
-    let plugins_root = std::env::var_os("STEWARD_PLUGINS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir.join("plugins"));
+    services.configure_developer_diagnostics(developer_profile.enabled, &data_dir);
+    let plugins_root = developer_profile.plugins_dir.clone();
     let plugin_store = steward_plugin_store::PluginStore::open(
-        steward_plugin_store::PluginStoreConfig::new(data_dir.clone(), plugins_root, trust_roots),
+        steward_plugin_store::PluginStoreConfig::new(data_dir.clone(), plugins_root, trust_roots)
+            .with_developer_mode(developer_profile.enabled),
     )
     .expect("failed to initialize local plugin store");
     services.set_plugin_management(plugin_management::PluginManagementPort::spawn(plugin_store));
@@ -210,6 +211,7 @@ fn main() {
         plugin_events_rx: plugin_event_rx,
         last_update_revision: 0,
         last_plugin_management_revision: 0,
+        last_developer_diagnostics_revision: 0,
         _clipboard_watcher: clipboard_watcher,
         _log_guard: log_guard,
         _instance: instance,
@@ -329,13 +331,14 @@ fn main() {
     });
 }
 
-fn load_trust_roots(search: &Rc<RefCell<SearchState>>) -> Vec<String> {
+fn load_trust_roots(
+    search: &Rc<RefCell<SearchState>>,
+    profile: &developer_mode::DeveloperProfile,
+) -> Vec<String> {
     let mut roots =
         serde_json::from_str::<Vec<String>>(include_str!("../../../assets/nsh/trust-roots.json"))
             .expect("assets/nsh/trust-roots.json must be a JSON string array");
-    if let Ok(root) = std::env::var("STEWARD_NSH_TRUST_ROOT") {
-        roots.push(root);
-    }
+    roots.extend(profile.additional_trust_roots.iter().cloned());
     roots
         .into_iter()
         .filter_map(|root| {

@@ -12,6 +12,15 @@ Conventions:
 
 ### Plugin Ecosystem
 
+- **Developer loop**: new isolated developer mode runs alongside the installed
+  app with its own data, plugins, trust roots, and instance lock. Settings can
+  install local ZIPs or package folders, reload a plugin from its static
+  bundle, and show plugin-scoped first-frame, host-call, capability, exit,
+  crash, and log diagnostics without storing request payloads.
+- **One-command rebuilds**: `steward-plugin --developer-mode dev <project>`
+  rebuilds, signs, packages, validates, replaces unchanged development
+  versions, and reopens the plugin. `steward-plugin doctor` identifies the
+  failing launch stage for an ID, ZIP, or package directory.
 - **Plugin management**: Settings now has a Plugins page showing installed
   package versions, signature/trust status, publisher key IDs, package hashes,
   policy review items, rollback history, and local marketplace entries.
@@ -24,6 +33,12 @@ Conventions:
 - **Publisher and revocation operations**: the new `steward-plugin` CLI can
   inspect publisher identity, create or apply root-signed revocation lists, and
   scaffold NSH plugins.
+- **Plugin SDK distribution**: `@steward/extension-api` now ships with compiled
+  JavaScript, declarations, explicit package exports, and a versioned release
+  tarball. `steward-plugin new` creates an external project with a released SDK
+  dependency, a capability example, and a headless interaction plus mocked
+  host-call test. CI verifies the SDK, external installation, signing,
+  admission, and Steward store installation without a workspace SDK link.
 - **Automated policy checks**: package inspection reports the release
   capability ceiling, and the release workflow checks every production plugin
   archive with Steward's installability policy in addition to `nsh verify`.
@@ -84,6 +99,13 @@ Conventions:
 
 ### Security and Reliability
 
+- **Controlled process SDK**: fixed `runProcess()` to send the numeric request
+  ID required by the plugin host while preserving the public string ID for
+  cancellation and result correlation.
+- **Plugin contract reliability**: the TypeScript SDK and Rust plugin host now
+  share one machine-readable call contract and fixture set. Host rejections
+  return stable structured error codes, and every official plugin has a CI
+  test path.
 - **Contained plugin processes**: each open plugin now runs under a Windows Job
   Object with memory, CPU, process-count, and handle limits. Unexpected plugin
   exits leave the launcher running, and repeated launches use a short backoff

@@ -51,10 +51,22 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: pdx1-plugin-cli
       - name: Install pinned NSH CLI
         run: cargo install --locked nsh-cli --version 0.6.1
       - name: install
         run: pnpm install --frozen-lockfile
+      - name: plugin contract
+        run: pnpm contract:check
+      - name: plugin contract fixtures
+        run: pnpm test:contract
+      - name: SDK distribution and external plugin lifecycle
+        run: pnpm test:pdx1
+      - name: developer mode and static reload lifecycle
+        run: pnpm test:pdx2
       - name: lint
         run: pnpm lint
       - name: format
@@ -64,4 +76,4 @@ jobs:
       - name: build
         run: pnpm build
       - name: plugin tests
-        run: pnpm --filter @steward/plugin-calendar test && pnpm --filter @steward/plugin-clipboard-history test && pnpm --filter @steward/plugin-local-files test && pnpm --filter @steward/plugin-git-repos test && pnpm --filter @steward/plugin-ui-showcase test
+        run: pnpm test:plugins

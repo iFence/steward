@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "current": {
+    "hostApiVersion": "0.5.0",
+    "sdkVersion": "0.5.0",
+    "nshVersion": "0.6.1",
+    "manifestSchemaVersion": 3,
+    "minimumHostVersion": "0.5.0"
+  },
+  "supported": [
+    {
+      "hostApi": "0.5.x",
+      "sdk": "0.5.x",
+      "nsh": "0.6.1",
+      "status": "current"
+    }
+  ],
+  "compatibilityWindow": {
+    "patch": "Host and SDK patch versions keep existing calls, payload fields, and meanings.",
+    "minor": "Host and SDK minor versions may add calls, fields, events, or features.",
+    "major": "A major host API change requires a migration line; no older major line is claimed supported yet."
+  }
+}

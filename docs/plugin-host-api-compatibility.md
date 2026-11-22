@@ -57,7 +57,10 @@ The public machine-readable error codes are:
 | `io_failure`          | A filesystem or system-open operation failed at the OS boundary.               |
 
 `StewardError` in `@steward/extension-api` exposes `code` and `retryable`.
-Host-call rejection text is not part of the stable contract.
+Host-call rejection text is not part of the stable contract. Steward encodes a
+versioned JSON envelope with `code`, `message`, and `retryable` fields in NSH's
+error string. The SDK parses that data directly; it does not infer codes from
+prose. See [plugin-api-contract.md](plugin-api-contract.md).
 
 ## Permissions And Grants
 

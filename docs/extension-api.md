@@ -4,6 +4,11 @@
 > [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md) for
 > version negotiation, feature discovery, and stable error codes.
 
+The SDK is distributed as a versioned tarball with compiled JavaScript and
+declarations. See [plugin-sdk-distribution.md](plugin-sdk-distribution.md) for
+the release location, external project scaffold, and Host API/SDK/NSH
+compatibility matrix.
+
 NSH is the plugin UI and runtime API. Steward no longer exposes a serializable
 JSON View or Virtual UI Tree API. Plugins import UI primitives from `nsh`,
 components from `nsh/base`, platform capabilities from standard NSH modules,
@@ -12,6 +17,10 @@ and only Steward-specific calls from `@steward/extension-api`.
 See [nsh-plugin-api.md](nsh-plugin-api.md) for the complete contract. The
 canonical TypeScript surface is
 [`packages/extension-api/src/host.ts`](../packages/extension-api/src/host.ts).
+Call names, payloads, events, errors, features, and capability scopes come from
+[`contracts/plugin-api-v1.json`](../contracts/plugin-api-v1.json); see
+[plugin-api-contract.md](plugin-api-contract.md) for the generated surfaces,
+fixture tests, and process-ID mapping.
 
 ## Imports
 
@@ -276,6 +285,13 @@ script runtimes are rejected even if declared. The launcher clears inherited
 environment variables, enforces argument/runtime/output limits, and owns the
 process tree's kill-on-close Job Object. `cancelProcess(requestId)` requests
 termination of the same tree.
+
+The public string `id` is mapped deterministically to the launcher broker's
+numeric wire ID. `ProcessResult.requestId` keeps the caller-facing string. A
+concurrent request whose mapped numeric ID is already active is rejected with
+`invalid_input`; it never replaces the first process or redirects
+cancellation. The exact mapping and collision rules are documented in
+[plugin-api-contract.md](plugin-api-contract.md).
 
 The Network Check plugin validates the HTTPS path while Git Repositories uses
 the same execution API for status, remote inspection, unpushed-commit counts,

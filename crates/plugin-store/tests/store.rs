@@ -107,11 +107,13 @@ impl Signer {
         let file = std::fs::File::create(&path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default();
-        zip.add_directory("test/", options).unwrap();
-        zip.start_file("test/plugin.json", options).unwrap();
+        zip.add_directory("com.example.test/", options).unwrap();
+        zip.start_file("com.example.test/plugin.json", options)
+            .unwrap();
         zip.write_all(&serde_json::to_vec_pretty(&manifest).unwrap())
             .unwrap();
-        zip.start_file("test/plugin.nshpkg", options).unwrap();
+        zip.start_file("com.example.test/plugin.nshpkg", options)
+            .unwrap();
         zip.write_all(&self.package(version, build, capabilities))
             .unwrap();
         zip.finish().unwrap();
@@ -149,6 +151,7 @@ fn scaffold_writes_a_buildable_two_file_ready_plugin() {
         name: "Scaffold".into(),
         version: "0.1.0".into(),
         command: None,
+        sdk_dependency: Some("https://plugins.example/steward-extension-api-0.5.0.tgz".into()),
         directory: root.join("com.example.scaffold"),
     })
     .unwrap();
@@ -159,6 +162,7 @@ fn scaffold_writes_a_buildable_two_file_ready_plugin() {
         "package.json",
         "tsconfig.json",
         "App.tsx",
+        "App.test.tsx",
         "README.md",
         ".gitignore",
     ] {
@@ -169,7 +173,40 @@ fn scaffold_writes_a_buildable_two_file_ready_plugin() {
             .unwrap();
     assert_eq!(manifest.commands[0].name, "scaffold");
     assert_eq!(manifest.min_host_version.as_deref(), Some(HOST_API_VERSION));
+    let package: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report.directory.join("package.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        package["dependencies"]["@steward/extension-api"],
+        "https://plugins.example/steward-extension-api-0.5.0.tgz"
+    );
+    let nsh: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report.directory.join("nsh.json")).unwrap()).unwrap();
+    assert_eq!(nsh["capabilities"]["host"][0], "steward.feedback.toast");
+    let test = std::fs::read_to_string(report.directory.join("App.test.tsx")).unwrap();
+    assert!(test.contains("app.press"));
+    assert!(test.contains("app.host.calls"));
     std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn scaffold_rejects_workspace_and_raw_source_sdk_dependencies() {
+    for dependency in ["workspace:*", "../packages/extension-api/src/host.ts"] {
+        let root = temp_root("scaffold-sdk");
+        let target = root.join("com.example.scaffold");
+        let error = scaffold_plugin(ScaffoldOptions {
+            id: "com.example.scaffold".into(),
+            name: "Scaffold".into(),
+            version: "0.1.0".into(),
+            command: None,
+            sdk_dependency: Some(dependency.into()),
+            directory: target.clone(),
+        })
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("must name a released package"));
+        assert!(!target.exists());
+        std::fs::remove_dir_all(root).ok();
+    }
 }
 
 #[test]
@@ -369,6 +406,49 @@ fn install_update_and_rollback_restore_verified_history() {
         store.history("com.example.test").unwrap()[0].version,
         "1.0.0"
     );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn developer_replacement_accepts_the_same_build_without_weakening_verification() {
+    let root = temp_root("developer-replace");
+    let signer = Signer::new();
+    let first = signer.zip(&root, "1.0.0", 1);
+    let ordinary = store(&root, &signer);
+    ordinary.install(&first).unwrap();
+    assert!(ordinary.replace_development(&first).is_err());
+    assert!(ordinary.install(&first).is_err());
+
+    let developer = PluginStore::open(
+        PluginStoreConfig::new(
+            root.join("data"),
+            root.join("data").join("plugins"),
+            vec![signer.root_base64.clone()],
+        )
+        .with_developer_mode(true),
+    )
+    .unwrap();
+    let replaced = developer.replace_development(&first).unwrap();
+    assert_eq!(replaced.version, "1.0.0");
+    assert_eq!(replaced.previous_version.as_deref(), Some("1.0.0"));
+    let doctor = developer.doctor("com.example.test");
+    assert!(doctor.passed, "{doctor:#?}");
+    let bad_layout = root.join("bad-layout");
+    std::fs::create_dir_all(&bad_layout).unwrap();
+    std::fs::copy(
+        root.join("data/plugins/com.example.test/plugin.json"),
+        bad_layout.join("plugin.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        root.join("data/plugins/com.example.test/plugin.nshpkg"),
+        bad_layout.join("plugin.nshpkg"),
+    )
+    .unwrap();
+    std::fs::write(bad_layout.join("README.txt"), "unexpected").unwrap();
+    let bad = developer.doctor(&bad_layout.to_string_lossy());
+    assert!(!bad.passed);
+    assert_eq!(bad.stage, Some(steward_plugin_store::DoctorStage::Layout));
     std::fs::remove_dir_all(root).ok();
 }
 

@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@steward/extension-api':
+        specifier: file:../../target/sdk/steward-extension-api-0.5.0.tgz
+        version: file:../../target/sdk/steward-extension-api-0.5.0.tgz
+
+packages:
+
+  '@steward/extension-api@file:../../target/sdk/steward-extension-api-0.5.0.tgz':
+    resolution: {integrity: sha512-qd86SgTrVB0aBMI4o+tiDkxmWsuAIk7jB1EvQctUlJ7CWTlI+yFirZk4gsOkWKgyBFfA87/u4kK44P10DjwXrQ==, tarball: file:../../target/sdk/steward-extension-api-0.5.0.tgz}
+    version: 0.5.0
+
+snapshots:
+
+  '@steward/extension-api@file:../../target/sdk/steward-extension-api-0.5.0.tgz': {}

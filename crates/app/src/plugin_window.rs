@@ -22,6 +22,13 @@ use steward_plugin_contract::capabilities::{
     FS_WRITE_TEXT, NAVIGATION_BACK, NAVIGATION_CLOSE, NAVIGATION_SET_TITLE, NET_FETCH,
     SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH,
 };
+use steward_plugin_contract::host_api::{
+    parse_call_data, require_null_payload, CalendarHolidaysRequest, CancelWalkRequest,
+    ClipboardWriteRequest, ConfirmRequest, ExecutionCancelRequest, HostCallError, HostErrorCode,
+    PathPickMode, PathPickRequest, PreferencesGetRequest, ProgressRequest, ReadTextRequest,
+    SetTitleRequest, StorageGetRequest, StorageSetRequest, SystemOpenWithRequest,
+    SystemPathRequest, ToastRequest, WalkRequest, WriteTextRequest,
+};
 use steward_plugin_contract::{
     LaunchRequest, PluginErrorCode, PluginExecutionRequest, PluginExecutionResult, PluginNotice,
     PluginNoticeKind, PluginNoticeLevel, PluginPresentationEvent, PluginProcessAction,
@@ -32,6 +39,7 @@ use steward_plugin_host::{HostConfig, PluginAuthorization, PluginHost, PluginLau
 use steward_plugin_registry::Registry;
 use steward_storage::{NewCapabilityAuditEntry, Storage};
 
+use crate::host_errors::RejectHostError;
 use crate::nsh_surface::{new_view, plugin_limits};
 use crate::plugin_containment::PluginProcessContainment;
 use crate::plugin_execution::{ExecutionAudit, ExecutionBroker, ExecutionResultSink};
@@ -290,6 +298,11 @@ fn trust_roots() -> Vec<String> {
             .expect("assets/nsh/trust-roots.json must be a JSON string array");
     if let Ok(root) = std::env::var("STEWARD_NSH_TRUST_ROOT") {
         roots.push(root);
+    }
+    if let Ok(roots_json) = std::env::var("STEWARD_NSH_TRUST_ROOTS_JSON") {
+        if let Ok(mut additional) = serde_json::from_str::<Vec<String>>(&roots_json) {
+            roots.append(&mut additional);
+        }
     }
     roots
 }
@@ -559,16 +572,40 @@ fn parse_execution_request(data: &serde_json::Value) -> Result<PluginExecutionRe
 
 fn resolve_execution_reply(reply: HostReply, result: PluginExecutionResult) {
     if let Some(code) = result.error_code {
-        reply.reject(format!(
-            "[{}] {}",
-            code.as_str(),
+        reply.reject_host_error(HostCallError::new(
+            public_error_code(code),
             result
                 .error
                 .as_deref()
-                .unwrap_or("controlled process failed")
+                .unwrap_or("controlled process failed"),
         ));
     } else {
         reply.resolve(serde_json::to_value(result).unwrap_or_default());
+    }
+}
+
+fn public_error_code(code: PluginErrorCode) -> HostErrorCode {
+    match code {
+        PluginErrorCode::PermissionDenied => HostErrorCode::PermissionDenied,
+        PluginErrorCode::FeatureUnavailable => HostErrorCode::FeatureUnavailable,
+        PluginErrorCode::Timeout => HostErrorCode::Timeout,
+        PluginErrorCode::ResourceLimit | PluginErrorCode::ResourceExhausted => {
+            HostErrorCode::ResourceExhausted
+        }
+        PluginErrorCode::InvalidInput => HostErrorCode::InvalidInput,
+        PluginErrorCode::Cancelled => HostErrorCode::Cancelled,
+        PluginErrorCode::ConfirmationDenied => HostErrorCode::ConfirmationDenied,
+        PluginErrorCode::IoFailure
+        | PluginErrorCode::NotFound
+        | PluginErrorCode::CommandNotFound
+        | PluginErrorCode::ReadFailed => HostErrorCode::IoFailure,
+        PluginErrorCode::TrustFailure
+        | PluginErrorCode::IdMismatch
+        | PluginErrorCode::VersionMismatch
+        | PluginErrorCode::LoadFailed
+        | PluginErrorCode::FirstFrameFailed
+        | PluginErrorCode::RuntimeError
+        | PluginErrorCode::HostFailure => HostErrorCode::HostFailure,
     }
 }
 
@@ -676,16 +713,24 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record("steward.preferences.get");
-            let Some(key) = call
-                .data()
-                .get("key")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("steward.preferences.get requires a key string");
-                return;
+            let request = match parse_call_data::<PreferencesGetRequest>(
+                "steward.preferences.get",
+                call.data(),
+            ) {
+                Ok(request) if !request.key.is_empty() => request,
+                Ok(_) => {
+                    call.reject_code(
+                        HostErrorCode::InvalidInput,
+                        "steward.preferences.get requires a key string",
+                    );
+                    return;
+                }
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            let value = preferences.get(&key).cloned().unwrap_or_default();
+            let value = preferences.get(&request.key).cloned().unwrap_or_default();
             call.resolve(value);
         }
     });
@@ -694,6 +739,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record("steward.preferences.all");
+            if let Err(error) = require_null_payload("steward.preferences.all", call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             call.resolve(serde_json::to_value(&preferences).unwrap_or_default());
         }
     });
@@ -703,23 +752,33 @@ fn run_child_window(
         let plugin_id = host_plugin_id.clone();
         move |call: HostCall| {
             audit.record("steward.feedback.toast");
-            let data = call.data();
-            let title = data.get("title").and_then(serde_json::Value::as_str);
-            let message = data.get("message").and_then(serde_json::Value::as_str);
-            let Some((title, message)) = title.filter(|text| !text.trim().is_empty()).zip(message)
-            else {
-                call.reject("steward.feedback.toast requires title and message strings");
+            let request =
+                match parse_call_data::<ToastRequest>("steward.feedback.toast", call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            if request.title.trim().is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.toast requires title and message strings",
+                );
                 return;
             };
-            if title.len() > 128 || message.len() > 1024 {
-                call.reject("steward.feedback.toast content exceeds its limit");
+            if request.title.len() > 128 || request.message.len() > 1024 {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.toast content exceeds its limit",
+                );
                 return;
             }
             events.notice(
                 session_id,
                 PluginNotice {
-                    title: title.into(),
-                    message: message.into(),
+                    title: request.title,
+                    message: request.message,
                     plugin_id: Some(plugin_id.clone()),
                     code: None,
                     level: PluginNoticeLevel::Info,
@@ -736,40 +795,35 @@ fn run_child_window(
         let plugin_id = host_plugin_id.clone();
         move |call: HostCall| {
             audit.record("steward.feedback.confirm");
-            let data = call.data();
-            let title = data
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let message = data
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let Some((title, message)) = title.filter(|text| !text.trim().is_empty()).zip(message)
-            else {
-                call.reject("steward.feedback.confirm requires title and message strings");
+            let request =
+                match parse_call_data::<ConfirmRequest>("steward.feedback.confirm", call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            if request.title.trim().is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.confirm requires title and message strings",
+                );
                 return;
             };
-            if title.len() > 128 || message.len() > 4096 {
-                call.reject("steward.feedback.confirm content exceeds its limit");
+            if request.title.len() > 128 || request.message.len() > 4096 {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.confirm content exceeds its limit",
+                );
                 return;
             }
-            let confirm_label = data
-                .get("confirmLabel")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Confirm")
-                .to_owned();
-            let cancel_label = data
-                .get("cancelLabel")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Cancel")
-                .to_owned();
-            let destructive = data
-                .get("destructive")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+            let confirm_label = request.confirm_label.unwrap_or_else(|| "Confirm".into());
+            let cancel_label = request.cancel_label.unwrap_or_else(|| "Cancel".into());
             if confirm_label.len() > 64 || cancel_label.len() > 64 {
-                call.reject("steward.feedback.confirm labels exceed their limit");
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.confirm labels exceed their limit",
+                );
                 return;
             }
             let Some(reply) = call.into_reply() else {
@@ -777,15 +831,18 @@ fn run_child_window(
             };
             let id = NEXT_CONFIRMATION_ID.fetch_add(1, Ordering::Relaxed);
             let Ok(mut pending) = pending.lock() else {
-                reply.reject("steward.feedback.confirm state is unavailable");
+                reply.reject_code(
+                    HostErrorCode::HostFailure,
+                    "steward.feedback.confirm state is unavailable",
+                );
                 return;
             };
             pending.insert(id, reply);
             events.notice(
                 session_id,
                 PluginNotice {
-                    title,
-                    message,
+                    title: request.title,
+                    message: request.message,
                     plugin_id: Some(plugin_id.clone()),
                     code: None,
                     level: PluginNoticeLevel::Warning,
@@ -793,7 +850,7 @@ fn run_child_window(
                         id,
                         confirm_label,
                         cancel_label,
-                        destructive,
+                        destructive: request.destructive,
                     },
                 },
             );
@@ -804,37 +861,46 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record("steward.feedback.progress");
-            let data = call.data();
-            let Some(id) = data
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .filter(|id| !id.is_empty() && id.len() <= 128)
-            else {
-                call.reject("steward.feedback.progress requires a bounded id string");
-                return;
+            let request = match parse_call_data::<ProgressRequest>(
+                "steward.feedback.progress",
+                call.data(),
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            let Some(message) = data
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .filter(|message| message.len() <= 1024)
-            else {
-                call.reject("steward.feedback.progress requires a bounded message string");
+            if request.id.is_empty() || request.id.len() > 128 {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.progress requires a bounded id string",
+                );
                 return;
-            };
-            let current = data.get("current").and_then(serde_json::Value::as_u64);
-            let total = data.get("total").and_then(serde_json::Value::as_u64);
-            if current
-                .zip(total)
+            }
+            if request.message.len() > 1024 {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.feedback.progress requires a bounded message string",
+                );
+                return;
+            }
+            if request
+                .current
+                .zip(request.total)
                 .is_some_and(|(current, total)| current > total)
             {
-                call.reject("progress current must not exceed total");
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "progress current must not exceed total",
+                );
                 return;
             }
             let payload = serde_json::json!({
-                "id": id,
-                "message": message,
-                "current": current,
-                "total": total,
+                "id": request.id,
+                "message": request.message,
+                "current": request.current,
+                "total": request.total,
             });
             let _ = progress_host.send("steward.progress", payload);
             call.resolve(serde_json::json!({}));
@@ -845,6 +911,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record("steward.clipboard.history");
+            if let Err(error) = require_null_payload("steward.clipboard.history", call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             let entries = crate::clipboard_history::entries_for_plugin(&data_dir);
             call.resolve(serde_json::to_value(entries).unwrap_or_default());
         }
@@ -853,18 +923,24 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record("steward.clipboard.write");
-            let Some(text) = call
-                .data()
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("steward.clipboard.write requires a text string");
-                return;
+            let request = match parse_call_data::<ClipboardWriteRequest>(
+                "steward.clipboard.write",
+                call.data(),
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+            match arboard::Clipboard::new()
+                .and_then(|mut clipboard| clipboard.set_text(request.text))
+            {
                 Ok(()) => call.resolve(serde_json::json!({})),
-                Err(error) => call.reject(format!("write clipboard text: {error}")),
+                Err(error) => call.reject_code(
+                    HostErrorCode::HostFailure,
+                    format!("write clipboard text: {error}"),
+                ),
             }
         }
     });
@@ -873,19 +949,25 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record("steward.storage.get");
-            let Some(key) = call
-                .data()
-                .get("key")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("steward.storage.get requires a key string");
+            let request =
+                match parse_call_data::<StorageGetRequest>("steward.storage.get", call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            if request.key.is_empty() || request.key.len() > 256 {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "steward.storage.get requires a bounded key string",
+                );
                 return;
             };
             let value = storage
                 .lock()
                 .ok()
-                .and_then(|storage| storage.get(&key).cloned());
+                .and_then(|storage| storage.get(&request.key).cloned());
             call.resolve(value.map_or(serde_json::Value::Null, serde_json::Value::String));
         }
     });
@@ -895,38 +977,37 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record("steward.storage.set");
-            let Some(key) = call
-                .data()
-                .get("key")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("steward.storage.set requires a key string");
-                return;
-            };
-            let Some(value) = call
-                .data()
-                .get("value")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("steward.storage.set requires a value string");
-                return;
-            };
-            if key.is_empty() || key.len() > 256 || value.len() > 1024 * 1024 {
-                call.reject("plugin storage key or value exceeds its limit");
+            let request =
+                match parse_call_data::<StorageSetRequest>("steward.storage.set", call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            if request.key.is_empty()
+                || request.key.len() > 256
+                || request.value.len() > 1024 * 1024
+            {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "plugin storage key or value exceeds its limit",
+                );
                 return;
             }
             let result = storage
                 .lock()
                 .map_err(|_| "plugin storage lock poisoned".to_owned())
                 .and_then(|mut storage| {
-                    storage.insert(key, value);
+                    storage.insert(request.key, request.value);
                     persist_plugin_storage(&storage_path, &storage)
                 });
             match result {
                 Ok(()) => call.resolve(serde_json::json!({})),
-                Err(error) => call.reject(format!("write plugin storage: {error}")),
+                Err(error) => call.reject_code(
+                    HostErrorCode::HostFailure,
+                    format!("write plugin storage: {error}"),
+                ),
             }
         }
     });
@@ -936,30 +1017,37 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record("steward.calendar.holidays");
-            let Some(year) = call.data().get("year").and_then(|value| value.as_u64()) else {
-                call.reject("steward.calendar.holidays requires an integer year");
-                return;
-            };
-            let Ok(year) = u16::try_from(year) else {
-                call.reject("steward.calendar.holidays year is out of range");
-                return;
+            let request = match parse_call_data::<CalendarHolidaysRequest>(
+                "steward.calendar.holidays",
+                call.data(),
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
             let Some(reply) = call.into_reply() else {
                 return;
             };
             let sender = worker.get_or_init(|| start_holiday_worker(cache_dir.clone()));
-            let request = HolidayRequest { year, reply };
+            let request = HolidayRequest {
+                year: request.year,
+                reply,
+            };
             match sender.try_send(request) {
                 Ok(()) => {}
                 Err(crossbeam_channel::TrySendError::Full(request)) => {
-                    request
-                        .reply
-                        .reject("steward.calendar.holidays is busy; retry later");
+                    request.reply.reject_code(
+                        HostErrorCode::ResourceExhausted,
+                        "steward.calendar.holidays is busy; retry later",
+                    );
                 }
                 Err(crossbeam_channel::TrySendError::Disconnected(request)) => {
-                    request
-                        .reply
-                        .reject("steward.calendar.holidays host worker is unavailable");
+                    request.reply.reject_code(
+                        HostErrorCode::HostFailure,
+                        "steward.calendar.holidays host worker is unavailable",
+                    );
                 }
             }
         }
@@ -969,14 +1057,17 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(FS_PICK);
-            let data = call.data();
-            let Some(mode) =
-                PickerMode::from_name(data.get("mode").and_then(serde_json::Value::as_str))
-            else {
-                call.reject(
-                    "[invalid_input] pick mode must be folderRead, folderWrite, or fileRead",
-                );
-                return;
+            let request = match parse_call_data::<PathPickRequest>(FS_PICK, call.data()) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
+            };
+            let mode = match request.mode {
+                PathPickMode::FolderRead => PickerMode::FolderRead,
+                PathPickMode::FolderWrite => PickerMode::FolderWrite,
+                PathPickMode::FileRead => PickerMode::FileRead,
             };
             let Some(reply) = call.into_reply() else {
                 return;
@@ -987,7 +1078,7 @@ fn run_child_window(
                 | Err(crossbeam_channel::TrySendError::Disconnected(request)) => {
                     request
                         .reply
-                        .reject("[resource_exhausted] the picker is busy");
+                        .reject_code(HostErrorCode::ResourceExhausted, "the picker is busy");
                 }
             }
         }
@@ -997,16 +1088,21 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(FS_CANCEL_WALK);
-            let Some(id) = call
-                .data()
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .filter(|id| !id.is_empty() && id.len() <= 128)
-            else {
-                call.reject("[invalid_input] cancelWalk requires a bounded id string");
-                return;
+            let request = match parse_call_data::<CancelWalkRequest>(FS_CANCEL_WALK, call.data()) {
+                Ok(request) if !request.id.is_empty() && request.id.len() <= 128 => request,
+                Ok(_) => {
+                    call.reject_code(
+                        HostErrorCode::InvalidInput,
+                        "cancelWalk requires a bounded id string",
+                    );
+                    return;
+                }
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            let cancelled = files.cancel_walk(id);
+            let cancelled = files.cancel_walk(&request.id);
             call.resolve(serde_json::json!({ "cancelled": cancelled }));
         }
     });
@@ -1015,39 +1111,31 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(FS_WALK);
-            let data = call.data();
-            let Some(id) = data
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] walk requires an id string");
-                return;
+            let request = match parse_call_data::<WalkRequest>(FS_WALK, call.data()) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            let Some(root) = data
-                .get("root")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] walk requires a root path string");
+            if request.id.is_empty() || request.root.is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "walk requires id and root strings",
+                );
                 return;
-            };
-            let max_results = data
-                .get("maxResults")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(DEFAULT_WALK_RESULTS);
-            let max_depth = data
-                .get("maxDepth")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(DEFAULT_WALK_DEPTH);
-            let timeout_ms = data
-                .get("timeoutMs")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(DEFAULT_WALK_TIMEOUT_MS);
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            files.enqueue_walk(id, root, max_results, max_depth, timeout_ms, reply);
+            files.enqueue_walk(
+                request.id,
+                request.root,
+                request.max_results.unwrap_or(DEFAULT_WALK_RESULTS),
+                request.max_depth.unwrap_or(DEFAULT_WALK_DEPTH),
+                request.timeout_ms.unwrap_or(DEFAULT_WALK_TIMEOUT_MS),
+                reply,
+            );
         }
     });
     host.handle(FS_READ_TEXT, {
@@ -1055,23 +1143,28 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(FS_READ_TEXT);
-            let data = call.data();
-            let Some(path) = data
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] readText requires a path string");
-                return;
+            let request = match parse_call_data::<ReadTextRequest>(FS_READ_TEXT, call.data()) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            let max_bytes = data
-                .get("maxBytes")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(DEFAULT_READ_BYTES);
+            if request.path.is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "readText requires a path string",
+                );
+                return;
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            files.enqueue_read(path, max_bytes, reply);
+            files.enqueue_read(
+                request.path,
+                request.max_bytes.unwrap_or(DEFAULT_READ_BYTES),
+                reply,
+            );
         }
     });
     host.handle(FS_WRITE_TEXT, {
@@ -1079,27 +1172,24 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(FS_WRITE_TEXT);
-            let data = call.data();
-            let Some(path) = data
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] writeText requires a path string");
-                return;
+            let request = match parse_call_data::<WriteTextRequest>(FS_WRITE_TEXT, call.data()) {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
-            let Some(contents) = data
-                .get("contents")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] writeText requires a contents string");
+            if request.path.is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "writeText requires a path string",
+                );
                 return;
-            };
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            files.enqueue_write(path, contents, reply);
+            files.enqueue_write(request.path, request.contents, reply);
         }
     });
     host.handle(FS_GRANTS, {
@@ -1107,6 +1197,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(FS_GRANTS);
+            if let Err(error) = require_null_payload(FS_GRANTS, call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
@@ -1118,19 +1212,25 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(SYSTEM_OPEN_PATH);
-            let Some(path) = call
-                .data()
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] openPath requires a path string");
-                return;
+            let request = match parse_call_data::<SystemPathRequest>(SYSTEM_OPEN_PATH, call.data())
+            {
+                Ok(request) => request,
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
+            if request.path.is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "openPath requires a path string",
+                );
+                return;
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            system.enqueue_open_path(path, reply);
+            system.enqueue_open_path(request.path, reply);
         }
     });
     host.handle(SYSTEM_REVEAL_PATH, {
@@ -1138,19 +1238,25 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(SYSTEM_REVEAL_PATH);
-            let Some(path) = call
-                .data()
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] revealPath requires a path string");
+            let request =
+                match parse_call_data::<SystemPathRequest>(SYSTEM_REVEAL_PATH, call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            if request.path.is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "revealPath requires a path string",
+                );
                 return;
-            };
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            system.enqueue_reveal_path(path, reply);
+            system.enqueue_reveal_path(request.path, reply);
         }
     });
     host.handle(SYSTEM_APPLICATIONS, {
@@ -1158,6 +1264,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(SYSTEM_APPLICATIONS);
+            if let Err(error) = require_null_payload(SYSTEM_APPLICATIONS, call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
@@ -1169,27 +1279,25 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(SYSTEM_OPEN_WITH);
-            let data = call.data();
-            let Some(application_id) = data
-                .get("applicationId")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] openWith requires an applicationId string");
+            let request =
+                match parse_call_data::<SystemOpenWithRequest>(SYSTEM_OPEN_WITH, call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            if request.application_id.is_empty() || request.path.is_empty() {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "openWith requires applicationId and path strings",
+                );
                 return;
-            };
-            let Some(path) = data
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-            else {
-                call.reject("[invalid_input] openWith requires a path string");
-                return;
-            };
+            }
             let Some(reply) = call.into_reply() else {
                 return;
             };
-            system.enqueue_open_with(application_id, path, reply);
+            system.enqueue_open_with(request.application_id, request.path, reply);
         }
     });
     host.handle(NET_FETCH, {
@@ -1200,7 +1308,7 @@ fn run_child_window(
             let request = match NetworkRequest::from_value(call.data()) {
                 Ok(request) => request,
                 Err(error) => {
-                    call.reject(error.host_message());
+                    call.reject_host_error(error.into_host_error());
                     return;
                 }
             };
@@ -1219,7 +1327,7 @@ fn run_child_window(
             let request = match parse_execution_request(call.data()) {
                 Ok(request) => request,
                 Err(error) => {
-                    call.reject(format!("[invalid_input] {error}"));
+                    call.reject_code(HostErrorCode::InvalidInput, error);
                     return;
                 }
             };
@@ -1228,15 +1336,24 @@ fn run_child_window(
                 return;
             };
             let Ok(mut pending) = pending.lock() else {
-                reply.reject("[host_failure] controlled process state is unavailable");
+                reply.reject_code(
+                    HostErrorCode::HostFailure,
+                    "controlled process state is unavailable",
+                );
                 return;
             };
             if pending.len() >= 64 {
-                reply.reject("[resource_exhausted] too many controlled processes are pending");
+                reply.reject_code(
+                    HostErrorCode::ResourceExhausted,
+                    "too many controlled processes are pending",
+                );
                 return;
             }
             if pending.contains_key(&request_id) {
-                reply.reject("[invalid_input] process request id is already active");
+                reply.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "process request id is already active",
+                );
                 return;
             }
             pending.insert(request_id, reply);
@@ -1250,21 +1367,27 @@ fn run_child_window(
         let audit = audit.clone();
         move |call: HostCall| {
             audit.record(EXEC_CANCEL);
-            let Some(request_id) = call
-                .data()
-                .get("requestId")
-                .and_then(serde_json::Value::as_u64)
-                .filter(|request_id| *request_id > 0)
-            else {
-                call.reject("[invalid_input] cancelProcess requires a positive requestId");
-                return;
+            let request = match parse_call_data::<ExecutionCancelRequest>(EXEC_CANCEL, call.data())
+            {
+                Ok(request) if request.request_id > 0 => request,
+                Ok(_) => {
+                    call.reject_code(
+                        HostErrorCode::InvalidInput,
+                        "cancelProcess requires a positive requestId",
+                    );
+                    return;
+                }
+                Err(error) => {
+                    call.reject_host_error(error);
+                    return;
+                }
             };
             let exists = pending
                 .lock()
-                .map(|pending| pending.contains_key(&request_id))
+                .map(|pending| pending.contains_key(&request.request_id))
                 .unwrap_or(false);
             if exists {
-                events.execution_cancel(session_id, request_id);
+                events.execution_cancel(session_id, request.request_id);
             }
             call.resolve(serde_json::json!({ "cancelled": exists }));
         }
@@ -1274,6 +1397,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record(NAVIGATION_BACK);
+            if let Err(error) = require_null_payload(NAVIGATION_BACK, call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             let _ = control.try_send(PluginProcessCommand {
                 protocol_version: PROTOCOL_VERSION,
                 session_id,
@@ -1287,6 +1414,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record(NAVIGATION_CLOSE);
+            if let Err(error) = require_null_payload(NAVIGATION_CLOSE, call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             let _ = control.try_send(PluginProcessCommand {
                 protocol_version: PROTOCOL_VERSION,
                 session_id,
@@ -1300,6 +1431,10 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record("steward.window.close");
+            if let Err(error) = require_null_payload("steward.window.close", call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
             let _ = control.try_send(PluginProcessCommand {
                 protocol_version: PROTOCOL_VERSION,
                 session_id,
@@ -1313,16 +1448,22 @@ fn run_child_window(
         let audit = audit.clone();
         move |call| {
             audit.record(NAVIGATION_SET_TITLE);
-            let title = call
-                .data()
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|title| !title.is_empty() && title.len() <= 128);
-            let Some(title) = title else {
-                call.reject("setTitle requires a non-empty title of at most 128 bytes");
+            let request =
+                match parse_call_data::<SetTitleRequest>(NAVIGATION_SET_TITLE, call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            let title = request.title.trim();
+            if title.is_empty() || title.len() > 128 {
+                call.reject_code(
+                    HostErrorCode::InvalidInput,
+                    "setTitle requires a non-empty title of at most 128 bytes",
+                );
                 return;
-            };
+            }
             let _ = control.try_send(PluginProcessCommand {
                 protocol_version: PROTOCOL_VERSION,
                 session_id,
@@ -1585,7 +1726,10 @@ fn run_child_window(
                                         if confirmed {
                                             reply.resolve(serde_json::json!({ "confirmed": true }));
                                         } else {
-                                            reply.reject("confirmation denied");
+                                            reply.reject_code(
+                                                HostErrorCode::ConfirmationDenied,
+                                                "confirmation denied",
+                                            );
                                         }
                                     }
                                 }
@@ -1622,29 +1766,34 @@ fn run_child_window(
                                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                                 Ok(Ok(None)) => None,
                                 Ok(Err(error)) => {
-                                    request.reply.reject(format!(
-                                        "[host_failure] open the system picker: {error}"
-                                    ));
+                                    request.reply.reject_code(
+                                        HostErrorCode::HostFailure,
+                                        format!("open the system picker: {error}"),
+                                    );
                                     return;
                                 }
                                 Err(_) => {
-                                    request.reply.reject(
-                                        "[host_failure] the system picker closed unexpectedly",
+                                    request.reply.reject_code(
+                                        HostErrorCode::HostFailure,
+                                        "the system picker closed unexpectedly",
                                     );
                                     return;
                                 }
                             };
                             let Some(selected) = selected else {
-                                request
-                                    .reply
-                                    .reject("[cancelled] path selection was cancelled");
+                                request.reply.reject_code(
+                                    HostErrorCode::Cancelled,
+                                    "path selection was cancelled",
+                                );
                                 return;
                             };
                             match files.picker_grant(&selected, request.mode) {
                                 Ok(path) => request.reply.resolve(serde_json::json!({
                                     "path": display_path(&path),
                                 })),
-                                Err(error) => request.reply.reject(error.host_message()),
+                                Err(error) => {
+                                    request.reply.reject_host_error(error.into_host_error())
+                                }
                             }
                         })
                         .detach();
@@ -1661,6 +1810,7 @@ fn run_child_window(
 #[derive(Clone)]
 struct CapabilityAuditSink {
     entries: crossbeam_channel::Sender<NewCapabilityAuditEntry>,
+    plugin_id: String,
 }
 
 impl CapabilityAuditSink {
@@ -1701,14 +1851,29 @@ impl CapabilityAuditSink {
                 }
             })
             .expect("spawn capability audit worker");
-        Self { entries }
+        Self {
+            entries,
+            plugin_id: authorization.plugin_id.clone(),
+        }
     }
 
     fn record(&self, capability: &str) {
+        tracing::info!(
+            plugin_id = %self.plugin_id,
+            capability,
+            outcome = "requested",
+            "plugin capability trace"
+        );
         self.record_outcome(capability, "host=steward", "allowed", "origin=host_call");
     }
 
     fn record_outcome(&self, capability: &str, scope: &str, outcome: &str, detail: &str) {
+        tracing::info!(
+            plugin_id = %self.plugin_id,
+            capability,
+            outcome,
+            "plugin capability trace"
+        );
         let occurred_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
@@ -2301,6 +2466,101 @@ pub(crate) fn broadcast_theme(state: &Rc<RefCell<AppState>>, accent: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_host_parsers_accept_every_committed_sdk_fixture() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../../contracts/plugin-api-v1.json")).unwrap();
+        for call in contract["calls"].as_array().unwrap() {
+            let name = call["name"].as_str().unwrap();
+            let data = &call["request"]["examples"][0];
+            match name {
+                "steward.preferences.get" => {
+                    parse_call_data::<PreferencesGetRequest>(name, data).unwrap();
+                }
+                "steward.feedback.toast" => {
+                    parse_call_data::<ToastRequest>(name, data).unwrap();
+                }
+                "steward.feedback.confirm" => {
+                    parse_call_data::<ConfirmRequest>(name, data).unwrap();
+                }
+                "steward.feedback.progress" => {
+                    parse_call_data::<ProgressRequest>(name, data).unwrap();
+                }
+                "steward.clipboard.write" => {
+                    parse_call_data::<ClipboardWriteRequest>(name, data).unwrap();
+                }
+                "steward.storage.get" => {
+                    parse_call_data::<StorageGetRequest>(name, data).unwrap();
+                }
+                "steward.storage.set" => {
+                    parse_call_data::<StorageSetRequest>(name, data).unwrap();
+                }
+                "steward.calendar.holidays" => {
+                    parse_call_data::<CalendarHolidaysRequest>(name, data).unwrap();
+                }
+                "steward.fs.pick" => {
+                    parse_call_data::<PathPickRequest>(name, data).unwrap();
+                }
+                "steward.fs.cancelWalk" => {
+                    parse_call_data::<CancelWalkRequest>(name, data).unwrap();
+                }
+                "steward.fs.walk" => {
+                    parse_call_data::<WalkRequest>(name, data).unwrap();
+                }
+                "steward.fs.readText" => {
+                    parse_call_data::<ReadTextRequest>(name, data).unwrap();
+                }
+                "steward.fs.writeText" => {
+                    parse_call_data::<WriteTextRequest>(name, data).unwrap();
+                }
+                "steward.system.openPath" | "steward.system.revealPath" => {
+                    parse_call_data::<SystemPathRequest>(name, data).unwrap();
+                }
+                "steward.system.openWith" => {
+                    parse_call_data::<SystemOpenWithRequest>(name, data).unwrap();
+                }
+                "steward.net.fetch" => {
+                    NetworkRequest::from_value(data).unwrap();
+                }
+                "steward.exec.run" => {
+                    parse_execution_request(data).unwrap();
+                }
+                "steward.exec.cancel" => {
+                    parse_call_data::<ExecutionCancelRequest>(name, data).unwrap();
+                }
+                "steward.navigation.setTitle" => {
+                    parse_call_data::<SetTitleRequest>(name, data).unwrap();
+                }
+                "steward.preferences.all"
+                | "steward.clipboard.history"
+                | "steward.window.close"
+                | "steward.navigation.back"
+                | "steward.navigation.close"
+                | "steward.fs.grants"
+                | "steward.system.applications" => {
+                    require_null_payload(name, data).unwrap();
+                }
+                other => panic!("contract call {other} has no Rust parser"),
+            }
+        }
+    }
+
+    #[test]
+    fn execution_parser_accepts_the_sdk_numeric_request_id_shape() {
+        let request = parse_execution_request(&serde_json::json!({
+            "requestId": 9_007_199_254_740_991_u64,
+            "executable": "git.exe",
+            "arguments": ["status", "--short"],
+            "workingDirectory": r"D:\projects\steward",
+            "timeoutMs": 30_000,
+            "maxOutputBytes": 1_048_576
+        }))
+        .unwrap();
+
+        assert_eq!(request.request_id, 9_007_199_254_740_991);
+        assert_eq!(request.executable, "git.exe");
+    }
 
     #[test]
     fn plugin_private_storage_roundtrips_through_one_json_file() {

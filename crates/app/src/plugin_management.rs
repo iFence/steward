@@ -1,6 +1,7 @@
 //! Background bridge between the settings surface and the local plugin store.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, RwLock,
@@ -18,7 +19,10 @@ use steward_plugin_contract::capabilities::{
     SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::CapabilityDescriptor;
-use steward_plugin_store::{MarketplaceIndex, PluginCatalog, PluginOperationKind, PluginStore};
+use steward_plugin_store::{
+    request_development_reload, DevelopmentReloadRequest, MarketplaceIndex, PluginCatalog,
+    PluginOperationKind, PluginStore,
+};
 use steward_storage::{NewCapabilityGrant, Storage};
 
 #[derive(Debug, Clone)]
@@ -43,6 +47,7 @@ pub(crate) struct PluginManagementSnapshot {
     pub(crate) catalog: PluginCatalog,
     pub(crate) capabilities: BTreeMap<String, Vec<PluginCapabilitySnapshot>>,
     pub(crate) preferences: BTreeMap<String, BTreeMap<String, Value>>,
+    pub(crate) capability_audit: BTreeMap<String, Vec<PluginCapabilityAuditSnapshot>>,
     pub(crate) message: Option<String>,
     pub(crate) error: Option<String>,
 }
@@ -59,10 +64,17 @@ impl Default for PluginManagementSnapshot {
             },
             capabilities: BTreeMap::new(),
             preferences: BTreeMap::new(),
+            capability_audit: BTreeMap::new(),
             message: None,
             error: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PluginCapabilityAuditSnapshot {
+    pub(crate) capability: String,
+    pub(crate) outcome: String,
 }
 
 #[derive(Clone)]
@@ -70,6 +82,7 @@ pub(crate) struct PluginManagementPort {
     state: Arc<RwLock<PluginManagementSnapshot>>,
     revision: Arc<AtomicU64>,
     commands: Option<crossbeam_channel::Sender<Command>>,
+    data_dir: Option<PathBuf>,
 }
 
 impl Default for PluginManagementPort {
@@ -78,6 +91,7 @@ impl Default for PluginManagementPort {
             state: Arc::new(RwLock::new(PluginManagementSnapshot::default())),
             revision: Arc::new(AtomicU64::new(0)),
             commands: None,
+            data_dir: None,
         }
     }
 }
@@ -89,6 +103,7 @@ impl PluginManagementPort {
             state: Arc::new(RwLock::new(PluginManagementSnapshot::default())),
             revision: Arc::new(AtomicU64::new(0)),
             commands: Some(tx.clone()),
+            data_dir: Some(store.data_dir().to_path_buf()),
         };
         let state = port.state.clone();
         let revision = port.revision.clone();
@@ -104,6 +119,14 @@ impl PluginManagementPort {
                     Command::Install(plugin_id) => store
                         .install_from_marketplace(&plugin_id)
                         .map(|operation| Some(operation_message(operation))),
+                    Command::InstallPath(path) => {
+                        let operation = if store.developer_mode() {
+                            store.replace_development(&path)
+                        } else {
+                            store.install(&path)
+                        };
+                        operation.map(|operation| Some(operation_message(operation)))
+                    }
                     Command::Update(plugin_id) => store
                         .update_from_marketplace(&plugin_id)
                         .map(|operation| Some(operation_message(operation))),
@@ -159,12 +182,17 @@ impl PluginManagementPort {
                     .as_ref()
                     .map(|storage| preference_snapshots(&catalog, storage))
                     .unwrap_or_default();
+                let capability_audit = storage
+                    .as_ref()
+                    .map(|storage| capability_audit_snapshots(&catalog, storage))
+                    .unwrap_or_default();
                 if let Ok(mut current) = state.write() {
                     *current = PluginManagementSnapshot {
                         busy: false,
                         catalog,
                         capabilities,
                         preferences,
+                        capability_audit,
                         message,
                         error,
                     };
@@ -196,6 +224,10 @@ impl PluginManagementPort {
 
     pub(crate) fn install(&self, plugin_id: impl Into<String>) {
         self.send(Command::Install(plugin_id.into()));
+    }
+
+    pub(crate) fn install_path(&self, path: impl Into<PathBuf>) {
+        self.send(Command::InstallPath(path.into()));
     }
 
     pub(crate) fn update(&self, plugin_id: impl Into<String>) {
@@ -297,6 +329,56 @@ impl PluginManagementPort {
         });
     }
 
+    pub(crate) fn reload_developer(&self, plugin_id: &str) {
+        let Some(data_dir) = self.data_dir.as_deref() else {
+            return;
+        };
+        let snapshot = self.snapshot();
+        let plugin = snapshot
+            .catalog
+            .installed
+            .iter()
+            .find(|plugin| plugin.manifest.id == plugin_id);
+        let result = plugin
+            .context("plugin is not installed")
+            .and_then(|plugin| {
+                let command = plugin
+                    .manifest
+                    .commands
+                    .first()
+                    .context("plugin has no launch command")?;
+                request_development_reload(
+                    data_dir,
+                    &DevelopmentReloadRequest {
+                        plugin_id: plugin_id.into(),
+                        command: command.name.clone(),
+                        title: plugin.manifest.name.clone(),
+                        open: true,
+                        requested_at: unix_millis(),
+                    },
+                )
+                .map(|_| ())
+            });
+        if let Ok(mut current) = self.state.write() {
+            match result {
+                Ok(()) => {
+                    current.message = Some(format!("Queued static reload for {plugin_id}."));
+                    current.error = None;
+                }
+                Err(error) => current.error = Some(format!("{error:#}")),
+            }
+        }
+        self.revision.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn show_error(&self, error: String) {
+        if let Ok(mut current) = self.state.write() {
+            current.error = Some(error);
+            current.message = None;
+        }
+        self.revision.fetch_add(1, Ordering::Release);
+    }
+
     fn send(&self, command: Command) {
         if let Some(commands) = &self.commands {
             let _ = commands.send(command);
@@ -308,6 +390,7 @@ enum Command {
     Refresh,
     SyncMarketplace,
     Install(String),
+    InstallPath(PathBuf),
     Update(String),
     Remove(String),
     Rollback(String),
@@ -407,6 +490,31 @@ fn preference_snapshots(
                 plugin.manifest.id.clone(),
                 plugin.manifest.preferences.resolve_values(&stored),
             ))
+        })
+        .collect()
+}
+
+fn capability_audit_snapshots(
+    catalog: &PluginCatalog,
+    storage: &Storage,
+) -> BTreeMap<String, Vec<PluginCapabilityAuditSnapshot>> {
+    catalog
+        .installed
+        .iter()
+        .filter_map(|plugin| {
+            let mut audit = storage
+                .capability_audit(&plugin.manifest.id)
+                .ok()?
+                .into_iter()
+                .map(|entry| PluginCapabilityAuditSnapshot {
+                    capability: entry.capability,
+                    outcome: entry.outcome,
+                })
+                .collect::<Vec<_>>();
+            if audit.len() > 40 {
+                audit.drain(..audit.len() - 40);
+            }
+            Some((plugin.manifest.id.clone(), audit))
         })
         .collect()
 }
@@ -637,6 +745,13 @@ fn unix_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or_default()
 }
 

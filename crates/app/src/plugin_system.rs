@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use nsh_engine::HostReply;
 use steward_core_engine::{platform_scanner, AppEntry};
+use steward_plugin_contract::host_api::{HostCallError, HostErrorCode};
 
+use crate::host_errors::RejectHostError;
 use crate::plugin_filesystem::{FileAccess, FileError};
 
 const SYSTEM_WORKERS: usize = 2;
@@ -75,7 +77,7 @@ impl SystemService {
                                         serde_json::to_value(applications).unwrap_or_default(),
                                     );
                                 }
-                                Err(error) => reply.reject(error),
+                                Err(error) => reply.reject_host_error(error),
                             },
                             SystemTask::OpenWith {
                                 application_id,
@@ -92,7 +94,7 @@ impl SystemService {
                                 );
                                 match result {
                                     Ok(()) => reply.resolve(serde_json::json!({})),
-                                    Err(error) => reply.reject(error),
+                                    Err(error) => reply.reject_host_error(error),
                                 }
                             }
                         }
@@ -137,8 +139,10 @@ impl SystemService {
                 application_id: _,
                 path: _,
                 reply,
-            } => reply
-                .reject("[resource_exhausted] the system capability queue is full; retry later"),
+            } => reply.reject_code(
+                HostErrorCode::ResourceExhausted,
+                "the system capability queue is full; retry later",
+            ),
         }
     }
 }
@@ -157,7 +161,7 @@ fn reveal_path(access: &FileAccess, path: &str) -> Result<PathBuf, FileError> {
     Ok(path)
 }
 
-fn list_applications() -> Result<Vec<ApplicationEntry>, String> {
+fn list_applications() -> Result<Vec<ApplicationEntry>, HostCallError> {
     let mut applications = platform_scanner()
         .scan()
         .into_iter()
@@ -187,19 +191,25 @@ fn application_entry(application: AppEntry) -> Option<ApplicationEntry> {
     })
 }
 
-fn open_with(access: &FileAccess, application_id: &str, value: &str) -> Result<(), String> {
+fn open_with(access: &FileAccess, application_id: &str, value: &str) -> Result<(), HostCallError> {
     let requested = access
         .authorize_read(value)
-        .map_err(|error| error.host_message())?;
+        .map_err(FileError::into_host_error)?;
     let applications = list_applications()?;
     let application = applications
         .iter()
         .find(|application| application.id == application_id)
         .ok_or_else(|| {
-            "[permission_denied] application is not in Steward's installed-app catalog".to_owned()
+            HostCallError::permission_denied(
+                "application is not in Steward's installed-app catalog",
+            )
         })?;
-    crate::launch::launch_with_resource(Path::new(&application.id), &requested)
-        .map_err(|error| format!("[io_failure] open with application: {error:#}"))
+    crate::launch::launch_with_resource(Path::new(&application.id), &requested).map_err(|error| {
+        HostCallError::new(
+            HostErrorCode::IoFailure,
+            format!("open with application: {error:#}"),
+        )
+    })
 }
 
 fn audit_path_result(
@@ -230,7 +240,7 @@ fn audit_path_result(
                 },
                 &error.host_message(),
             );
-            reply.reject(error.host_message());
+            reply.reject_host_error(error.into_host_error());
         }
     }
 }
@@ -271,6 +281,9 @@ mod tests {
         };
         let error =
             open_with(&access, "not-an-installed-application", r"C:\missing.txt").unwrap_err();
-        assert!(error.contains("permission_denied") || error.contains("io_failure"));
+        assert!(matches!(
+            error.code,
+            HostErrorCode::PermissionDenied | HostErrorCode::IoFailure
+        ));
     }
 }

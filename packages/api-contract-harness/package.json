@@ -1,0 +1,15 @@
+{
+  "name": "@steward/api-contract-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless cross-layer checks for the Steward plugin host contract.",
+  "main": "App.tsx",
+  "dependencies": {
+    "@steward/extension-api": "workspace:*"
+  },
+  "scripts": {
+    "build": "nsh build App.tsx --release -o dist",
+    "typecheck": "nsh check App.tsx",
+    "test": "nsh test ."
+  }
+}

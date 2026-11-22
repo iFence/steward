@@ -101,5 +101,12 @@ test("git repositories uses the controlled process API for repository state", as
   expect(app.texts()).toContain(
     "Cloned https://example.com/acme/steward.git into D:\\projects\\steward",
   );
-  expect(app.host.calls().filter((call) => call.name === "steward.exec.run")).toHaveLength(5);
+  const processCalls = app.host.calls().filter((call) => call.name === "steward.exec.run");
+  expect(processCalls).toHaveLength(5);
+  expect(
+    processCalls.every((call) => {
+      const requestId = (call.data as { requestId: unknown }).requestId;
+      return typeof requestId === "number" && Number.isSafeInteger(requestId) && requestId > 0;
+    }),
+  ).toBe(true);
 });

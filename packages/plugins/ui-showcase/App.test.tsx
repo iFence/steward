@@ -88,7 +88,14 @@ test("showcase handles a denied confirmation", async () => {
         "steward.feedback.toast": {},
         "steward.feedback.progress": {},
         "steward.feedback.confirm": () => {
-          throw new Error("confirmation denied");
+          throw new Error(
+            JSON.stringify({
+              version: 1,
+              code: "confirmation_denied",
+              message: "confirmation denied",
+              retryable: false,
+            }),
+          );
         },
       },
     },

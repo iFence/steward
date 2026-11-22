@@ -7,8 +7,11 @@ use std::time::{Duration, Instant};
 use nsh_core::access::HttpGrant;
 use nsh_engine::HostReply;
 use steward_plugin_contract::capabilities::NET_FETCH;
+use steward_plugin_contract::host_api::{HostCallError, HostErrorCode};
 use steward_plugin_host::PluginAuthorization;
 use url::Url;
+
+use crate::host_errors::RejectHostError;
 
 const NETWORK_WORKERS: usize = 2;
 const NETWORK_QUEUE_DEPTH: usize = 8;
@@ -120,48 +123,52 @@ impl NetworkRequest {
 
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkError {
-    code: &'static str,
+    code: HostErrorCode,
     message: String,
 }
 
 impl NetworkError {
     fn invalid(message: impl Into<String>) -> Self {
         Self {
-            code: "invalid_input",
+            code: HostErrorCode::InvalidInput,
             message: message.into(),
         }
     }
 
     fn denied(message: impl Into<String>) -> Self {
         Self {
-            code: "permission_denied",
+            code: HostErrorCode::PermissionDenied,
             message: message.into(),
         }
     }
 
     fn timeout(message: impl Into<String>) -> Self {
         Self {
-            code: "timeout",
+            code: HostErrorCode::Timeout,
             message: message.into(),
         }
     }
 
     fn resource(message: impl Into<String>) -> Self {
         Self {
-            code: "resource_exhausted",
+            code: HostErrorCode::ResourceExhausted,
             message: message.into(),
         }
     }
 
     fn failed(message: impl Into<String>) -> Self {
         Self {
-            code: "host_failure",
+            code: HostErrorCode::HostFailure,
             message: message.into(),
         }
     }
 
     pub(crate) fn host_message(&self) -> String {
-        format!("[{}] {}", self.code, self.message)
+        format!("[{}] {}", self.code.as_str(), self.message)
+    }
+
+    pub(crate) fn into_host_error(self) -> HostCallError {
+        HostCallError::new(self.code, self.message)
     }
 }
 
@@ -200,13 +207,13 @@ impl NetworkService {
                                     .resolve(serde_json::to_value(response).unwrap_or_default());
                             }
                             Err(error) => {
-                                let outcome = if error.code == "permission_denied" {
+                                let outcome = if error.code == HostErrorCode::PermissionDenied {
                                     "denied"
                                 } else {
                                     "failed"
                                 };
                                 audit(NET_FETCH, &scope, outcome, &error.host_message());
-                                task.reply.reject(error.host_message());
+                                task.reply.reject_host_error(error.into_host_error());
                             }
                         }
                     }
@@ -221,9 +228,12 @@ impl NetworkService {
         match self.tasks.try_send(task) {
             Ok(()) => {}
             Err(crossbeam_channel::TrySendError::Full(task))
-            | Err(crossbeam_channel::TrySendError::Disconnected(task)) => task
-                .reply
-                .reject("[resource_exhausted] the network capability queue is full; retry later"),
+            | Err(crossbeam_channel::TrySendError::Disconnected(task)) => {
+                task.reply.reject_code(
+                    HostErrorCode::ResourceExhausted,
+                    "the network capability queue is full; retry later",
+                );
+            }
         }
     }
 }

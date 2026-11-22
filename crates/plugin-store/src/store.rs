@@ -16,7 +16,7 @@ use crate::{
 pub(crate) fn install(
     store: &PluginStore,
     prepared: PreparedPackage,
-    require_update: bool,
+    mode: ActivationMode,
 ) -> Result<PluginOperation> {
     let inspection = store.inspect_prepared(&prepared)?;
     ensure_installable(&inspection)?;
@@ -24,7 +24,7 @@ pub(crate) fn install(
     ensure_plugin_id(&plugin_id)?;
 
     let active = store.plugins_root().join(&plugin_id);
-    if require_update && !active.exists() {
+    if mode == ActivationMode::Update && !active.exists() {
         anyhow::bail!("plugin '{plugin_id}' is not installed; use install instead of update");
     }
     let previous = if active.exists() {
@@ -35,26 +35,6 @@ pub(crate) fn install(
             );
         }
         let previous_inspection = store.inspect(&active)?;
-        let previous_version = Version::parse(&previous_inspection.version)
-            .context("parse installed plugin version")?;
-        let incoming_version =
-            Version::parse(&inspection.version).context("parse incoming plugin version")?;
-        if incoming_version <= previous_version {
-            anyhow::bail!(
-                "plugin '{}' version {} is not newer than installed version {}",
-                plugin_id,
-                inspection.version,
-                previous_inspection.version
-            );
-        }
-        if inspection.build <= previous_inspection.build {
-            anyhow::bail!(
-                "plugin '{}' build {} must be greater than installed build {}",
-                plugin_id,
-                inspection.build,
-                previous_inspection.build
-            );
-        }
         if inspection.publisher_key_id != previous_inspection.publisher_key_id {
             anyhow::bail!(
                 "plugin '{}' publisher changed from '{}' to '{}'; removal is required before changing publishers",
@@ -62,6 +42,32 @@ pub(crate) fn install(
                 previous_inspection.publisher_key_id.as_deref().unwrap_or("unknown"),
                 inspection.publisher_key_id.as_deref().unwrap_or("unknown")
             );
+        }
+        if mode == ActivationMode::DeveloperReplace {
+            Version::parse(&previous_inspection.version)
+                .context("parse installed plugin version")?;
+            Version::parse(&inspection.version).context("parse incoming plugin version")?;
+        } else {
+            let previous_version = Version::parse(&previous_inspection.version)
+                .context("parse installed plugin version")?;
+            let incoming_version =
+                Version::parse(&inspection.version).context("parse incoming plugin version")?;
+            if incoming_version <= previous_version {
+                anyhow::bail!(
+                    "plugin '{}' version {} is not newer than installed version {}",
+                    plugin_id,
+                    inspection.version,
+                    previous_inspection.version
+                );
+            }
+            if inspection.build <= previous_inspection.build {
+                anyhow::bail!(
+                    "plugin '{}' build {} must be greater than installed build {}",
+                    plugin_id,
+                    inspection.build,
+                    previous_inspection.build
+                );
+            }
         }
         Some(previous_inspection)
     } else {
@@ -155,6 +161,13 @@ pub(crate) fn install(
         added_capabilities,
         consent_required,
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivationMode {
+    Install,
+    Update,
+    DeveloperReplace,
 }
 
 pub(crate) fn list_installed(store: &PluginStore) -> Vec<InstalledPlugin> {

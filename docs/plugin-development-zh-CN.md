@@ -9,6 +9,7 @@ API、本地预览、无头测试、临时签名、完整 Steward 集成测试�
 - [Steward Plugin Manifest v2](plugin-manifest-spec.md)
 - [Extension API](extension-api.md)
 - [NSH 迁移计划与状态](nsh-migration.md)
+- [开发者模式与一键重载](plugin-developer-mode-zh-CN.md)
 
 ## 1. 架构约束
 
@@ -97,45 +98,39 @@ try {
 
 ## 3. 创建插件
 
-官方插件位于 `packages/plugins/`。创建新插件时，优先复制现有插件作为
-起点，保证 NSH、Steward API 和工作区配置一致：
+官方插件位于 `packages/plugins/`。外部插件不需要克隆 Steward 仓库，推荐使用
+`steward-plugin new` 生成依赖已发布 SDK tarball 的独立项目：
 
 ```powershell
-$plugins = "D:\rustprojects\steward\packages\plugins"
-$source = "$plugins\calendar"
-$target = "$plugins\my-plugin"
+cargo install --locked --version 0.6.1 nsh-cli
+cargo install --locked --git https://github.com/iFence/steward steward-plugin-cli
 
-New-Item -ItemType Directory -Force -Path $target | Out-Null
+steward-plugin new .\my-plugin `
+  --id com.example.my-plugin `
+  --name "My Plugin"
 
-@(
-  "App.tsx"
-  "App.test.tsx"
-  "nsh.json"
-  "plugin.json"
-  "package.json"
-  "tsconfig.json"
-) | ForEach-Object {
-  Copy-Item -LiteralPath "$source\$_" -Destination "$target\$_"
-}
-
-cd "D:\rustprojects\steward"
-corepack pnpm install
+cd .\my-plugin
+pnpm install
 ```
 
-然后修改包名、插件 ID、路由命令和版本：
+模板默认依赖与 Host API 匹配的版本化 SDK tarball，不使用 `workspace:*` 或
+源码路径。离线开发可用 `--sdk "file:D:\artifacts\steward-extension-api-0.5.0.tgz"`
+指定本地已发布产物。SDK 下载位置、版本矩阵和发布流程见
+[plugin-sdk-distribution.md](plugin-sdk-distribution.md)。
 
 ```text
-packages/plugins/my-plugin/
+my-plugin/
   App.tsx          # 插件入口
-  App.test.tsx     # 无头测试
+  App.test.tsx     # 交互与模拟宿主调用测试
   nsh.json         # NSH 包元数据、版本和能力
   plugin.json      # Steward 路由元数据
   package.json     # pnpm 包和脚本
   tsconfig.json
 ```
 
-`package.json` 的 `name` 必须是新的 `@steward/*` 包名。不要复制
-`dist/`、`.nsh/` 或 `node_modules/`；这些目录都是生成或本机安装内容。
+官方插件若需要在 Steward 工作区内开发，可从 `packages/plugins/` 的现有插件
+复制源码，但不要把复制出的项目作为外部发布模板。不要复制 `dist/`、`.nsh/`
+或 `node_modules/`；这些目录都是生成或本机安装内容。
 
 一个最小 `App.tsx`：
 

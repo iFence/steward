@@ -1,0 +1,38 @@
+{
+  "name": "Steward API Contract Harness",
+  "id": "com.steward.api-contract-harness",
+  "version": "0.0.0",
+  "build": 1,
+  "capabilities": {
+    "host": [
+      "steward.preferences.get",
+      "steward.preferences.all",
+      "steward.feedback.toast",
+      "steward.feedback.confirm",
+      "steward.feedback.progress",
+      "steward.clipboard.history",
+      "steward.clipboard.write",
+      "steward.storage.get",
+      "steward.storage.set",
+      "steward.calendar.holidays",
+      "steward.window.close",
+      "steward.navigation.back",
+      "steward.navigation.close",
+      "steward.navigation.setTitle",
+      "steward.fs.pick",
+      "steward.fs.cancelWalk",
+      "steward.fs.walk",
+      "steward.fs.readText",
+      "steward.fs.writeText",
+      "steward.fs.grants",
+      "steward.system.applications",
+      "steward.system.openPath",
+      "steward.system.revealPath",
+      "steward.system.openWith",
+      "steward.net.fetch",
+      "steward.exec.run",
+      "steward.exec.cancel"
+    ],
+    "statusBar": true
+  }
+}

@@ -4,7 +4,8 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui::{
     div, px, rgb, App, Context, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    Keystroke, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    Keystroke, ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement,
+    Styled, Window,
 };
 use gpui_kit::{
     assets::IconName,
@@ -20,6 +21,7 @@ use gpui_kit::{
 };
 
 use crate::{
+    developer_diagnostics::DeveloperDiagnosticsPort,
     i18n::Localization,
     plugin_management::{PluginManagementPort, PluginManagementSnapshot},
     services::{AppServices, WindowCommand},
@@ -168,6 +170,7 @@ impl Render for StewardSettings {
             SharedString::from(self.i18n.translate("settings-hotkey-recording"));
         let plugin_port = services.plugin_management();
         let plugin_snapshot = plugin_port.snapshot();
+        let developer_diagnostics = services.developer_diagnostics();
         let plugin_i18n = self.i18n.clone();
         let plugin_preference_groups =
             render_plugin_preferences(plugin_port.clone(), &plugin_snapshot);
@@ -323,9 +326,16 @@ impl Render for StewardSettings {
                 .group(SettingGroup::new().item(SettingItem::render({
                     let port = plugin_port;
                     let snapshot = plugin_snapshot;
+                    let developer_diagnostics = developer_diagnostics.clone();
                     let i18n = plugin_i18n;
                     move |_options, _window, cx| {
-                        render_plugins(port.clone(), snapshot.clone(), i18n.clone(), cx)
+                        render_plugins(
+                            port.clone(),
+                            snapshot.clone(),
+                            developer_diagnostics.clone(),
+                            i18n.clone(),
+                            cx,
+                        )
                     }
                 })))
                 .groups(plugin_preference_groups),
@@ -501,11 +511,15 @@ fn render_plugin_preferences(
 fn render_plugins(
     port: PluginManagementPort,
     snapshot: PluginManagementSnapshot,
+    developer_diagnostics: DeveloperDiagnosticsPort,
     i18n: Rc<Localization>,
     cx: &mut App,
 ) -> impl IntoElement {
     let refresh_port = port.clone();
     let sync_port = port.clone();
+    let local_zip_port = port.clone();
+    let local_directory_port = port.clone();
+    let developer_mode = developer_diagnostics.is_enabled();
     let busy = snapshot.busy;
     let mut content = v_flex()
         .gap_3()
@@ -514,6 +528,27 @@ fn render_plugins(
             h_flex()
                 .gap_2()
                 .items_center()
+                .flex_wrap()
+                .child(
+                    Button::new("plugins-install-local-zip")
+                        .label(i18n.translate("settings-plugin-install-zip"))
+                        .outline()
+                        .compact()
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            prompt_local_plugin(local_zip_port.clone(), false, cx);
+                        }),
+                )
+                .child(
+                    Button::new("plugins-install-local-directory")
+                        .label(i18n.translate("settings-plugin-install-directory"))
+                        .outline()
+                        .compact()
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            prompt_local_plugin(local_directory_port.clone(), true, cx);
+                        }),
+                )
                 .child(
                     Button::new("plugins-refresh")
                         .label(i18n.translate("settings-plugin-refresh"))
@@ -646,9 +681,11 @@ fn render_plugins(
         let update_port = port.clone();
         let remove_port = port.clone();
         let rollback_port = port.clone();
+        let reload_port = port.clone();
         let update_id = plugin_id.clone();
         let rollback_id = plugin_id.clone();
         let remove_id = plugin_id.clone();
+        let reload_id = plugin_id.clone();
         let rollback_version = plugin
             .history
             .first()
@@ -687,6 +724,16 @@ fn render_plugins(
                 .disabled(busy)
                 .on_click(move |_, _, _| remove_port.remove(remove_id.clone())),
         );
+        if developer_mode {
+            actions = actions.child(
+                Button::new(format!("plugin-reload-{plugin_id}"))
+                    .label(i18n.translate("settings-plugin-reload"))
+                    .outline()
+                    .compact()
+                    .disabled(busy)
+                    .on_click(move |_, _, _| reload_port.reload_developer(&reload_id)),
+            );
+        }
         content = content.child(
             v_flex()
                 .w_full()
@@ -998,6 +1045,243 @@ fn render_plugins(
         );
     }
 
+    if developer_mode {
+        content = content.child(render_developer_diagnostics(
+            port,
+            snapshot,
+            developer_diagnostics,
+            i18n,
+            cx,
+        ));
+    }
+
+    content
+}
+
+fn prompt_local_plugin(port: PluginManagementPort, directory: bool, cx: &mut App) {
+    let paths = cx.prompt_for_paths(PathPromptOptions {
+        files: !directory,
+        directories: directory,
+        multiple: false,
+        prompt: Some(if directory {
+            "Select plugin package folder".into()
+        } else {
+            "Select plugin package ZIP".into()
+        }),
+    });
+    cx.spawn(async move |_| match paths.await {
+        Ok(Ok(Some(paths))) => {
+            if let Some(path) = paths.into_iter().next() {
+                port.install_path(path);
+            }
+        }
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) => port.show_error(format!("Open the plugin picker: {error}")),
+        Err(_) => port.show_error("The plugin picker closed unexpectedly.".into()),
+    })
+    .detach();
+}
+
+fn render_developer_diagnostics(
+    port: PluginManagementPort,
+    snapshot: PluginManagementSnapshot,
+    developer_diagnostics: DeveloperDiagnosticsPort,
+    i18n: Rc<Localization>,
+    cx: &mut App,
+) -> impl IntoElement {
+    let diagnostics = developer_diagnostics.snapshot();
+    let mut content = v_flex()
+        .w_full()
+        .gap_2()
+        .p_3()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted)
+        .child(
+            div()
+                .text_size(px(14.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(i18n.translate("settings-plugin-developer-diagnostics")),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "{} {}",
+                    i18n.translate("settings-plugin-developer-data-dir"),
+                    diagnostics.data_dir.display()
+                )),
+        )
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(i18n.translate("settings-plugin-developer-payloads-omitted")),
+        );
+
+    for plugin in &snapshot.catalog.installed {
+        let runtime = diagnostics
+            .plugins
+            .iter()
+            .find(|diagnostic| diagnostic.plugin_id == plugin.manifest.id);
+        let audit = snapshot
+            .capability_audit
+            .get(&plugin.manifest.id)
+            .cloned()
+            .unwrap_or_default();
+        let host_failures = audit
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.outcome.as_str(),
+                    "denied" | "failed" | "permission_denied" | "host_failure"
+                )
+            })
+            .count();
+        let denied = audit
+            .iter()
+            .filter(|entry| matches!(entry.outcome.as_str(), "denied" | "permission_denied"))
+            .count();
+        let first_frame = runtime
+            .and_then(|runtime| runtime.first_frame_ms)
+            .map(|milliseconds| format!("{milliseconds} ms"))
+            .unwrap_or_else(|| "-".into());
+        let exits = runtime.map_or(0, |runtime| runtime.process_exits);
+        let crashes = runtime.map_or(0, |runtime| runtime.crashes);
+        let reload_port = port.clone();
+        let plugin_id = plugin.manifest.id.clone();
+        let mut plugin_content = v_flex()
+            .w_full()
+            .gap_2()
+            .p_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(format!(
+                                        "{} {}",
+                                        plugin.manifest.name, plugin.manifest.version
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(plugin.manifest.id.clone()),
+                            ),
+                    )
+                    .child(
+                        Button::new(format!("developer-reload-{plugin_id}"))
+                            .label(i18n.translate("settings-plugin-reload"))
+                            .outline()
+                            .compact()
+                            .on_click(move |_, _, _| reload_port.reload_developer(&plugin_id)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .text_size(px(10.0))
+                    .child(format!(
+                        "{}: {first_frame}",
+                        i18n.translate("settings-plugin-developer-first-frame")
+                    ))
+                    .child(format!(
+                        "{}: {host_failures}",
+                        i18n.translate("settings-plugin-developer-host-failures")
+                    ))
+                    .child(format!(
+                        "{}: {denied}",
+                        i18n.translate("settings-plugin-developer-denied")
+                    ))
+                    .child(format!(
+                        "{}: {exits}",
+                        i18n.translate("settings-plugin-developer-exits")
+                    ))
+                    .child(format!(
+                        "{}: {crashes}",
+                        i18n.translate("settings-plugin-developer-crashes")
+                    )),
+            );
+        if !audit.is_empty() {
+            plugin_content = plugin_content.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(i18n.translate("settings-plugin-developer-traces")),
+                    )
+                    .children(audit.iter().rev().take(8).map(|entry| {
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{}  {}", entry.capability, entry.outcome))
+                    })),
+            );
+        }
+        if let Some(runtime) = runtime {
+            if let Some(error) = &runtime.last_error {
+                plugin_content = plugin_content.child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(cx.theme().danger)
+                        .child(error.clone()),
+                );
+            }
+            if !runtime.recent_events.is_empty() {
+                plugin_content = plugin_content.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(i18n.translate("settings-plugin-developer-traces")),
+                        )
+                        .children(runtime.recent_events.iter().rev().take(8).map(|event| {
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(event.clone())
+                        })),
+                );
+            }
+            if !runtime.log_excerpt.is_empty() {
+                plugin_content = plugin_content.child(
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(i18n.translate("settings-plugin-developer-logs")),
+                        )
+                        .children(runtime.log_excerpt.iter().rev().take(8).map(|line| {
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(line.clone())
+                        })),
+                );
+            }
+        }
+        content = content.child(plugin_content);
+    }
     content
 }
 

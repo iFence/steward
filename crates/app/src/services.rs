@@ -14,6 +14,7 @@ use steward_storage::Storage;
 use steward_ui_components::palette;
 use tokio::sync::oneshot;
 
+use crate::developer_diagnostics::DeveloperDiagnosticsPort;
 use crate::i18n::UiStrings;
 pub(crate) use crate::launcher_model::RowAction;
 use crate::plugin_management::PluginManagementPort;
@@ -96,6 +97,7 @@ pub struct AppServices {
     notices: NoticePort,
     updates: UpdatePort,
     plugin_management: Arc<RwLock<PluginManagementPort>>,
+    developer_diagnostics: DeveloperDiagnosticsPort,
 }
 
 #[derive(Clone)]
@@ -136,6 +138,7 @@ impl AppServices {
             },
             updates: UpdatePort::default(),
             plugin_management: Arc::new(RwLock::new(PluginManagementPort::default())),
+            developer_diagnostics: DeveloperDiagnosticsPort::default(),
         }
     }
 
@@ -159,6 +162,18 @@ impl AppServices {
         if let Ok(mut current) = self.plugin_management.write() {
             *current = port;
         }
+    }
+
+    pub fn developer_diagnostics(&self) -> DeveloperDiagnosticsPort {
+        self.developer_diagnostics.clone()
+    }
+
+    pub fn configure_developer_diagnostics(&self, enabled: bool, data_dir: &std::path::Path) {
+        self.developer_diagnostics.configure(enabled, data_dir);
+    }
+
+    pub fn developer_diagnostics_revision(&self) -> u64 {
+        self.developer_diagnostics.revision()
     }
 
     pub fn launcher(&self) -> LauncherServices {
@@ -479,6 +494,10 @@ impl SearchState {
 
     pub fn refresh_plugins(&mut self) {
         self.plugins.refresh_now();
+    }
+
+    pub fn refresh_plugins_blocking(&mut self) -> anyhow::Result<()> {
+        self.plugins.refresh_blocking()
     }
 
     pub fn accept_receipt(&mut self, receipt: &nsh_package::PackageReceipt) -> anyhow::Result<()> {

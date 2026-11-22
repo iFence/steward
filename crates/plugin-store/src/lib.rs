@@ -6,6 +6,8 @@
 
 mod admission;
 mod archive;
+mod developer;
+mod doctor;
 mod marketplace;
 mod package;
 mod revocation;
@@ -23,6 +25,11 @@ use steward_plugin_registry::PluginManifest;
 pub use admission::{
     AdmissionCapabilityGroup, AdmissionCheck, AdmissionReview, PUBLIC_ADMISSION_POLICY_VERSION,
 };
+pub use developer::{
+    default_developer_data_dir, package_development_project, request_development_reload,
+    take_development_reload_requests, DevelopmentReloadRequest,
+};
+pub use doctor::{DoctorCheck, DoctorReport, DoctorStage};
 pub use marketplace::{
     MarketplaceEntry, MarketplaceIndex, MarketplacePublisher, MarketplaceSyncReport,
 };
@@ -44,6 +51,7 @@ pub struct PluginStoreConfig {
     pub data_dir: PathBuf,
     pub plugins_root: PathBuf,
     pub trust_roots: Vec<String>,
+    pub developer_mode: bool,
 }
 
 impl PluginStoreConfig {
@@ -56,7 +64,13 @@ impl PluginStoreConfig {
             data_dir: data_dir.into(),
             plugins_root: plugins_root.into(),
             trust_roots,
+            developer_mode: false,
         }
+    }
+
+    pub fn with_developer_mode(mut self, enabled: bool) -> Self {
+        self.developer_mode = enabled;
+        self
     }
 }
 
@@ -167,6 +181,10 @@ impl PluginStore {
         &self.marketplace_dir
     }
 
+    pub fn developer_mode(&self) -> bool {
+        self.config.developer_mode
+    }
+
     pub fn inspect(&self, path: &Path) -> Result<PackageInspection> {
         let prepared = archive::prepare_source(path)?;
         self.inspect_prepared(&prepared)
@@ -177,11 +195,33 @@ impl PluginStore {
     }
 
     pub fn install(&self, path: &Path) -> Result<PluginOperation> {
-        store::install(self, archive::prepare_source(path)?, false)
+        store::install(
+            self,
+            archive::prepare_source(path)?,
+            store::ActivationMode::Install,
+        )
     }
 
     pub fn update(&self, path: &Path) -> Result<PluginOperation> {
-        store::install(self, archive::prepare_source(path)?, true)
+        store::install(
+            self,
+            archive::prepare_source(path)?,
+            store::ActivationMode::Update,
+        )
+    }
+
+    /// Replace an installed development build even when its version and build
+    /// number are unchanged. Signature, trust-root, publisher, and capability
+    /// policy checks are identical to a normal install.
+    pub fn replace_development(&self, path: &Path) -> Result<PluginOperation> {
+        if !self.config.developer_mode {
+            anyhow::bail!("development replacement requires developer mode; use install or update");
+        }
+        store::install(
+            self,
+            archive::prepare_source(path)?,
+            store::ActivationMode::DeveloperReplace,
+        )
     }
 
     pub fn remove(&self, plugin_id: &str) -> Result<PluginOperation> {
@@ -266,6 +306,10 @@ impl PluginStore {
 
     pub fn applied_revocations(&self) -> Result<Option<AppliedRevocations>> {
         revocation::applied(self)
+    }
+
+    pub fn doctor(&self, id_or_source: &str) -> DoctorReport {
+        doctor::diagnose(self, id_or_source)
     }
 
     pub(crate) fn trust_store(&self) -> Result<TrustStore> {

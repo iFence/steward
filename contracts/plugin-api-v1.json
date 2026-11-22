@@ -1,0 +1,814 @@
+{
+  "contractVersion": 1,
+  "hostApiVersion": "0.5.0",
+  "errorEnvelopeVersion": 1,
+  "errorEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["version", "code", "message", "retryable"],
+    "properties": {
+      "version": { "const": 1 },
+      "code": {
+        "enum": [
+          "permission_denied",
+          "feature_unavailable",
+          "timeout",
+          "resource_exhausted",
+          "host_failure",
+          "invalid_input",
+          "cancelled",
+          "confirmation_denied",
+          "io_failure"
+        ]
+      },
+      "message": { "type": "string" },
+      "retryable": { "type": "boolean" }
+    },
+    "examples": [
+      {
+        "version": 1,
+        "code": "permission_denied",
+        "message": "clipboard write is not granted",
+        "retryable": false
+      }
+    ]
+  },
+  "errors": [
+    { "code": "permission_denied", "retryable": false },
+    { "code": "feature_unavailable", "retryable": false },
+    { "code": "timeout", "retryable": true },
+    { "code": "resource_exhausted", "retryable": true },
+    { "code": "host_failure", "retryable": true },
+    { "code": "invalid_input", "retryable": false },
+    { "code": "cancelled", "retryable": true },
+    { "code": "confirmation_denied", "retryable": false },
+    { "code": "io_failure", "retryable": false }
+  ],
+  "features": [
+    "host_info",
+    "runtime_feature_discovery",
+    "steward.feedback",
+    "steward.navigation",
+    "steward.preferences"
+  ],
+  "events": [
+    {
+      "name": "steward.command",
+      "payload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "input"],
+        "properties": {
+          "command": { "type": "string" },
+          "input": { "type": "string" }
+        },
+        "examples": [{ "command": "run", "input": "needle" }]
+      }
+    },
+    {
+      "name": "steward.theme",
+      "payload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accent", "dark"],
+        "properties": {
+          "accent": { "type": "string" },
+          "dark": { "type": "boolean" }
+        },
+        "examples": [{ "accent": "#863bff", "dark": true }]
+      }
+    },
+    {
+      "name": "steward.visibility",
+      "payload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["visible"],
+        "properties": {
+          "visible": { "type": "boolean" }
+        },
+        "examples": [{ "visible": true }]
+      }
+    },
+    {
+      "name": "steward.progress",
+      "payload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "message"],
+        "properties": {
+          "id": { "type": "string" },
+          "message": { "type": "string" },
+          "current": { "type": ["integer", "null"], "minimum": 0 },
+          "total": { "type": ["integer", "null"], "minimum": 0 }
+        },
+        "examples": [{ "id": "index", "message": "Indexing", "current": 2, "total": 10 }]
+      }
+    }
+  ],
+  "capabilities": [
+    { "permission": "steward.preferences.get", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.preferences.all", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.feedback.toast", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.feedback.confirm", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.feedback.progress", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.clipboard.history", "scope": "host=steward", "sensitive": true },
+    { "permission": "steward.clipboard.write", "scope": "host=steward", "sensitive": true },
+    { "permission": "steward.storage.get", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.storage.set", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.calendar.holidays", "scope": "host=steward", "sensitive": true },
+    { "permission": "steward.window.close", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.navigation.back", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.navigation.close", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.navigation.setTitle", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.fs.pick", "scope": "host=steward", "sensitive": true },
+    { "permission": "steward.fs.walk", "scope": "path=<user-selected-root>", "sensitive": true },
+    {
+      "permission": "steward.fs.readText",
+      "scope": "path=<user-selected-root>",
+      "sensitive": true
+    },
+    {
+      "permission": "steward.fs.writeText",
+      "scope": "path=<user-selected-root>",
+      "sensitive": true
+    },
+    { "permission": "steward.fs.grants", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.fs.cancelWalk", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.system.applications", "scope": "system=installed", "sensitive": true },
+    {
+      "permission": "steward.system.openPath",
+      "scope": "path=<user-selected-root>",
+      "sensitive": true
+    },
+    {
+      "permission": "steward.system.revealPath",
+      "scope": "path=<user-selected-root>",
+      "sensitive": true
+    },
+    {
+      "permission": "steward.system.openWith",
+      "scope": "path=<user-selected-root>;application=<installed-id>",
+      "sensitive": true
+    },
+    {
+      "permission": "steward.net.fetch",
+      "scope": "host=<granted-host>;schemes=<allowed-schemes>;methods=<allowed-methods>;pathPrefixes=<allowed-prefixes>",
+      "sensitive": true
+    },
+    { "permission": "steward.exec.run", "scope": "executable=<approved-exe>", "sensitive": true },
+    { "permission": "steward.exec.cancel", "scope": "host=steward", "sensitive": false }
+  ],
+  "calls": [
+    {
+      "name": "steward.preferences.get",
+      "family": "preferences",
+      "capability": "steward.preferences.get",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": { "key": { "type": "string", "minLength": 1 } },
+        "examples": [{ "key": "theme" }]
+      },
+      "response": {
+        "type": ["string", "null"],
+        "examples": ["dark"]
+      }
+    },
+    {
+      "name": "steward.preferences.all",
+      "family": "preferences",
+      "capability": "steward.preferences.all",
+      "transport": "call",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "object",
+        "additionalProperties": true,
+        "examples": [{ "theme": "dark" }]
+      }
+    },
+    {
+      "name": "steward.feedback.toast",
+      "family": "feedback",
+      "capability": "steward.feedback.toast",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "message"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "message": { "type": "string", "maxLength": 1024 }
+        },
+        "examples": [{ "title": "Indexed", "message": "Repository index is ready." }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.feedback.confirm",
+      "family": "feedback",
+      "capability": "steward.feedback.confirm",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "message"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "message": { "type": "string", "maxLength": 4096 },
+          "confirmLabel": { "type": "string", "maxLength": 64 },
+          "cancelLabel": { "type": "string", "maxLength": 64 },
+          "destructive": { "type": "boolean" }
+        },
+        "examples": [
+          {
+            "title": "Delete repository",
+            "message": "Move this repository to the Recycle Bin?",
+            "confirmLabel": "Move",
+            "cancelLabel": "Cancel",
+            "destructive": true
+          }
+        ]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["confirmed"],
+        "properties": { "confirmed": { "type": "boolean" } },
+        "examples": [{ "confirmed": true }]
+      }
+    },
+    {
+      "name": "steward.feedback.progress",
+      "family": "feedback",
+      "capability": "steward.feedback.progress",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "message"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "message": { "type": "string", "maxLength": 1024 },
+          "current": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 }
+        },
+        "examples": [{ "id": "index", "message": "Indexing", "current": 2, "total": 10 }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.clipboard.history",
+      "family": "clipboard",
+      "capability": "steward.clipboard.history",
+      "transport": "call",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "text", "copied_at"],
+          "properties": {
+            "id": { "type": "string" },
+            "text": { "type": "string" },
+            "copied_at": { "type": "integer" }
+          }
+        },
+        "examples": [[{ "id": "42", "text": "Steward", "copied_at": 1763769600 }]]
+      }
+    },
+    {
+      "name": "steward.clipboard.write",
+      "family": "clipboard",
+      "capability": "steward.clipboard.write",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": { "text": { "type": "string" } },
+        "examples": [{ "text": "Steward" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.storage.get",
+      "family": "storage",
+      "capability": "steward.storage.get",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": { "key": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "examples": [{ "key": "favorites" }]
+      },
+      "response": {
+        "type": ["string", "null"],
+        "examples": ["[]"]
+      }
+    },
+    {
+      "name": "steward.storage.set",
+      "family": "storage",
+      "capability": "steward.storage.set",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "value"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "value": { "type": "string", "maxLength": 1048576 }
+        },
+        "examples": [{ "key": "favorites", "value": "[]" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.calendar.holidays",
+      "family": "calendar",
+      "capability": "steward.calendar.holidays",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["year"],
+        "properties": {
+          "year": { "type": "integer", "minimum": 0, "maximum": 65535 }
+        },
+        "examples": [{ "year": 2026 }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": { "enum": ["holiday", "workday"] },
+        "examples": [{ "2026-01-01": "holiday" }]
+      }
+    },
+    {
+      "name": "steward.window.close",
+      "family": "navigation",
+      "capability": "steward.window.close",
+      "transport": "post",
+      "request": { "type": "null", "examples": [null] },
+      "response": { "type": "null", "examples": [null] }
+    },
+    {
+      "name": "steward.navigation.back",
+      "family": "navigation",
+      "capability": "steward.navigation.back",
+      "transport": "call",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.navigation.close",
+      "family": "navigation",
+      "capability": "steward.navigation.close",
+      "transport": "call",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.navigation.setTitle",
+      "family": "navigation",
+      "capability": "steward.navigation.setTitle",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": { "title": { "type": "string", "minLength": 1, "maxLength": 128 } },
+        "examples": [{ "title": "Repositories" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.fs.pick",
+      "family": "filesystem",
+      "capability": "steward.fs.pick",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mode"],
+        "properties": {
+          "mode": { "enum": ["folderRead", "folderWrite", "fileRead"] }
+        },
+        "examples": [{ "mode": "folderWrite" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string" } },
+        "examples": [{ "path": "D:\\projects" }]
+      }
+    },
+    {
+      "name": "steward.fs.cancelWalk",
+      "family": "filesystem",
+      "capability": "steward.fs.cancelWalk",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": { "id": { "type": "string", "minLength": 1, "maxLength": 128 } },
+        "examples": [{ "id": "contract-walk-1" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cancelled"],
+        "properties": { "cancelled": { "type": "boolean" } },
+        "examples": [{ "cancelled": true }]
+      }
+    },
+    {
+      "name": "steward.fs.walk",
+      "family": "filesystem",
+      "capability": "steward.fs.walk",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "root"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "root": { "type": "string", "minLength": 1 },
+          "maxResults": { "type": "integer", "minimum": 1, "maximum": 20000 },
+          "maxDepth": { "type": "integer", "minimum": 1, "maximum": 64 },
+          "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 30000 }
+        },
+        "examples": [
+          {
+            "id": "contract-walk-1",
+            "root": "D:\\projects",
+            "maxResults": 2000,
+            "maxDepth": 24,
+            "timeoutMs": 10000
+          }
+        ]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["root", "entries", "truncated", "elapsedMs"],
+        "properties": {
+          "root": { "type": "string" },
+          "entries": { "type": "array" },
+          "truncated": { "type": "boolean" },
+          "elapsedMs": { "type": "integer", "minimum": 0 }
+        },
+        "examples": [
+          {
+            "root": "D:\\projects",
+            "entries": [
+              {
+                "path": "D:\\projects\\steward",
+                "relativePath": "steward",
+                "directory": true,
+                "reparsePoint": false,
+                "size": 0
+              }
+            ],
+            "truncated": false,
+            "elapsedMs": 4
+          }
+        ]
+      }
+    },
+    {
+      "name": "steward.fs.readText",
+      "family": "filesystem",
+      "capability": "steward.fs.readText",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "maxBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 }
+        },
+        "examples": [{ "path": "D:\\projects\\steward\\README.md", "maxBytes": 1048576 }]
+      },
+      "response": {
+        "type": "string",
+        "examples": ["# Steward\n"]
+      }
+    },
+    {
+      "name": "steward.fs.writeText",
+      "family": "filesystem",
+      "capability": "steward.fs.writeText",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "contents"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "contents": { "type": "string", "maxLength": 4194304 }
+        },
+        "examples": [{ "path": "D:\\projects\\steward\\notes.txt", "contents": "hello\n" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string" } },
+        "examples": [{ "path": "D:\\projects\\steward\\notes.txt" }]
+      }
+    },
+    {
+      "name": "steward.fs.grants",
+      "family": "filesystem",
+      "capability": "steward.fs.grants",
+      "transport": "call",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "read", "write"],
+          "properties": {
+            "path": { "type": "string" },
+            "read": { "type": "boolean" },
+            "write": { "type": "boolean" }
+          }
+        },
+        "examples": [[{ "path": "D:\\projects", "read": true, "write": true }]]
+      }
+    },
+    {
+      "name": "steward.system.applications",
+      "family": "system",
+      "capability": "steward.system.applications",
+      "transport": "call",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "name"],
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" }
+          }
+        },
+        "examples": [[{ "id": "C:\\Program Files\\Editor\\editor.exe", "name": "Editor" }]]
+      }
+    },
+    {
+      "name": "steward.system.openPath",
+      "family": "system",
+      "capability": "steward.system.openPath",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string", "minLength": 1 } },
+        "examples": [{ "path": "D:\\projects\\steward" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string" } },
+        "examples": [{ "path": "D:\\projects\\steward" }]
+      }
+    },
+    {
+      "name": "steward.system.revealPath",
+      "family": "system",
+      "capability": "steward.system.revealPath",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string", "minLength": 1 } },
+        "examples": [{ "path": "D:\\projects\\steward" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string" } },
+        "examples": [{ "path": "D:\\projects\\steward" }]
+      }
+    },
+    {
+      "name": "steward.system.openWith",
+      "family": "system",
+      "capability": "steward.system.openWith",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["applicationId", "path"],
+        "properties": {
+          "applicationId": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 }
+        },
+        "examples": [
+          {
+            "applicationId": "C:\\Program Files\\Editor\\editor.exe",
+            "path": "D:\\projects\\steward\\README.md"
+          }
+        ]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.net.fetch",
+      "family": "network",
+      "capability": "steward.net.fetch",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "method", "timeoutMs"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "method": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
+          "headers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "body": { "type": "string", "maxLength": 1048576 },
+          "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 30000 },
+          "maxResponseBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 }
+        },
+        "examples": [
+          {
+            "url": "https://api.github.com/rate_limit",
+            "method": "GET",
+            "headers": { "Accept": "application/vnd.github+json" },
+            "timeoutMs": 10000,
+            "maxResponseBytes": 262144
+          }
+        ]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "url", "headers", "body", "redirects", "elapsedMs"],
+        "properties": {
+          "status": { "type": "integer" },
+          "url": { "type": "string" },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "value"],
+              "properties": {
+                "name": { "type": "string" },
+                "value": { "type": "string" }
+              }
+            }
+          },
+          "body": { "type": "string" },
+          "redirects": { "type": "integer", "minimum": 0 },
+          "elapsedMs": { "type": "integer", "minimum": 0 }
+        },
+        "examples": [
+          {
+            "status": 200,
+            "url": "https://api.github.com/rate_limit",
+            "headers": [{ "name": "content-type", "value": "application/json" }],
+            "body": "{\"rate\":{\"remaining\":59,\"limit\":60}}",
+            "redirects": 0,
+            "elapsedMs": 12
+          }
+        ]
+      }
+    },
+    {
+      "name": "steward.exec.run",
+      "family": "process",
+      "capability": "steward.exec.run",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "executable",
+          "arguments",
+          "workingDirectory",
+          "timeoutMs",
+          "maxOutputBytes"
+        ],
+        "properties": {
+          "requestId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "executable": { "type": "string", "minLength": 1, "maxLength": 260 },
+          "arguments": {
+            "type": "array",
+            "maxItems": 256,
+            "items": { "type": "string" }
+          },
+          "workingDirectory": { "type": "string", "minLength": 1 },
+          "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000 },
+          "maxOutputBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 }
+        },
+        "examples": [
+          {
+            "requestId": 8180697935898170,
+            "executable": "git.exe",
+            "arguments": ["status", "--porcelain=v1"],
+            "workingDirectory": "D:\\projects\\steward",
+            "timeoutMs": 30000,
+            "maxOutputBytes": 1048576
+          }
+        ]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["exitCode", "stdout", "stderr", "durationMs", "timedOut", "cancelled"],
+        "properties": {
+          "exitCode": { "type": ["integer", "null"] },
+          "stdout": { "type": "string" },
+          "stderr": { "type": "string" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "timedOut": { "type": "boolean" },
+          "cancelled": { "type": "boolean" }
+        },
+        "examples": [
+          {
+            "exitCode": 0,
+            "stdout": "## main...origin/main\n",
+            "stderr": "",
+            "durationMs": 8,
+            "timedOut": false,
+            "cancelled": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "steward.exec.cancel",
+      "family": "process",
+      "capability": "steward.exec.cancel",
+      "transport": "call",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requestId"],
+        "properties": {
+          "requestId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+        },
+        "examples": [{ "requestId": 8180697935898170 }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cancelled"],
+        "properties": { "cancelled": { "type": "boolean" } },
+        "examples": [{ "cancelled": true }]
+      }
+    }
+  ]
+}

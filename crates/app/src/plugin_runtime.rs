@@ -47,6 +47,13 @@ impl PluginRuntimeState {
         self.spawn_plugin_scan();
     }
 
+    pub(crate) fn refresh_blocking(&mut self) -> anyhow::Result<()> {
+        self.registry.scan()?;
+        self.host.set_plugins(&self.registry.cached_plugins()?);
+        self.next_plugin_scan = Instant::now() + PLUGIN_RESCAN_INTERVAL;
+        Ok(())
+    }
+
     pub(crate) fn host(&self) -> &PluginHost {
         &self.host
     }

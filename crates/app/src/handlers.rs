@@ -109,6 +109,103 @@ pub(crate) fn drain_plugin_management_state(cx: &mut AsyncApp, state: &Rc<RefCel
     cx.update(|cx| cx.refresh_windows());
 }
 
+pub(crate) fn drain_developer_diagnostics_state(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
+    let revision = state.borrow().services.developer_diagnostics_revision();
+    if state.borrow().last_developer_diagnostics_revision == revision {
+        return;
+    }
+    state.borrow_mut().last_developer_diagnostics_revision = revision;
+    cx.update(|cx| cx.refresh_windows());
+}
+
+pub(crate) fn drain_development_reloads(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
+    if !state.borrow().services.developer_diagnostics().is_enabled() {
+        return;
+    }
+    let data_dir = state.borrow().data_dir.clone();
+    let requests = match steward_plugin_store::take_development_reload_requests(&data_dir) {
+        Ok(requests) => requests,
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "read development reload queue");
+            return;
+        }
+    };
+    for reload in requests {
+        let existing = state
+            .borrow()
+            .plugin_windows
+            .get(&reload.plugin_id)
+            .map(|process| process.request().clone());
+        if existing.is_none() && !reload.open {
+            continue;
+        }
+        if let Err(error) = state
+            .borrow_mut()
+            .search
+            .borrow_mut()
+            .refresh_plugins_blocking()
+        {
+            report_launch_failure(
+                state,
+                &LaunchRequest {
+                    plugin_id: reload.plugin_id.clone(),
+                    command: reload.command.clone(),
+                    title: reload.title.clone(),
+                    input: String::new(),
+                    locale: state.borrow().services.locale(),
+                    accent: state.borrow().services.accent(),
+                    dark: true,
+                    presentation: steward_plugin_contract::PresentationMode::Windowed,
+                },
+                steward_plugin_contract::PluginErrorCode::LoadFailed,
+                &format!("refresh plugin route cache before static reload: {error:#}"),
+            );
+            continue;
+        }
+        let (locale, accent) = {
+            let state = state.borrow();
+            (state.services.locale(), state.services.accent())
+        };
+        let request = existing.map_or_else(
+            || LaunchRequest {
+                plugin_id: reload.plugin_id.clone(),
+                command: reload.command.clone(),
+                title: reload.title.clone(),
+                input: String::new(),
+                locale: locale.clone(),
+                accent: accent.clone(),
+                dark: true,
+                presentation: steward_plugin_contract::PresentationMode::Windowed,
+            },
+            |existing| LaunchRequest {
+                plugin_id: reload.plugin_id.clone(),
+                command: reload.command.clone(),
+                title: reload.title.clone(),
+                input: existing.input,
+                locale: locale.clone(),
+                accent: accent.clone(),
+                dark: true,
+                presentation: existing.presentation,
+            },
+        );
+        cx.update(|cx| crate::plugin_window::close(cx, state, &reload.plugin_id));
+        let result = state
+            .borrow_mut()
+            .search
+            .borrow_mut()
+            .start_launch(request.clone());
+        if let Err(error) = result {
+            record_failed_launch(state, &request.plugin_id, error.code());
+            report_launch_failure(state, &request, error.code(), &error.to_string());
+        } else {
+            tracing::info!(
+                plugin_id = %request.plugin_id,
+                "static development reload started"
+            );
+        }
+    }
+}
+
 pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
     loop {
         let outcome = state.borrow_mut().search.borrow_mut().poll_launch();
@@ -144,6 +241,14 @@ pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppSta
                         steward_plugin_contract::PluginErrorCode::LoadFailed,
                         &format!("{error:#}"),
                     );
+                } else if let Some(session_id) =
+                    state.borrow().plugin_windows.session_id(&latest.plugin_id)
+                {
+                    state
+                        .borrow()
+                        .services
+                        .developer_diagnostics()
+                        .record_launch(&latest.plugin_id, session_id, requested_at);
                 }
             }
             PluginLaunchOutcome::Failed {
@@ -152,6 +257,11 @@ pub(crate) fn drain_plugin_launches(cx: &mut AsyncApp, state: &Rc<RefCell<AppSta
                 error,
             } => {
                 record_failed_launch(state, &request.plugin_id, code);
+                state
+                    .borrow()
+                    .services
+                    .developer_diagnostics()
+                    .record_failure(&request.plugin_id, None, code, &error);
                 report_launch_failure(state, &request, code, &error);
             }
         }
@@ -173,6 +283,15 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     continue;
                 }
                 state.borrow_mut().plugin_windows.record_healthy(&plugin_id);
+                state
+                    .borrow()
+                    .services
+                    .developer_diagnostics()
+                    .record_first_frame(
+                        &plugin_id,
+                        session_id,
+                        first_frame_at.saturating_duration_since(requested_at),
+                    );
                 // RefCell borrows in an `if let` scrutinee live through both
                 // arms. Finish the nested borrow before reading services.
                 let accepted = state.borrow().search.borrow_mut().accept_receipt(&receipt);
@@ -282,6 +401,11 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                 if request.presentation == steward_plugin_contract::PresentationMode::Embedded {
                     show_launcher(cx, state);
                 }
+                state
+                    .borrow()
+                    .services
+                    .developer_diagnostics()
+                    .record_stopped(&plugin_id, session_id);
             }
             PluginRuntimeEvent::Failed {
                 plugin_id,
@@ -294,6 +418,11 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     continue;
                 }
                 record_plugin_process_failure(state, &plugin_id, session_id, code);
+                state
+                    .borrow()
+                    .services
+                    .developer_diagnostics()
+                    .record_failure(&plugin_id, Some(session_id), code, &error);
                 let embedded =
                     state
                         .borrow()
@@ -328,6 +457,11 @@ pub(crate) fn drain_plugin_events(cx: &mut AsyncApp, state: &Rc<RefCell<AppState
                     continue;
                 }
                 record_plugin_process_failure(state, &plugin_id, session_id, code);
+                state
+                    .borrow()
+                    .services
+                    .developer_diagnostics()
+                    .record_failure(&plugin_id, Some(session_id), code, &error);
                 report_launch_failure(state, &request, code, &error);
                 if request.presentation == steward_plugin_contract::PresentationMode::Embedded {
                     show_launcher(cx, state);
@@ -655,6 +789,11 @@ fn activate(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>, action: RowAction)
                 .start_launch(request.clone());
             if let Err(error) = launch_result {
                 record_failed_launch(state, &request.plugin_id, error.code());
+                state
+                    .borrow()
+                    .services
+                    .developer_diagnostics()
+                    .record_failure(&request.plugin_id, None, error.code(), &error.to_string());
                 report_launch_failure(state, &request, error.code(), &error.to_string());
             }
         }

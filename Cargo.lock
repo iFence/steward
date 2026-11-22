@@ -8672,6 +8672,7 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "dirs 6.0.0",
  "nsh-core",
  "nsh-engine",
  "nsh-package",

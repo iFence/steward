@@ -1,4 +1,33 @@
 import { host } from "nsh";
+import {
+  HOST_API_VERSION,
+  HOST_ERROR_ENVELOPE_VERSION,
+  HOST_ERROR_CODES,
+  type HostCallName,
+  type HostErrorPayload,
+  type HostEventName,
+  type StewardErrorCode,
+} from "./contract.generated";
+
+export type {
+  HostCallFixture,
+  HostCallName,
+  HostErrorPayload,
+  HostEventName,
+  StewardErrorCode,
+} from "./contract.generated";
+export {
+  HOST_API_VERSION,
+  HOST_CALL_FIXTURES,
+  HOST_CALL_NAMES,
+  HOST_CAPABILITIES,
+  HOST_CONTRACT_VERSION,
+  HOST_ERROR_CODES,
+  HOST_ERROR_ENVELOPE_VERSION,
+  HOST_EVENT_NAMES,
+  HOST_FEATURE_NAMES,
+  HOST_RETRYABLE_ERROR_CODES,
+} from "./contract.generated";
 
 export type PresentationMode = "windowed" | "embedded";
 
@@ -23,16 +52,6 @@ export interface ClipboardEntry {
 
 export type HolidayDayKind = "holiday" | "workday";
 export type HolidaySchedule = Record<string, HolidayDayKind>;
-export type StewardErrorCode =
-  | "permission_denied"
-  | "feature_unavailable"
-  | "timeout"
-  | "resource_exhausted"
-  | "host_failure"
-  | "invalid_input"
-  | "cancelled"
-  | "confirmation_denied"
-  | "io_failure";
 
 export type PathPickMode = "folderRead" | "folderWrite" | "fileRead";
 
@@ -144,7 +163,7 @@ export function launchParams(): StewardLaunchParams {
     accent: value.accent ?? "#863bff",
     dark: value.dark ?? true,
     presentation: value.presentation === "embedded" ? "embedded" : "windowed",
-    hostApiVersion: value.hostApiVersion ?? "0.0.0",
+    hostApiVersion: value.hostApiVersion ?? HOST_API_VERSION,
     features: value.features ?? [],
     preferences: value.preferences ?? {},
   };
@@ -183,20 +202,20 @@ export function preference<T>(key: string, fallback: T): T {
 export function onCommand(
   listener: (command: { command: string; input: string }) => void,
 ): () => void {
-  return host.on("steward.command", (value) => {
+  return onHost("steward.command", (value) => {
     listener(value as { command: string; input: string });
   });
 }
 
 export function onTheme(listener: (theme: { accent: string; dark: boolean }) => void): () => void {
-  return host.on("steward.theme", (value) => {
+  return onHost("steward.theme", (value) => {
     listener(value as { accent: string; dark: boolean });
   });
 }
 
 export async function clipboardHistory(): Promise<ClipboardEntry[]> {
   try {
-    return await host.call<ClipboardEntry[]>("steward.clipboard.history");
+    return await callHost<ClipboardEntry[]>("steward.clipboard.history");
   } catch (error) {
     throw hostCallError("steward.clipboard.history", error);
   }
@@ -204,7 +223,7 @@ export async function clipboardHistory(): Promise<ClipboardEntry[]> {
 
 export async function copyText(text: string): Promise<void> {
   try {
-    await host.call("steward.clipboard.write", { text });
+    await callHost("steward.clipboard.write", { text });
   } catch (error) {
     throw hostCallError("steward.clipboard.write", error);
   }
@@ -212,7 +231,7 @@ export async function copyText(text: string): Promise<void> {
 
 export async function storageGet(key: string): Promise<string | null> {
   try {
-    return await host.call<string | null>("steward.storage.get", { key });
+    return await callHost<string | null>("steward.storage.get", { key });
   } catch (error) {
     throw hostCallError("steward.storage.get", error);
   }
@@ -220,7 +239,7 @@ export async function storageGet(key: string): Promise<string | null> {
 
 export async function storageSet(key: string, value: string): Promise<void> {
   try {
-    await host.call("steward.storage.set", { key, value });
+    await callHost("steward.storage.set", { key, value });
   } catch (error) {
     throw hostCallError("steward.storage.set", error);
   }
@@ -229,7 +248,7 @@ export async function storageSet(key: string, value: string): Promise<void> {
 export async function calendarHolidays(year: number): Promise<HolidaySchedule> {
   if (!Number.isInteger(year)) throw new Error("calendarHolidays requires an integer year");
   try {
-    return await host.call<HolidaySchedule>(
+    return await callHost<HolidaySchedule>(
       "steward.calendar.holidays",
       { year },
       { timeout: 20_000 },
@@ -240,12 +259,12 @@ export async function calendarHolidays(year: number): Promise<HolidaySchedule> {
 }
 
 export function closeWindow(): void {
-  host.post("steward.window.close", null);
+  postHost("steward.window.close", null);
 }
 
 export async function backToLauncher(): Promise<void> {
   try {
-    await host.call("steward.navigation.back");
+    await callHost("steward.navigation.back");
   } catch (error) {
     throw hostCallError("steward.navigation.back", error);
   }
@@ -253,7 +272,7 @@ export async function backToLauncher(): Promise<void> {
 
 export async function closePage(): Promise<void> {
   try {
-    await host.call("steward.navigation.close");
+    await callHost("steward.navigation.close");
   } catch (error) {
     throw hostCallError("steward.navigation.close", error);
   }
@@ -265,14 +284,14 @@ export async function setPageTitle(title: string): Promise<void> {
     throw new StewardError("invalid_input", "page title must contain 1 to 128 characters");
   }
   try {
-    await host.call("steward.navigation.setTitle", { title: value });
+    await callHost("steward.navigation.setTitle", { title: value });
   } catch (error) {
     throw hostCallError("steward.navigation.setTitle", error);
   }
 }
 
 export function onVisibility(listener: (visible: boolean) => void): () => void {
-  return host.on("steward.visibility", (value) => {
+  return onHost("steward.visibility", (value) => {
     const event = value as { visible?: unknown };
     listener(event.visible === true);
   });
@@ -288,7 +307,7 @@ export async function toast(options: ToastOptions): Promise<void> {
     throw new StewardError("invalid_input", "toast requires a title and message");
   }
   try {
-    await host.call("steward.feedback.toast", options);
+    await callHost("steward.feedback.toast", options);
   } catch (error) {
     throw hostCallError("steward.feedback.toast", error);
   }
@@ -307,7 +326,7 @@ export async function confirm(options: ConfirmOptions): Promise<boolean> {
     throw new StewardError("invalid_input", "confirm requires a title and message");
   }
   try {
-    const result = await host.call<{ confirmed: boolean }>("steward.feedback.confirm", options, {
+    const result = await callHost<{ confirmed: boolean }>("steward.feedback.confirm", options, {
       timeout: 300_000,
     });
     return result.confirmed;
@@ -344,14 +363,14 @@ export async function reportProgress(update: ProgressUpdate): Promise<void> {
     throw new StewardError("invalid_input", "progress current must not exceed total");
   }
   try {
-    await host.call("steward.feedback.progress", update);
+    await callHost("steward.feedback.progress", update);
   } catch (error) {
     throw hostCallError("steward.feedback.progress", error);
   }
 }
 
 export function onProgress(listener: (update: ProgressUpdate) => void): () => void {
-  return host.on("steward.progress", (value) => {
+  return onHost("steward.progress", (value) => {
     listener(value as unknown as ProgressUpdate);
   });
 }
@@ -366,7 +385,7 @@ export async function pickFile(): Promise<string | null> {
 
 async function pickPath(mode: PathPickMode): Promise<string | null> {
   try {
-    const result = await host.call<{ path: string }>(
+    const result = await callHost<{ path: string }>(
       "steward.fs.pick",
       { mode },
       {
@@ -383,7 +402,7 @@ async function pickPath(mode: PathPickMode): Promise<string | null> {
 
 export async function filesystemGrants(): Promise<FilesystemGrant[]> {
   try {
-    return await host.call<FilesystemGrant[]>("steward.fs.grants");
+    return await callHost<FilesystemGrant[]>("steward.fs.grants");
   } catch (error) {
     throw hostCallError("steward.fs.grants", error);
   }
@@ -395,7 +414,7 @@ export async function walk(options: WalkOptions): Promise<WalkResult> {
   }
   const id = options.id ?? createWalkId();
   try {
-    return await host.call<WalkResult>(
+    return await callHost<WalkResult>(
       "steward.fs.walk",
       {
         id,
@@ -416,7 +435,7 @@ export async function cancelWalk(id: string): Promise<boolean> {
     throw new StewardError("invalid_input", "cancelWalk requires a walk id");
   }
   try {
-    const result = await host.call<{ cancelled: boolean }>("steward.fs.cancelWalk", { id });
+    const result = await callHost<{ cancelled: boolean }>("steward.fs.cancelWalk", { id });
     return result.cancelled;
   } catch (error) {
     throw hostCallError("steward.fs.cancelWalk", error);
@@ -428,7 +447,7 @@ export async function readText(path: string, maxBytes = 1024 * 1024): Promise<st
     throw new StewardError("invalid_input", "readText requires a path");
   }
   try {
-    return await host.call<string>("steward.fs.readText", { path, maxBytes });
+    return await callHost<string>("steward.fs.readText", { path, maxBytes });
   } catch (error) {
     throw hostCallError("steward.fs.readText", error);
   }
@@ -439,7 +458,7 @@ export async function writeText(path: string, contents: string): Promise<string>
     throw new StewardError("invalid_input", "writeText requires a path");
   }
   try {
-    const result = await host.call<{ path: string }>("steward.fs.writeText", { path, contents });
+    const result = await callHost<{ path: string }>("steward.fs.writeText", { path, contents });
     return result.path;
   } catch (error) {
     throw hostCallError("steward.fs.writeText", error);
@@ -448,7 +467,7 @@ export async function writeText(path: string, contents: string): Promise<string>
 
 export async function installedApplications(): Promise<InstalledApplication[]> {
   try {
-    return await host.call<InstalledApplication[]>("steward.system.applications", undefined, {
+    return await callHost<InstalledApplication[]>("steward.system.applications", undefined, {
       timeout: 20_000,
     });
   } catch (error) {
@@ -461,7 +480,7 @@ export async function openPath(path: string): Promise<void> {
     throw new StewardError("invalid_input", "openPath requires a path");
   }
   try {
-    await host.call("steward.system.openPath", { path });
+    await callHost("steward.system.openPath", { path });
   } catch (error) {
     throw hostCallError("steward.system.openPath", error);
   }
@@ -472,7 +491,7 @@ export async function revealPath(path: string): Promise<void> {
     throw new StewardError("invalid_input", "revealPath requires a path");
   }
   try {
-    await host.call("steward.system.revealPath", { path });
+    await callHost("steward.system.revealPath", { path });
   } catch (error) {
     throw hostCallError("steward.system.revealPath", error);
   }
@@ -483,7 +502,7 @@ export async function openWith(applicationId: string, path: string): Promise<voi
     throw new StewardError("invalid_input", "openWith requires an applicationId and path");
   }
   try {
-    await host.call("steward.system.openWith", { applicationId, path });
+    await callHost("steward.system.openWith", { applicationId, path });
   } catch (error) {
     throw hostCallError("steward.system.openWith", error);
   }
@@ -495,7 +514,7 @@ export async function fetchHttp(options: HttpFetchOptions): Promise<HttpResponse
   }
   const timeoutMs = options.timeoutMs ?? 10_000;
   try {
-    return await host.call<HttpResponse>(
+    return await callHost<HttpResponse>(
       "steward.net.fetch",
       {
         url: options.url,
@@ -523,12 +542,16 @@ export async function runProcess(options: ProcessRunOptions): Promise<ProcessRes
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) {
     throw new StewardError("invalid_input", "process id contains unsupported characters");
   }
+  // The launcher broker correlates requests with a positive u64. Keep the
+  // friendlier string ID at the public API boundary and use one stable mapping
+  // for both run and cancel calls.
+  const numericRequestId = processIdNumber(requestId);
   const timeoutMs = options.timeoutMs ?? 30_000;
   try {
-    const result = await host.call<Omit<ProcessResult, "requestId">>(
+    const result = await callHost<Omit<ProcessResult, "requestId">>(
       "steward.exec.run",
       {
-        requestId,
+        requestId: numericRequestId,
         executable: options.executable,
         arguments: options.arguments ?? [],
         workingDirectory: options.workingDirectory,
@@ -549,7 +572,7 @@ export async function cancelProcess(requestId: string): Promise<boolean> {
   }
   const numericId = processIdNumber(requestId);
   try {
-    const result = await host.call<{ cancelled: boolean }>("steward.exec.cancel", {
+    const result = await callHost<{ cancelled: boolean }>("steward.exec.cancel", {
       requestId: numericId,
     });
     return result.cancelled;
@@ -569,62 +592,69 @@ function createProcessId(): string {
 }
 
 function processIdNumber(value: string): number {
-  let hash = 0x811c9dc5;
+  let high = 0x811c9dc5;
+  let low = 0x9e3779b9;
   for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
+    const code = value.charCodeAt(index);
+    high ^= code;
+    high = Math.imul(high, 0x01000193) >>> 0;
+    low ^= code + index;
+    low = Math.imul(low, 0x85ebca6b) >>> 0;
   }
-  return hash >>> 0 || 1;
+  return (high & 0x1fffff) * 0x100000000 + low || 1;
+}
+
+function callHost<T = unknown>(
+  name: HostCallName,
+  data?: unknown,
+  options?: { timeout?: number },
+): Promise<T> {
+  return host.call<T>(name, data, options);
+}
+
+function postHost(name: HostCallName, data: unknown): void {
+  host.post(name, data);
+}
+
+function onHost(event: HostEventName, listener: (value: unknown) => void): () => void {
+  return host.on(event, listener);
 }
 
 function hostCallError(capability: string, cause: unknown): StewardError {
   const message = cause instanceof Error ? cause.message : String(cause);
-  const coded = /\[([a-z_]+)\]\s*(.*)/.exec(message);
-  if (coded && isStewardErrorCode(coded[1])) {
-    return new StewardError(
-      coded[1],
-      coded[2] || `Steward call '${capability}' failed`,
-      isRetryable(coded[1]),
-    );
-  }
-  if (/confirmation denied/i.test(message)) {
-    return new StewardError("confirmation_denied", `Steward confirmation was denied`, false);
-  }
-  if (/cancel/i.test(message)) {
-    return new StewardError("cancelled", `Steward call '${capability}' was cancelled`, true);
-  }
-  if (/invalid|required|must |unknown option|out of range/i.test(message)) {
-    return new StewardError("invalid_input", message, false);
-  }
-  if (/permission|not granted|denied/i.test(message)) {
-    return new StewardError("permission_denied", `Steward denied the '${capability}' capability`);
-  }
-  if (/timeout|timed out/i.test(message)) {
-    return new StewardError("timeout", `Steward call '${capability}' timed out`, true);
-  }
-  if (/resource|exhaust|limit/i.test(message)) {
-    return new StewardError(
-      "resource_exhausted",
-      `Steward call '${capability}' exceeded a resource limit`,
-    );
+  const payload = parseHostErrorPayload(message);
+  if (payload) {
+    return new StewardError(payload.code, payload.message, payload.retryable);
   }
   return new StewardError("host_failure", `Steward call '${capability}' failed: ${message}`, true);
 }
 
-function isStewardErrorCode(value: string): value is StewardErrorCode {
-  return [
-    "permission_denied",
-    "feature_unavailable",
-    "timeout",
-    "resource_exhausted",
-    "host_failure",
-    "invalid_input",
-    "cancelled",
-    "confirmation_denied",
-    "io_failure",
-  ].includes(value);
+function parseHostErrorPayload(message: string): HostErrorPayload | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<HostErrorPayload>;
+  if (
+    candidate.version !== HOST_ERROR_ENVELOPE_VERSION ||
+    typeof candidate.code !== "string" ||
+    !isStewardErrorCode(candidate.code) ||
+    typeof candidate.message !== "string" ||
+    typeof candidate.retryable !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    version: candidate.version,
+    code: candidate.code,
+    message: candidate.message,
+    retryable: candidate.retryable,
+  };
 }
 
-function isRetryable(code: StewardErrorCode): boolean {
-  return code === "timeout" || code === "resource_exhausted" || code === "host_failure";
+function isStewardErrorCode(value: string): value is StewardErrorCode {
+  return (HOST_ERROR_CODES as readonly string[]).includes(value);
 }

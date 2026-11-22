@@ -3,14 +3,16 @@
 use serde::{Deserialize, Serialize};
 
 pub mod capabilities;
+pub mod host_api;
 
 pub use capabilities::{CapabilityDescriptor, LEGACY_HOST_ACCESS};
+pub use host_api::{
+    HOST_API_VERSION, HOST_CALL_NAMES, HOST_CONTRACT_VERSION, HOST_ERROR_CODES,
+    HOST_ERROR_ENVELOPE_VERSION, HOST_EVENT_NAMES, HOST_FEATURE_NAMES, HOST_RETRYABLE_ERROR_CODES,
+};
 
 /// Version of the parent/plugin-host protocol.
 pub const PROTOCOL_VERSION: u16 = 2;
-
-/// Semantic version of the public Steward plugin host API.
-pub const HOST_API_VERSION: &str = "0.5.0";
 
 /// Features that are always available independently of package grants.
 pub const BASE_HOST_FEATURES: &[&str] = &[

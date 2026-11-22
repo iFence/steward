@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context as _, Result};
 use steward_plugin_store::{
-    create_revocation_list, scaffold_plugin, PluginOperationKind, PluginStore, PluginStoreConfig,
-    ScaffoldOptions,
+    create_revocation_list, default_developer_data_dir, package_development_project,
+    request_development_reload, scaffold_plugin, DevelopmentReloadRequest, PluginOperationKind,
+    PluginStore, PluginStoreConfig, ScaffoldOptions,
 };
 
 fn main() {
@@ -19,8 +21,24 @@ fn run() -> Result<()> {
         print_help();
         return Ok(());
     }
-    let data_dir = take_path_option(&mut args, "--data-dir")?.unwrap_or_else(default_data_dir);
+    let developer_mode = take_flag(&mut args, "--developer-mode");
+    let developer_data_dir = take_path_option(&mut args, "--developer-data-dir")?;
+    let developer_plugins_dir = take_path_option(&mut args, "--developer-plugins-dir")?;
+    let data_dir_option = take_path_option(&mut args, "--data-dir")?;
     let plugins_dir_override = take_path_option(&mut args, "--plugins-dir")?;
+    if developer_mode && (data_dir_option.is_some() || plugins_dir_override.is_some()) {
+        anyhow::bail!(
+            "developer mode uses --developer-data-dir/--developer-plugins-dir and never targets the installed profile"
+        );
+    }
+    if !developer_mode && (developer_data_dir.is_some() || developer_plugins_dir.is_some()) {
+        anyhow::bail!("--developer-data-dir and --developer-plugins-dir require --developer-mode");
+    }
+    let data_dir = if developer_mode {
+        developer_data_dir.unwrap_or(default_developer_data_dir()?)
+    } else {
+        data_dir_option.unwrap_or_else(default_data_dir)
+    };
     let mut roots = default_trust_roots()?;
     while let Some(root) = take_value_option(&mut args, "--trust-root")? {
         roots.push(root);
@@ -33,11 +51,19 @@ fn run() -> Result<()> {
     if command == "new" {
         return scaffold(&args);
     }
-    let plugins_dir = plugins_dir_override.unwrap_or_else(|| data_dir.join("plugins"));
-    let store = PluginStore::open(PluginStoreConfig::new(data_dir, plugins_dir, roots))?;
+    let plugins_dir = if developer_mode {
+        developer_plugins_dir.unwrap_or_else(|| data_dir.join("plugins"))
+    } else {
+        plugins_dir_override.unwrap_or_else(|| data_dir.join("plugins"))
+    };
+    let store = PluginStore::open(
+        PluginStoreConfig::new(data_dir, plugins_dir, roots).with_developer_mode(developer_mode),
+    )?;
     match command.as_str() {
         "inspect" => inspect(&store, &args),
         "check" => check(&store, &args),
+        "doctor" => doctor(&store, &args),
+        "dev" => develop(&store, &args),
         "review" => review(&store, &args),
         "list" => list(&store, &args),
         "install" => install(&store, &args, false),
@@ -58,12 +84,14 @@ fn scaffold(args: &[String]) -> Result<()> {
     let name = required_option(&mut args, "--name")?;
     let version = take_value_option(&mut args, "--version")?.unwrap_or_else(|| "0.1.0".into());
     let command = take_value_option(&mut args, "--command")?;
+    let sdk_dependency = take_value_option(&mut args, "--sdk")?;
     reject_extra(&args)?;
     let report = scaffold_plugin(ScaffoldOptions {
         id,
         name,
         version,
         command,
+        sdk_dependency,
         directory: PathBuf::from(directory),
     })?;
     println!(
@@ -110,6 +138,242 @@ fn check(store: &PluginStore, args: &[String]) -> Result<()> {
         anyhow::bail!("package failed strict policy review");
     }
     Ok(())
+}
+
+fn doctor(store: &PluginStore, args: &[String]) -> Result<()> {
+    let mut args = args.to_vec();
+    let target = positional(&mut args, "plugin id, zip, or package directory")?;
+    let json = take_flag(&mut args, "--json");
+    reject_extra(&args)?;
+    let report = store.doctor(&target);
+    if json {
+        print_json(&report)?;
+    } else {
+        println!(
+            "{}: {}",
+            report.target,
+            if report.passed { "ready" } else { "failed" }
+        );
+        if let Some(path) = &report.resolved_path {
+            println!("  source: {}", path.display());
+        }
+        for check in &report.checks {
+            println!(
+                "  [{}] {:<14} {} - {}",
+                if check.passed { "pass" } else { "fail" },
+                format!("{:?}", check.stage).to_ascii_lowercase(),
+                check.id,
+                check.detail
+            );
+        }
+    }
+    if !report.passed {
+        anyhow::bail!(
+            "plugin failed launch doctor at stage {}",
+            report
+                .stage
+                .map(|stage| format!("{stage:?}").to_ascii_lowercase())
+                .unwrap_or_else(|| "unknown".into())
+        );
+    }
+    Ok(())
+}
+
+fn develop(store: &PluginStore, args: &[String]) -> Result<()> {
+    let mut args = args.to_vec();
+    let project = PathBuf::from(positional(&mut args, "plugin project directory")?);
+    let build_command = take_value_option(&mut args, "--build-command")?;
+    let package = take_path_option(&mut args, "--package")?
+        .unwrap_or_else(|| PathBuf::from("dist/plugin.nshpkg"));
+    let entry = take_path_option(&mut args, "--entry")?.unwrap_or_else(|| PathBuf::from("App.tsx"));
+    let signing_key = take_path_option(&mut args, "--signing-key")?
+        .or_else(|| env_path("STEWARD_NSH_RELEASE_KEY"));
+    let signing_cert = take_path_option(&mut args, "--signing-cert")?
+        .or_else(|| env_path("STEWARD_NSH_RELEASE_CERT"));
+    let skip_build = take_flag(&mut args, "--no-build");
+    let no_open = take_flag(&mut args, "--no-open");
+    let reload = take_value_option(&mut args, "--reload")?.unwrap_or_else(|| "static".into());
+    reject_extra(&args)?;
+    if reload != "static" {
+        anyhow::bail!(
+            "unsupported reload mode '{reload}'; PDX-2 currently uses the static-bundle fallback"
+        );
+    }
+    if !project.is_dir() {
+        anyhow::bail!("plugin project is not a directory: {}", project.display());
+    }
+
+    if !skip_build {
+        run_project_build(&project, build_command.as_deref())?;
+    }
+    let package_path = project.join(&package);
+    let should_sign = !skip_build && signing_key.is_some() && signing_cert.is_some();
+    if should_sign {
+        let key = signing_key.as_deref().expect("signing key checked above");
+        let cert = signing_cert
+            .as_deref()
+            .expect("signing certificate checked above");
+        if let Some(parent) = package_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        let staged_package =
+            package_path.with_extension(format!("development-{}.nshpkg", std::process::id()));
+        let _ = std::fs::remove_file(&staged_package);
+        let status = Command::new("nsh")
+            .arg("publish")
+            .arg(&entry)
+            .arg("--key")
+            .arg(key)
+            .arg("--cert")
+            .arg(cert)
+            .arg("-o")
+            .arg(&staged_package)
+            .current_dir(&project)
+            .status()
+            .context("run `nsh publish`")?;
+        if !status.success() {
+            let _ = std::fs::remove_file(&staged_package);
+            anyhow::bail!("`nsh publish` failed with {status}");
+        }
+        if package_path.exists() {
+            std::fs::remove_file(&package_path)
+                .with_context(|| format!("replace signed package {}", package_path.display()))?;
+        }
+        std::fs::rename(&staged_package, &package_path)
+            .with_context(|| format!("activate signed package {}", package_path.display()))?;
+    } else if !package_path.is_file() {
+        anyhow::bail!(
+            "signed package is missing; pass --signing-key/--signing-cert or set STEWARD_NSH_RELEASE_KEY/STEWARD_NSH_RELEASE_CERT"
+        );
+    } else if !skip_build && source_is_newer(&project, &package_path) {
+        anyhow::bail!(
+            "signed package is older than the edited plugin source; configure signing keys or make the build command emit a fresh package"
+        );
+    }
+
+    let archive = store.data_dir().join(".development-packages").join(format!(
+        "plugin-{}-{}.zip",
+        std::process::id(),
+        unix_millis()
+    ));
+    package_development_project(&project, &package, &archive)?;
+    let inspection = store.inspect(&archive)?;
+    let command = inspection
+        .manifest
+        .commands
+        .first()
+        .map(|command| command.name.clone())
+        .context("plugin manifest must contain a launch command")?;
+    let title = inspection.manifest.name.clone();
+    let operation = store.replace_development(&archive)?;
+    let _ = std::fs::remove_file(&archive);
+
+    let reload_path = request_development_reload(
+        store.data_dir(),
+        &DevelopmentReloadRequest {
+            plugin_id: operation.plugin_id.clone(),
+            command,
+            title,
+            open: !no_open,
+            requested_at: unix_millis(),
+        },
+    )?;
+    print_operation(&operation);
+    println!("  static reload queued: {}", reload_path.display());
+    Ok(())
+}
+
+fn run_project_build(project: &Path, command: Option<&str>) -> Result<()> {
+    let command = match command {
+        Some(command) => command.to_owned(),
+        None => default_project_build(project)?,
+    };
+    let status = if cfg!(target_os = "windows") {
+        Command::new("cmd.exe")
+            .args(["/d", "/s", "/c", &command])
+            .current_dir(project)
+            .status()
+    } else {
+        Command::new("sh")
+            .args(["-cu", &command])
+            .current_dir(project)
+            .status()
+    }
+    .with_context(|| format!("run plugin development build `{command}`"))?;
+    if !status.success() {
+        anyhow::bail!("plugin development build failed with {status}");
+    }
+    Ok(())
+}
+
+fn default_project_build(project: &Path) -> Result<String> {
+    let package_json = project.join("package.json");
+    if let Ok(bytes) = std::fs::read(&package_json) {
+        let package: serde_json::Value =
+            serde_json::from_slice(&bytes).context("parse package.json")?;
+        if package
+            .get("scripts")
+            .and_then(|scripts| scripts.get("dev:build"))
+            .is_some()
+        {
+            return Ok("corepack pnpm run dev:build".into());
+        }
+        if package
+            .get("scripts")
+            .and_then(|scripts| scripts.get("build"))
+            .is_some()
+        {
+            return Ok("corepack pnpm run build".into());
+        }
+    }
+    Ok("nsh build App.tsx --release -o dist".into())
+}
+
+fn source_is_newer(project: &Path, package: &Path) -> bool {
+    let Ok(package_modified) = std::fs::metadata(package).and_then(|metadata| metadata.modified())
+    else {
+        return true;
+    };
+    let mut pending = vec![project.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                if !matches!(
+                    name.to_str().unwrap_or_default(),
+                    "dist" | "node_modules" | ".git" | ".nsh" | "target"
+                ) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if file_type.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "ts" | "tsx" | "js" | "jsx" | "json" | "css" | "svg"
+                        )
+                    })
+                && std::fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .is_ok_and(|modified| modified > package_modified)
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn review(store: &PluginStore, args: &[String]) -> Result<()> {
@@ -620,6 +884,17 @@ fn default_data_dir() -> PathBuf {
         })
 }
 
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).map(PathBuf::from)
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
+}
+
 fn default_trust_roots() -> Result<Vec<String>> {
     let mut roots =
         serde_json::from_str::<Vec<String>>(include_str!("../../../assets/nsh/trust-roots.json"))
@@ -635,15 +910,25 @@ fn print_help() {
         r#"steward-plugin - Steward plugin development and lifecycle CLI
 
 Global options (before the command):
+  --developer-mode      Use the isolated Steward-Developer profile
+  --developer-data-dir <path>
+                        Override the isolated developer data directory
+  --developer-plugins-dir <path>
+                        Override the isolated developer plugin directory
   --data-dir <path>     Steward data directory
   --plugins-dir <path>  Installed plugin directory
   --trust-root <key>    Additional base64 Ed25519 trust root
 
 Commands:
   steward-plugin new <dir> --id <id> --name <name> [--version <semver>]
-      [--command <name>]
+      [--command <name>] [--sdk <released-package-or-tarball>]
   steward-plugin inspect <zip-or-dir> [--json]
   steward-plugin check <zip-or-dir> [--strict] [--json]
+  steward-plugin doctor <plugin-id-or-source> [--json]
+  steward-plugin dev <project-dir> [--build-command <command>]
+      [--package <relative-path>] [--entry <relative-path>]
+      [--signing-key <path>] [--signing-cert <path>]
+      [--no-build] [--no-open] [--reload static]
   steward-plugin review <zip-or-dir> [--json]
   steward-plugin list [--json]
   steward-plugin install <zip-or-dir> [--json]

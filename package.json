@@ -5,7 +5,14 @@
   "description": "Steward monorepo: GPUI Fast host with NSH Rust and TSX applications.",
   "scripts": {
     "build": "pnpm --filter @steward/plugin-calendar build && pnpm --filter @steward/plugin-clipboard-history build && pnpm --filter @steward/plugin-local-files build && pnpm --filter @steward/plugin-git-repos build && pnpm --filter @steward/plugin-network-check build && pnpm --filter @steward/plugin-ui-showcase build",
-    "typecheck": "pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck && pnpm --filter @steward/plugin-local-files typecheck && pnpm --filter @steward/plugin-git-repos typecheck && pnpm --filter @steward/plugin-network-check typecheck && pnpm --filter @steward/plugin-ui-showcase typecheck",
+    "contract:check": "node scripts/plugin-api-contract.mjs",
+    "contract:generate": "node scripts/plugin-api-contract.mjs --write",
+    "sdk:pack": "node scripts/sdk-pack.mjs",
+    "test:contract": "pnpm --filter @steward/api-contract-harness test",
+    "test:pdx1": "pnpm sdk:pack && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-pdx1-external.ps1",
+    "test:pdx2": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-pdx2-development.ps1",
+    "test:plugins": "node scripts/test-official-plugins.mjs",
+    "typecheck": "pnpm --filter @steward/extension-api typecheck && pnpm --filter @steward/api-contract-harness typecheck && pnpm --filter @steward/plugin-calendar typecheck && pnpm --filter @steward/plugin-clipboard-history typecheck && pnpm --filter @steward/plugin-local-files typecheck && pnpm --filter @steward/plugin-git-repos typecheck && pnpm --filter @steward/plugin-network-check typecheck && pnpm --filter @steward/plugin-ui-showcase typecheck",
     "lint": "eslint \"packages/**/*.{ts,tsx,js}\"",
     "format:check": "prettier --check \"packages/**/*.{ts,tsx,js,json,md}\""
   },
