@@ -1,21 +1,27 @@
 //! GPUI Kit settings window.
 
-use std::{rc::Rc, sync::Arc};
+use std::{
+    rc::Rc,
+    sync::{Arc, LazyLock},
+};
 
 use gpui::{
-    div, px, rgb, App, Context, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    Keystroke, ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement,
-    Styled, Window,
+    div, img, px, rgb, App, Context, FocusHandle, FontWeight, Image, ImageFormat, ImageSource,
+    InteractiveElement, IntoElement, Keystroke, ParentElement, PathPromptOptions, Render,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_kit::{
     assets::IconName,
     component::{
         button::{Button, ButtonVariants as _},
+        group_box::GroupBoxVariant,
         h_flex,
         scroll::ScrollableElement as _,
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+        switch::Switch,
         text::TextView,
-        v_flex, ActiveTheme, Disableable as _, Icon, Theme, ThemeMode,
+        v_flex, ActiveTheme, Disableable as _, FocusableExt as _, Icon, Sizable as _, Theme,
+        ThemeMode,
     },
     prelude::FluentBuilder,
 };
@@ -48,6 +54,13 @@ const ACCENTS: [(&str, &str, u32); 5] = [
     ("#e85d75", "settings-theme-rose", 0xe85d75),
 ];
 
+static ABOUT_LOGO: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Png,
+        include_bytes!("../../../assets/steward.png").to_vec(),
+    ))
+});
+
 pub(crate) struct StewardSettings {
     services: Arc<AppServices>,
     i18n: Rc<Localization>,
@@ -59,6 +72,30 @@ pub(crate) struct StewardSettings {
     recording_hotkey: bool,
     hotkey_focus: FocusHandle,
     hotkey_status: SharedString,
+}
+
+fn settings_switch(
+    id: SharedString,
+    accessibility_label: SharedString,
+    checked: impl Fn(&App) -> bool + 'static,
+    on_change: impl Fn(bool, &mut App) + 'static,
+    is_dirty: impl Fn(&App) -> bool + 'static,
+    reset: impl Fn(&mut App) + 'static,
+) -> SettingField<SharedString> {
+    let checked = Rc::new(checked);
+    let on_change = Rc::new(on_change);
+    SettingField::render(move |options, _window, cx| {
+        let checked = checked.clone();
+        let on_change = on_change.clone();
+        Switch::new(id.clone())
+            .accessibility_label(accessibility_label.clone())
+            .checked(checked(cx))
+            .disabled(options.is_disabled())
+            .with_size(options.size())
+            .focus_ring(false)
+            .on_click(move |checked, _, cx| on_change(*checked, cx))
+    })
+    .on_reset(move |cx| is_dirty(cx), move |_, cx| reset(cx))
 }
 
 impl StewardSettings {
@@ -160,12 +197,21 @@ impl Render for StewardSettings {
         let autostart_value = view.clone();
         let autostart_set = view.clone();
         let autostart_services = services.clone();
+        let autostart_dirty = view.clone();
+        let autostart_reset_view = view.clone();
+        let autostart_reset_services = services.clone();
         let updates_value = view.clone();
         let updates_set = view.clone();
         let updates_services = services.clone();
+        let updates_dirty = view.clone();
+        let updates_reset_view = view.clone();
+        let updates_reset_services = services.clone();
         let accent_value = view.clone();
         let accent_set = view.clone();
         let hotkey_field = view.clone();
+        let autostart_title = SharedString::from(self.i18n.translate("settings-launch-at-startup"));
+        let updates_title =
+            SharedString::from(self.i18n.translate("settings-update-check-on-startup"));
         let hotkey_recording_label =
             SharedString::from(self.i18n.translate("settings-hotkey-recording"));
         let plugin_port = services.plugin_management();
@@ -203,8 +249,10 @@ impl Render for StewardSettings {
                             .default_value(SharedString::from("en")),
                         ))
                         .item(SettingItem::new(
-                            self.i18n.translate("settings-launch-at-startup"),
-                            SettingField::switch(
+                            autostart_title.clone(),
+                            settings_switch(
+                                "settings-autostart-switch".into(),
+                                autostart_title,
                                 move |cx| autostart_value.read(cx).autostart,
                                 move |enabled, cx| {
                                     autostart_services
@@ -214,12 +262,25 @@ impl Render for StewardSettings {
                                         cx.notify();
                                     });
                                 },
-                            )
-                            .default_value(false),
+                                move |cx| autostart_dirty.read(cx).autostart,
+                                move |cx| {
+                                    if autostart_reset_view.read(cx).autostart {
+                                        autostart_reset_services.send_window_command(
+                                            WindowCommand::SetAutostart(false),
+                                        );
+                                        autostart_reset_view.update(cx, |settings, cx| {
+                                            settings.autostart = false;
+                                            cx.notify();
+                                        });
+                                    }
+                                },
+                            ),
                         ))
                         .item(SettingItem::new(
-                            self.i18n.translate("settings-update-check-on-startup"),
-                            SettingField::switch(
+                            updates_title.clone(),
+                            settings_switch(
+                                "settings-update-switch".into(),
+                                updates_title,
                                 move |cx| updates_value.read(cx).check_updates_on_startup,
                                 move |enabled, cx| {
                                     updates_services.send_window_command(
@@ -230,8 +291,19 @@ impl Render for StewardSettings {
                                         cx.notify();
                                     });
                                 },
-                            )
-                            .default_value(true),
+                                move |cx| !updates_dirty.read(cx).check_updates_on_startup,
+                                move |cx| {
+                                    if !updates_reset_view.read(cx).check_updates_on_startup {
+                                        updates_reset_services.send_window_command(
+                                            WindowCommand::SetCheckUpdatesOnStartup(true),
+                                        );
+                                        updates_reset_view.update(cx, |settings, cx| {
+                                            settings.check_updates_on_startup = true;
+                                            cx.notify();
+                                        });
+                                    }
+                                },
+                            ),
                         )),
                 ),
             SettingPage::new(self.i18n.translate("settings-appearance"))
@@ -342,13 +414,15 @@ impl Render for StewardSettings {
             SettingPage::new(self.i18n.translate("settings-about"))
                 .resettable(false)
                 .icon(Icon::new(IconName::Info))
-                .group(SettingGroup::new().item(SettingItem::render({
-                    let services = services.clone();
-                    let i18n = self.i18n.clone();
-                    move |_options, _window, cx| {
-                        render_about_updates(services.clone(), i18n.clone(), cx)
-                    }
-                }))),
+                .group(SettingGroup::new().variant(GroupBoxVariant::Normal).item(
+                    SettingItem::render({
+                        let services = services.clone();
+                        let i18n = self.i18n.clone();
+                        move |_options, _window, cx| {
+                            render_about_updates(services.clone(), i18n.clone(), cx)
+                        }
+                    }),
+                )),
         ])
     }
 }
@@ -378,13 +452,26 @@ fn render_plugin_preferences(
                         PluginPreferenceKind::Boolean => {
                             let read_port = port.clone();
                             let write_port = port.clone();
+                            let dirty_port = port.clone();
+                            let reset_port = port.clone();
                             let read_plugin = plugin_id.clone();
                             let write_plugin = plugin_id.clone();
+                            let dirty_plugin = plugin_id.clone();
+                            let reset_plugin = plugin_id.clone();
                             let read_key = field.key.clone();
                             let write_key = field.key.clone();
+                            let dirty_key = field.key.clone();
+                            let reset_key = field.key.clone();
+                            let title = SharedString::from(field.title.clone());
+                            let switch_id = SharedString::from(format!(
+                                "plugin-preference-switch-{}-{}",
+                                plugin_id, field.key
+                            ));
                             SettingItem::new(
-                                field.title.clone(),
-                                SettingField::switch(
+                                title.clone(),
+                                settings_switch(
+                                    switch_id,
+                                    title,
                                     move |_| {
                                         read_port
                                             .snapshot()
@@ -401,8 +488,32 @@ fn render_plugin_preferences(
                                             serde_json::json!(enabled),
                                         );
                                     },
-                                )
-                                .default_value(false),
+                                    move |_| {
+                                        dirty_port
+                                            .snapshot()
+                                            .preferences
+                                            .get(&dirty_plugin)
+                                            .and_then(|values| values.get(&dirty_key))
+                                            .and_then(serde_json::Value::as_bool)
+                                            .unwrap_or(false)
+                                    },
+                                    move |_| {
+                                        let enabled = reset_port
+                                            .snapshot()
+                                            .preferences
+                                            .get(&reset_plugin)
+                                            .and_then(|values| values.get(&reset_key))
+                                            .and_then(serde_json::Value::as_bool)
+                                            .unwrap_or(false);
+                                        if enabled {
+                                            reset_port.set_preference(
+                                                reset_plugin.clone(),
+                                                reset_key.clone(),
+                                                serde_json::json!(false),
+                                            );
+                                        }
+                                    },
+                                ),
                             )
                         }
                         PluginPreferenceKind::Select => {
@@ -1300,11 +1411,7 @@ fn render_about_updates(
     let state = services.update_port().state();
     let busy = state.is_busy();
     let has_update = state.has_update();
-    let version = format!(
-        "{} {}",
-        i18n.translate("settings-version"),
-        env!("CARGO_PKG_VERSION")
-    );
+    let version = SharedString::from(format!("v{}", env!("CARGO_PKG_VERSION")));
 
     let status = match &state {
         UpdateState::Idle => (
@@ -1378,12 +1485,12 @@ fn render_about_updates(
     };
 
     let check_services = services.clone();
-    let install_services = services;
-    let mut buttons = h_flex().gap_2();
+    let install_services = services.clone();
+    let mut buttons = h_flex().gap_2().flex_shrink_0();
     buttons = buttons.child(
         Button::new("settings-check-updates")
             .label(i18n.translate("settings-check-for-updates"))
-            .outline()
+            .ghost()
             .compact()
             .loading(matches!(state, UpdateState::Checking))
             .disabled(busy)
@@ -1405,45 +1512,164 @@ fn render_about_updates(
         );
     }
 
-    v_flex()
-        .gap_3()
+    let update_status = div()
+        .text_size(px(13.0))
+        .text_color(status.1)
+        .child(status.0);
+    let show_update_status = !matches!(&state, UpdateState::Idle);
+
+    let updates_card = v_flex()
         .w_full()
-        .items_center()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().muted.opacity(0.35))
+        .overflow_hidden()
         .child(
-            div()
-                .text_size(px(22.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Steward"),
-        )
-        .child(
-            div()
-                .text_size(px(13.0))
-                .text_color(cx.theme().muted_foreground)
-                .child(version),
-        )
-        .child(buttons)
-        .child(
-            div()
-                .text_size(px(13.0))
-                .text_color(status.1)
-                .child(status.0),
+            h_flex()
+                .w_full()
+                .justify_between()
+                .items_center()
+                .gap_4()
+                .px_4()
+                .py_3()
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .flex_1()
+                        .gap_3()
+                        .child(
+                            div()
+                                .size(px(36.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .bg(cx.theme().background)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(Icon::new(IconName::RefreshCw).size(px(18.0))),
+                        )
+                        .child(
+                            v_flex()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child("Steward Updates"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(version.clone()),
+                                )
+                                .when(show_update_status, |this| this.child(update_status)),
+                        ),
+                )
+                .child(buttons),
         )
         .when_some(progress, |this, progress| {
             this.child(
                 div()
-                    .w(px(280.0))
-                    .h(px(6.0))
-                    .rounded(cx.theme().radius)
+                    .mx_4()
+                    .mb_3()
+                    .h(px(4.0))
+                    .rounded_full()
                     .bg(cx.theme().border)
                     .child(
                         div()
                             .h_full()
-                            .w(px((progress * 280.0).max(2.0)))
-                            .rounded(cx.theme().radius)
+                            .w(gpui::relative(progress))
+                            .rounded_full()
                             .bg(cx.theme().primary),
                     ),
             )
         })
+        .child(
+            div()
+                .id("settings-open-changelog")
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_4()
+                .py_3()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .cursor_pointer()
+                .hover(|this| this.bg(cx.theme().muted.opacity(0.55)))
+                .on_click(|_, _, _| {
+                    let _ = crate::launch::open_url(
+                        "https://github.com/iFence/steward/blob/main/Changelog.md",
+                    );
+                })
+                .child(
+                    div()
+                        .size(px(32.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(cx.theme().background)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::BookOpen).size(px(16.0))),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(i18n.translate("settings-about-open-changelog")),
+                ),
+        );
+
+    v_flex()
+        .gap_5()
+        .w_full()
+        .max_w(px(680.0))
+        .mx_auto()
+        .child(
+            v_flex()
+                .w_full()
+                .items_center()
+                .gap_1()
+                .child(img(ImageSource::Image(ABOUT_LOGO.clone())).size(px(64.0)))
+                .child(
+                    div()
+                        .mt_1()
+                        .text_size(px(24.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Steward"),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(version),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .text_size(px(11.0))
+                        .text_color(cx.theme().muted_foreground.opacity(0.8))
+                        .child("Steward contributors · 2026 All Rights Reserved."),
+                ),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(i18n.translate("settings-about-updates")),
+                )
+                .child(updates_card),
+        )
         .when_some(release_notes, |this, notes| {
             this.child(
                 v_flex()
@@ -1484,7 +1710,7 @@ pub(crate) fn init_ui(cx: &mut App, accent: &str) {
 pub(crate) fn apply_theme(cx: &mut App, accent: &str) {
     let accent = parse_hex_color(accent).unwrap_or(palette::ACCENT);
     Theme::update(cx, |theme| {
-        theme.colors.background = rgb(palette::BACKGROUND).into();
+        theme.colors.background = rgb(palette::SETTINGS_BACKGROUND).into();
         theme.colors.foreground = rgb(palette::FOREGROUND).into();
         theme.colors.border = rgb(palette::BORDER).into();
         theme.colors.input = rgb(palette::BORDER).into();
@@ -1497,15 +1723,16 @@ pub(crate) fn apply_theme(cx: &mut App, accent: &str) {
         theme.colors.primary_hover = rgb(accent).into();
         theme.colors.ring = rgb(accent).into();
         theme.colors.caret = rgb(accent).into();
-        theme.colors.switch = rgb(accent).into();
-        theme.colors.sidebar = rgb(palette::BACKGROUND).into();
+        theme.colors.switch = rgb(palette::SWITCH_TRACK_OFF).into();
+        theme.colors.switch_thumb = rgb(palette::SWITCH_THUMB).into();
+        theme.colors.sidebar = rgb(palette::SETTINGS_BACKGROUND).into();
         theme.colors.sidebar_accent = rgb(palette::BACKGROUND_ALT).into();
         theme.colors.sidebar_accent_foreground = rgb(palette::FOREGROUND).into();
         theme.colors.sidebar_border = rgb(palette::BORDER).into();
         theme.colors.sidebar_foreground = rgb(palette::FOREGROUND).into();
         theme.colors.sidebar_primary = rgb(accent).into();
         theme.colors.sidebar_primary_foreground = rgb(palette::FOREGROUND).into();
-        theme.colors.title_bar = rgb(palette::BACKGROUND).into();
+        theme.colors.title_bar = rgb(palette::SETTINGS_BACKGROUND).into();
         theme.colors.title_bar_border = rgb(palette::BORDER).into();
         theme.radius = px(8.0);
         theme.radius_lg = px(10.0);

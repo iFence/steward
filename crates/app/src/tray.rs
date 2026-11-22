@@ -71,8 +71,8 @@ fn load_tray_icon() -> Result<Icon> {
 
 #[cfg(target_os = "macos")]
 fn load_tray_icon() -> Result<Icon> {
-    let png = include_bytes!("../../assets/steward-dark.png");
-    let image = image::load_from_memory(png).context("decode bundled steward-dark.png")?;
+    let png = include_bytes!("../../assets/steward.png");
+    let image = image::load_from_memory(png).context("decode bundled steward.png")?;
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     Icon::from_rgba(rgba.into_raw(), width, height).context("create macOS tray icon")

@@ -112,6 +112,12 @@ Conventions:
 
 ### Launcher
 
+- **Settings styling**: the settings window now uses a `#1e1e1f` base
+  surface, with white switch thumbs, gray off tracks, and no focus glow around
+  switches.
+- **Redesigned About page**: Settings > About now has a centered brand
+  presentation, a compact updates card with progress and release notes, and a
+  direct changelog link.
 - **SVG result icons**: calendar plugin results and URL actions once again show
   their SVG icons instead of leaving the icon column blank.
 - **Tray version**: the tray context menu now shows the running Steward version

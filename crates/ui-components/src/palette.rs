@@ -8,14 +8,16 @@
 //! of the OS theme. Over a bright backdrop (a white document or browser
 //! window behind the bar) the scrim is raised adaptively toward
 //! [`SCRIM_ALPHA_MAX`] so the white ink stays readable — see the decision
-//! record on backdrop adaptation in docs/architecture.md. Opaque windows
-//! (the settings window) use the full [`BACKGROUND`]. Keep the alpha stops
+//! record on backdrop adaptation in docs/architecture.md. The opaque settings
+//! window uses [`SETTINGS_BACKGROUND`]. Keep the alpha stops
 //! in sync with Tinycast's tokens; the surface is the one judgment call.
 
-/// Main surface: launcher bar, result rows, settings window. Stands in for
+/// Main surface: launcher bar and result rows. Stands in for
 /// Tinycast's `panelScrim` (black 0.40 over vibrancy), made opaque for
 /// opaque windows.
 pub const BACKGROUND: u32 = 0x202024;
+/// Base surface for the opaque settings window.
+pub const SETTINGS_BACKGROUND: u32 = 0x1e1e1f;
 /// Opacity at which translucent launcher surfaces paint [`BACKGROUND`] over
 /// the window's blurred backdrop. The 0.75 floor keeps text comfortably
 /// readable while retaining a visible Acrylic/vibrancy blur. This is the floor
@@ -73,6 +75,10 @@ pub const HOVER: u32 = 0xffffff;
 /// Default accent for the launcher and settings, tinting selection, caret,
 /// focus rings and primary controls.
 pub const ACCENT: u32 = 0x863bff;
+/// Switch track when the control is off.
+pub const SWITCH_TRACK_OFF: u32 = 0x505050;
+/// Switch thumb in both the on and off states.
+pub const SWITCH_THUMB: u32 = 0xededed;
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,6 @@
 """Regenerate Steward icon assets.
 
 Produces:
-- assets/steward-dark.png  : the dark tray glyph on a rounded launcher tile
 - assets/icon-dark.ico     : multi-size ICO of the dark icon (tray resource 2)
 
 The light/navy glyph (assets/steward.png) is recolored with the launcher's
@@ -16,7 +15,6 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "assets" / "steward.png"
-DARK_PNG = ROOT / "assets" / "steward-dark.png"
 DARK_ICO = ROOT / "assets" / "icon-dark.ico"
 
 TILE = (35, 35, 50, 255)        # #232332 — launcher background
@@ -52,13 +50,11 @@ def main() -> None:
     solid.putalpha(glyph_small.getchannel("A"))
     canvas.alpha_composite(solid, ((SIZE - glyph_size) // 2, (SIZE - glyph_size) // 2))
 
-    canvas.save(DARK_PNG, format="PNG")
     canvas.save(
         DARK_ICO,
         format="ICO",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
-    print(f"wrote {DARK_PNG} ({DARK_PNG.stat().st_size} bytes)")
     print(f"wrote {DARK_ICO} ({DARK_ICO.stat().st_size} bytes)")
 
 
