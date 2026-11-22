@@ -5,7 +5,7 @@
   "description": "External plugin fixture for the PDX-1 SDK distribution gate.",
   "main": "App.tsx",
   "dependencies": {
-    "@steward/extension-api": "file:../../target/sdk/steward-extension-api-0.5.0.tgz"
+    "@steward/extension-api": "file:../../target/sdk/steward-extension-api-1.0.0.tgz"
   },
   "scripts": {
     "build": "nsh build App.tsx --release -o dist",

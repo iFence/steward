@@ -57,6 +57,11 @@ function validateVersions(packageJson) {
     [packageJson.version, current.sdkVersion, "SDK version"],
     [packageJson.version, contract.hostApiVersion, "SDK and current host API version"],
     [current.minimumHostVersion, current.hostApiVersion, "minimum host version"],
+    [
+      contract.stability?.minimumSupportedApiVersion,
+      current.minimumSupportedHostVersion,
+      "minimum supported host API version",
+    ],
     [nshVersion, current.nshVersion, "NSH version"],
   ];
   for (const [actual, expected, label] of checks) {

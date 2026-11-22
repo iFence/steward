@@ -19,6 +19,9 @@
 - **一键重建**：`steward-plugin --developer-mode dev <project>` 可完成重建、
   签名、打包、校验、同版本开发包替换和重新打开；`steward-plugin doctor`
   会对 ID、ZIP 或包目录指出启动失败的阶段。
+- **稳定的插件 API v1**：Host API `1.0.0` 冻结命令式插件接口，继续兼容
+  `0.3.x` 至 `0.5.x` 插件包，并为每个 API 家族补充配额和故障语义；公开
+  API 参考文档直接从机器可读契约生成。
 
 ### 嵌入式插件页面
 

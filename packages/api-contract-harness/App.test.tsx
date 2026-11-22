@@ -1,6 +1,10 @@
 import { expect, open, test } from "nsh/test";
 import {
+  HOST_API_FAMILIES,
   HOST_CALL_FIXTURES,
+  HOST_ERROR_CODES,
+  HOST_FAILURE_STATES,
+  HOST_MINIMUM_SUPPORTED_API_VERSION,
   type HostCallFixture,
   type StewardErrorCode,
 } from "@steward/extension-api";
@@ -49,6 +53,32 @@ test("contract fixtures cover every host bridge family", () => {
   ]);
 });
 
+test("v1 hardening exposes quotas and stable failure semantics for every family", () => {
+  expect(HOST_MINIMUM_SUPPORTED_API_VERSION).toBe("0.3.0");
+  expect([...new Set(HOST_CALL_FIXTURES.map((call) => call.family))]).toEqual(
+    HOST_API_FAMILIES.map((family) => family.name),
+  );
+  expect(HOST_FAILURE_STATES.map((state) => state.state)).toEqual([
+    "disabled",
+    "revoked",
+    "expired",
+    "malformed",
+    "timedOut",
+    "cancelled",
+    "resourceExhausted",
+  ]);
+  for (const failure of HOST_FAILURE_STATES) {
+    expect(HOST_ERROR_CODES).toContain(failure.code);
+  }
+  for (const family of HOST_API_FAMILIES) {
+    expect(family.maxOperationTimeoutMs).toBeGreaterThan(0);
+    expect(family.quotas.length).toBeGreaterThan(0);
+  }
+  for (const call of HOST_CALL_FIXTURES) {
+    expect(call.description.length).toBeGreaterThan(0);
+  }
+});
+
 test("every committed SDK fixture produces the contract wire payload", async () => {
   const app = await open("./App.tsx", {
     host: { params, handlers: handlers() },
@@ -86,4 +116,16 @@ test("structured host errors become StewardError data without prose parsing", as
 
   await app.press("text:structured error");
   expect(app.texts()).toContain("Status: permission_denied:false:clipboard write is not granted");
+});
+
+test("SDK rejects a quota violation before sending a host call", async () => {
+  const app = await open("./App.tsx", {
+    host: { params, handlers: handlers() },
+  });
+
+  await app.press("text:quota error");
+  expect(app.texts()).toContain(
+    "Status: resource_exhausted:true:clipboard text exceeds the 100000 byte limit",
+  );
+  expect(app.host.calls()).toEqual([]);
 });

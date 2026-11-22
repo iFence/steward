@@ -61,8 +61,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: plugin contract
         run: pnpm contract:check
+      - name: build contract harness SDK
+        run: pnpm --filter @steward/extension-api build
       - name: plugin contract fixtures
         run: pnpm test:contract
+      - name: plugin API v1 hardening
+        run: pnpm test:pdx3
       - name: SDK distribution and external plugin lifecycle
         run: pnpm test:pdx1
       - name: developer mode and static reload lifecycle

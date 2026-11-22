@@ -21,6 +21,10 @@ Conventions:
   rebuilds, signs, packages, validates, replaces unchanged development
   versions, and reopens the plugin. `steward-plugin doctor` identifies the
   failing launch stage for an ID, ZIP, or package directory.
+- **Stable plugin API v1**: host API `1.0.0` freezes the command-oriented
+  bridge, keeps `0.3.x` through `0.5.x` packages compatible, documents quotas
+  and failure behavior for every API family, and publishes a reference
+  generated directly from the machine-readable contract.
 - **Plugin management**: Settings now has a Plugins page showing installed
   package versions, signature/trust status, publisher key IDs, package hashes,
   policy review items, rollback history, and local marketplace entries.

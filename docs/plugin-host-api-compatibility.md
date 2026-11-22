@@ -1,10 +1,20 @@
 # Steward Plugin Host API Compatibility
 
-> Status: PC-0 through PC-4 implemented. The host API version is `0.5.0`.
+> Status: PDX-3 complete. The stable host API line is `1.x`; the current host
+> API version is `1.0.0`.
 
 Steward uses semantic versions for the public plugin host contract. The current
 version is exported as `HOST_API_VERSION` from `steward-plugin-contract` and
 mirrored by `@steward/extension-api` as `launchParams().hostApiVersion`.
+The machine-readable matrix is
+[`contracts/plugin-compatibility.json`](../contracts/plugin-compatibility.json),
+and the generated [plugin API reference](plugin-api-reference.md) is the
+canonical call, quota, event, and failure guide.
+
+The supported API lines are `0.3.x`, `0.4.x`, `0.5.x`, and `1.0.x`. Packages
+from those prior lines continue to declare their original `minHostVersion`.
+New packages target `1.0.0`. Compatibility fixtures replay each supported line
+through the current contract schemas and Rust host DTOs.
 
 ## Version Negotiation
 
@@ -19,10 +29,11 @@ Steward refuses to launch a package when:
 - the package requires a newer host API than the running Steward.
 
 The install inspector reports the same failures before activation. Patch
-versions may add backward-compatible host calls or event fields. Minor versions
-may add features, but existing calls and payload fields keep their meaning.
-Major versions may remove or change calls. Steward will retain compatibility
-tests for the previous supported API line before raising a major version.
+releases cannot remove or reinterpret public behavior. Minor releases may add
+calls, optional fields, events, features, and scopes. A 1.x deprecation remains
+available for at least one minor release, names a replacement, and is removed
+only in a later major line. See the generated API reference for the complete
+stability and deprecation policy.
 
 ## Feature Discovery
 
@@ -61,6 +72,12 @@ Host-call rejection text is not part of the stable contract. Steward encodes a
 versioned JSON envelope with `code`, `message`, and `retryable` fields in NSH's
 error string. The SDK parses that data directly; it does not infer codes from
 prose. See [plugin-api-contract.md](plugin-api-contract.md).
+
+Every API family defines behavior for `disabled`, `revoked`, `expired`,
+`malformed`, `timedOut`, `cancelled`, and `resourceExhausted` paths. The
+family-to-code mapping, quotas, and call payload examples are generated into
+[plugin-api-reference.md](plugin-api-reference.md) from
+`contracts/plugin-api-v1.json`.
 
 ## Permissions And Grants
 
@@ -233,4 +250,20 @@ The current test baseline covers:
 - manifest presentation routing, protocol lifecycle round trips, and host-API
   mode mismatch rejection;
 - headless UI Showcase navigation, title, and visibility mocks;
-- package inspection policy and signed-package lifecycle tests.
+- package inspection policy and signed-package lifecycle tests;
+- `0.3.x`, `0.4.x`, and `0.5.x` compatibility fixtures through current contract
+  schemas and Rust request/response DTOs;
+- all API families have quota metadata and stable mappings for disabled,
+  revoked, expired, malformed, timed-out, cancelled, and resource-exhausted
+  paths;
+- future `minHostVersion` values fail before plugin runtime as
+  `feature_unavailable`;
+- generated reference freshness, SDK quota validation, and same-user boundary
+  documentation.
+
+Plugins and Steward run under the same Windows user. The child process boundary
+contains crashes and limits host-call reach, but it is not a defense against
+other processes running as that user. API v1 does not expose dynamic search
+providers, background services, cross-plugin IPC, arbitrary WebView/process
+access, raw sockets, general secret storage, binary file I/O, Recycle Bin
+operations, or file/clipboard change subscriptions.

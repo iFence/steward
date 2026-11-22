@@ -12,7 +12,7 @@ the signed `plugin.nshpkg` referenced by the manifest.
   "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
-  "minHostVersion": "0.5.0",
+  "minHostVersion": "1.0.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,
@@ -58,10 +58,10 @@ Commands contain `name`, `title`, optional `keywords`, `trigger`, and optional
 `presentation`. Supported triggers are `command`, `prefix`, and `regex`.
 Supported presentations are:
 
-| Value       | Behavior                                                                                                                              |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `windowed`  | Default. Opens a normal resizable plugin window in the isolated plugin-host process.                                                   |
-| `embedded`  | Opens a launcher-positioned frameless hosted surface in the same isolated plugin-host process. Back and Esc return to the launcher. |
+| Value      | Behavior                                                                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `windowed` | Default. Opens a normal resizable plugin window in the isolated plugin-host process.                                                |
+| `embedded` | Opens a launcher-positioned frameless hosted surface in the same isolated plugin-host process. Back and Esc return to the launcher. |
 
 The presentation value is part of signed routing metadata. Schema-v2 manifests
 remain `windowed`; `presentation` requires schema v3. A launch request whose
@@ -113,6 +113,6 @@ Installation layout:
 Old `permissions`, `fs_roots`, `http`, `isolation`, `detachable`, and JSON View
 fields are rejected.
 
-The current host API is `0.5.0`. Existing official packages may omit
+The current host API is `1.0.0`. Existing official packages may omit
 `minHostVersion` during migration. See
 [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md).

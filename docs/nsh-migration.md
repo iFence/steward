@@ -174,7 +174,7 @@ Launch parameters:
   "accent": "#863bff",
   "dark": true,
   "presentation": "windowed",
-  "hostApiVersion": "0.5.0",
+  "hostApiVersion": "1.0.0",
   "features": ["host_info", "runtime_feature_discovery"],
   "preferences": {
     "showHints": true
@@ -182,18 +182,10 @@ Launch parameters:
 }
 ```
 
-Host calls:
-
-- `steward.clipboard.history` -> clipboard entry array
-- `steward.clipboard.write` -> `{}` after writing `{ "text": "..." }`
-- `steward.storage.get` -> plugin-private string or `null`
-- `steward.storage.set` -> `{}`
-- `steward.window.close` -> `{}`
-
-Host events:
-
-- `steward.command` -> `{ "command": "...", "input": "..." }`
-- `steward.theme` -> `{ "accent": "#...", "dark": true }`
+The canonical call and event inventory, including payload examples, quotas, and
+failure semantics, is the generated
+[plugin API reference](plugin-api-reference.md). This migration ledger does not
+keep a second hand-maintained list.
 
 ## Milestones
 
@@ -936,6 +928,37 @@ Remaining blocked:
   uninstall acceptance has not run.
 - External-style plugins from at least three domains remain required before
   public admission.
+
+### PDX-3: Public API v1 Hardening (2026-11-22, complete)
+
+Files:
+
+- `contracts/{plugin-api-v1.json,plugin-compatibility.json}`
+- `contracts/plugin-api-compatibility-v1.json`
+- `scripts/{plugin-api-contract.mjs,sdk-pack.mjs,test-pdx3-hardening.ps1}`
+- `crates/plugin-contract/src/{host_api.rs,host_contract.generated.rs}`
+- `crates/plugin-host/src/authorization.rs`
+- `crates/app/src/plugin_window.rs`
+- `packages/extension-api/src/{host.ts,contract.generated.ts}`
+- `docs/{plugin-api-reference.md,plugin-host-api-compatibility.md}`
+
+Delivered:
+
+- [x] Host API `1.0.0` freezes the ten command-oriented API families and
+      declares a stable `1.x` compatibility and deprecation policy.
+- [x] The compatibility matrix and fixtures cover the supported `0.3.x`,
+      `0.4.x`, `0.5.x`, and `1.0.x` lines. Prior-line calls are replayed through
+      the current contract schemas and Rust host DTOs.
+- [x] The generated API reference is the only maintained call catalog and
+      includes every call, event, stable error, quota, and family failure rule.
+- [x] Every API family defines disabled, revoked, expired, malformed, timed-out,
+      cancelled, and resource-exhausted behavior using stable structured codes.
+- [x] SDK and host limits agree for preference keys, clipboard text, storage,
+      filesystem, HTTPS, and controlled-process payloads.
+- [x] Public developer documentation records the same-user boundary and the
+      capabilities intentionally left outside API v1.
+- [x] A future `minHostVersion` fails before package runtime with the stable
+      `feature_unavailable` launch category.
 
 ## Verification Commands
 

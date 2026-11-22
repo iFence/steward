@@ -1,6 +1,6 @@
-# Steward Extension API v5
+# Steward Extension API v1
 
-> Host API version: `0.5.0`. See
+> Host API version: `1.0.0`. See
 > [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md) for
 > version negotiation, feature discovery, and stable error codes.
 
@@ -98,42 +98,16 @@ for a regex trigger. A plugin window is reused by plugin ID, so handle
 
 ## Host calls
 
-| Helper                           | Result                                                                 |
-| -------------------------------- | ---------------------------------------------------------------------- |
-| `clipboardHistory()`             | Current clipboard entries from Steward                                 |
-| `copyText(text)`                 | Writes text through Steward's clipboard capability                     |
-| `storageGet(key)`                | Reads plugin-private string storage                                    |
-| `storageSet(key, value)`         | Persists plugin-private string storage                                 |
-| `calendarHolidays(year)`         | Reads Steward's cached holiday schedule for a year                     |
-| `closeWindow()`                  | Close the current plugin window                                        |
-| `backToLauncher()`               | Leave the plugin page and restore launcher focus                       |
-| `closePage()`                    | Close the current plugin page                                          |
-| `setPageTitle(title)`            | Set a bounded plugin-page title                                        |
-| `preferences()` / `preference()` | Read host-resolved plugin preferences                                  |
-| `toast(options)`                 | Show a transient launcher notice                                       |
-| `confirm(options)`               | Ask the launcher to confirm an action; resolves to `false` when denied |
-| `reportProgress(update)`         | Report bounded progress for a long operation                           |
-| `pickFolder(write?)`             | Ask the user for a folder and persist a read or read-write grant       |
-| `pickFile()`                     | Ask the user for a file and persist a read grant                       |
-| `filesystemGrants()`             | List the plugin's active selected roots and access modes               |
-| `walk(options)`                  | Bounded, cancellable recursive metadata walk under a selected root     |
-| `cancelWalk(id)`                 | Cancel a walk by its caller-supplied ID                                |
-| `readText(path, maxBytes?)`      | Read bounded UTF-8 text under an active read grant                     |
-| `writeText(path, contents)`      | Write bounded text under an active write grant                         |
-| `installedApplications()`        | List launch targets in Steward's installed-app catalog                 |
-| `openPath(path)`                 | Open a selected path with its registered default handler               |
-| `revealPath(path)`               | Show a selected path in File Explorer                                  |
-| `openWith(applicationId, path)`  | Open a selected path with an app from the installed-app catalog        |
-| `fetchHttp(options)`             | Make a scoped HTTPS request with redirect and size enforcement         |
-| `runProcess(options)`            | Run an exact approved executable through the launcher broker           |
-| `cancelProcess(requestId)`       | Cancel a controlled process and its tree by request ID                 |
-| `onProgress(cb)`                 | Receive host progress events                                           |
-| `onCommand(cb)`                  | Receive focus/command events while the window stays open               |
-| `onTheme(cb)`                    | Receive accent and dark-mode changes                                   |
-| `onVisibility(cb)`               | Receive page visibility changes                                        |
-| `hostInfo()`                     | Read the host API version and available feature names                  |
-| `supportsFeature(name)`          | Test one available feature before calling it                           |
-| `requireFeature(name)`           | Throw `StewardError("feature_unavailable")` when absent                |
+The generated [plugin API reference](plugin-api-reference.md) is the canonical
+list of helper-visible calls, request and response examples, capability names,
+quotas, failure mappings, and events. It is generated from
+`contracts/plugin-api-v1.json`, so adding or changing a call updates the
+reference and contract checks in the same change.
+
+The SDK helpers remain the supported authoring surface. Calls are grouped into
+preferences, feedback, clipboard, storage, calendar, navigation, filesystem,
+system, network, and process API families. Every family uses the stable error
+codes and bounded-operation behavior documented in the reference.
 
 The current release ceiling allows clipboard history, `${dataDir}` filesystem
 access, selected-path host calls, system open/reveal with a selected root,

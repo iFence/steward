@@ -1,8 +1,8 @@
 # Steward Plugin API Next Milestones
 
-> Status: PDX-0 complete. PDX-1 implementation is complete and CI-gated; its
-> first public SDK artifact will be attached by the next tagged release. Current
-> baseline is the command-oriented plugin platform in
+> Status: PDX-0 through PDX-3 complete. PDX-1 and PDX-3 SDK artifacts will be
+> attached by the next tagged release. Current baseline is the stable
+> command-oriented `1.0.0` plugin host API in
 > [plugin-capability-roadmap.md](plugin-capability-roadmap.md), with the
 > `runProcess` request-ID mismatch repaired on 2026-11-22.
 >
@@ -115,7 +115,7 @@ monorepo.
 
 Evidence:
 
-- `pnpm sdk:pack` emits `target/sdk/steward-extension-api-0.5.0.tgz` and a
+- `pnpm sdk:pack` emits `target/sdk/steward-extension-api-1.0.0.tgz` and a
   SHA-256 manifest after validating the compatibility matrix and package
   contents;
 - `steward-plugin new` generates the interactive, host-call-tested template
@@ -144,20 +144,20 @@ developer workflow.
 ### Required Work
 
 - [x] PDX-2.1: add a developer mode that uses an isolated data directory, plugin
-  directory, and development trust root without affecting the installed app;
+      directory, and development trust root without affecting the installed app;
 - [x] PDX-2.2: support selecting a local plugin zip or package directory for
-  installation from Settings > Plugins, matching the CLI behavior;
+      installation from Settings > Plugins, matching the CLI behavior;
 - [x] PDX-2.3: provide one command for rebuild, package, replace, and reopen;
 - [x] PDX-2.4: provide a static-bundle reload fallback when NSH GPUI hot reload is
-  unavailable or fails;
+      unavailable or fails;
 - [x] PDX-2.5: expose plugin-scoped logs, first-frame time, host-call failures,
-  denied capabilities, process exits, and recent crash details in a developer
-  diagnostics surface;
+      denied capabilities, process exits, and recent crash details in a developer
+      diagnostics surface;
 - [x] PDX-2.6: include capability-call tracing with secrets and request payloads
-  omitted by default;
+      omitted by default;
 - [x] PDX-2.7: add a canonical "plugin failed to launch" doctor command that checks
-  IDs, versions, trust roots, capabilities, manifest/package agreement, and
-  package layout.
+      IDs, versions, trust roots, capabilities, manifest/package agreement, and
+      package layout.
 
 Evidence:
 
@@ -184,27 +184,49 @@ Evidence:
 
 ## PDX-3: Public API v1 Hardening
 
-Status: planned. Depends on PDX-1 and PDX-2.
+Status: implementation complete and CI-gated on 2026-11-22. Depends on PDX-1
+and PDX-2.
 
 Objective: declare a stable plugin API line with explicit compatibility and
 support guarantees.
 
 ### Required Work
 
-- PDX-3.1: freeze the command-oriented public API surface for a `1.0` host
-  contract, including launch data, events, errors, preferences, feedback,
-  navigation, storage, clipboard, filesystem, system-open, network, and process
-  calls;
-- PDX-3.2: add compatibility fixtures for every supported prior API line;
-- PDX-3.3: define deprecation timelines, patch/minor guarantees, and migration
-  guidance for manifest and SDK changes;
-- PDX-3.4: generate the API reference from the contract and remove duplicated
-  hand-maintained call tables;
-- PDX-3.5: define platform quotas and failure behavior for every API family;
-- PDX-3.6: test disabled, revoked, expired, malformed, timed-out, cancelled,
-  and resource-exhausted paths for each host family;
-- PDX-3.7: record the same-user security boundary and unsupported capabilities
-  in the public developer documentation.
+- [x] PDX-3.1: freeze the command-oriented public API surface for a `1.0` host
+      contract, including launch data, events, errors, preferences, feedback,
+      navigation, storage, clipboard, filesystem, system-open, network, and process
+      calls;
+- [x] PDX-3.2: add compatibility fixtures for every supported prior API line;
+- [x] PDX-3.3: define deprecation timelines, patch/minor guarantees, and migration
+      guidance for manifest and SDK changes;
+- [x] PDX-3.4: generate the API reference from the contract and remove duplicated
+      hand-maintained call tables;
+- [x] PDX-3.5: define platform quotas and failure behavior for every API family;
+- [x] PDX-3.6: test disabled, revoked, expired, malformed, timed-out, cancelled,
+      and resource-exhausted paths for each host family;
+- [x] PDX-3.7: record the same-user security boundary and unsupported capabilities
+      in the public developer documentation.
+
+Evidence:
+
+- Host API `1.0.0` freezes the ten command-oriented API families while the
+  compatibility matrix retains `0.3.x`, `0.4.x`, and `0.5.x` package lines;
+- `contracts/plugin-api-compatibility-v1.json` exercises every supported line
+  through contract schemas, current SDK helper exports, and Rust host DTOs;
+- `docs/plugin-api-reference.md` is generated from the contract and contains
+  every call, event, error, quota, and family failure mapping;
+- all families map disabled, revoked, expired, malformed, timed-out, cancelled,
+  and resource-exhausted states to stable structured error codes;
+- official packages declaring the supported `0.3.0`, `0.4.0`, and `0.5.0`
+  host minimums continue to typecheck, build, and pass their NSH tests against
+  the `1.0.0` host line;
+- SDK and host limits now agree for clipboard, preferences, storage,
+  filesystem, network, and process payloads;
+- public compatibility and NSH documentation records the same-user boundary and
+  the capabilities that remain unsupported;
+- `pnpm test:pdx3` covers contract freshness, the cross-layer harness, SDK-side
+  quota rejection, Rust compatibility DTOs, and prior-line/future-line host
+  version negotiation.
 
 ### Acceptance Gate
 
@@ -274,9 +296,9 @@ Each candidate requires:
 
 ## Immediate Work Queue
 
-1. Attach the PDX-1 SDK artifact and checksum to the next tagged Steward
-   release, then verify the documented public download on a clean Windows
-   environment.
+1. Attach the PDX-1/PDX-3 `1.0.0` SDK artifact and checksum to the next tagged
+   Steward release, then verify the documented public download on a clean
+   Windows environment.
 2. Run the PDX-2 developer workflow on a clean Windows VM with the released app
    and SDK before inviting external beta testers.
 

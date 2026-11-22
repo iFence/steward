@@ -1,6 +1,6 @@
 {
   "name": "@steward/extension-api",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "Typed Steward host calls for NSH plugin applications.",
   "type": "module",
   "main": "./dist/host.js",

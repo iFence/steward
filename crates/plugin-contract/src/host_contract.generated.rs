@@ -2,11 +2,13 @@
 // Run `pnpm contract:generate` after changing the contract.
 
 #[rustfmt::skip]
-pub const HOST_API_VERSION: &str = "0.5.0";
+pub const HOST_API_VERSION: &str = "1.0.0";
 #[rustfmt::skip]
 pub const HOST_CONTRACT_VERSION: u32 = 1;
 #[rustfmt::skip]
 pub const HOST_ERROR_ENVELOPE_VERSION: u32 = 1;
+#[rustfmt::skip]
+pub const HOST_MINIMUM_SUPPORTED_API_VERSION: &str = "0.3.0";
 #[rustfmt::skip]
 pub const HOST_ERROR_CODES: &[&str] = &[
     "permission_denied",
@@ -70,4 +72,37 @@ pub const HOST_FEATURE_NAMES: &[&str] = &[
     "steward.feedback",
     "steward.navigation",
     "steward.preferences",
+];
+#[rustfmt::skip]
+pub const HOST_FAMILY_NAMES: &[&str] = &[
+    "preferences",
+    "feedback",
+    "clipboard",
+    "storage",
+    "calendar",
+    "navigation",
+    "filesystem",
+    "system",
+    "network",
+    "process",
+];
+#[rustfmt::skip]
+pub const HOST_FAILURE_STATES: &[&str] = &[
+    "disabled",
+    "revoked",
+    "expired",
+    "malformed",
+    "timedOut",
+    "cancelled",
+    "resourceExhausted",
+];
+#[rustfmt::skip]
+pub const HOST_FAILURE_STATE_CODES: &[&str] = &[
+    "feature_unavailable",
+    "permission_denied",
+    "permission_denied",
+    "invalid_input",
+    "timeout",
+    "cancelled",
+    "resource_exhausted",
 ];

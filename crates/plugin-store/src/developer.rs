@@ -234,7 +234,7 @@ mod tests {
               "id": "com.example.package",
               "name": "Package",
               "version": "1.0.0",
-              "minHostVersion": "0.5.0",
+              "minHostVersion": "1.0.0",
               "package": "plugin.nshpkg",
               "commands": [{
                 "name": "package",

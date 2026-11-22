@@ -3,6 +3,7 @@ import {
   HOST_API_VERSION,
   HOST_ERROR_ENVELOPE_VERSION,
   HOST_ERROR_CODES,
+  HOST_RETRYABLE_ERROR_CODES,
   type HostCallName,
   type HostErrorPayload,
   type HostEventName,
@@ -14,10 +15,13 @@ export type {
   HostCallName,
   HostErrorPayload,
   HostEventName,
+  HostApiFamily,
+  HostFailureState,
   StewardErrorCode,
 } from "./contract.generated";
 export {
   HOST_API_VERSION,
+  HOST_API_FAMILIES,
   HOST_CALL_FIXTURES,
   HOST_CALL_NAMES,
   HOST_CAPABILITIES,
@@ -25,7 +29,9 @@ export {
   HOST_ERROR_CODES,
   HOST_ERROR_ENVELOPE_VERSION,
   HOST_EVENT_NAMES,
+  HOST_FAILURE_STATES,
   HOST_FEATURE_NAMES,
+  HOST_MINIMUM_SUPPORTED_API_VERSION,
   HOST_RETRYABLE_ERROR_CODES,
 } from "./contract.generated";
 
@@ -141,7 +147,11 @@ export class StewardError extends Error {
   readonly code: StewardErrorCode;
   readonly retryable: boolean;
 
-  constructor(code: StewardErrorCode, message: string, retryable = false) {
+  constructor(
+    code: StewardErrorCode,
+    message: string,
+    retryable = (HOST_RETRYABLE_ERROR_CODES as readonly StewardErrorCode[]).includes(code),
+  ) {
     super(message);
     this.name = "StewardError";
     this.code = code;
@@ -222,6 +232,9 @@ export async function clipboardHistory(): Promise<ClipboardEntry[]> {
 }
 
 export async function copyText(text: string): Promise<void> {
+  if (utf8ByteLength(text) > 100_000) {
+    throw new StewardError("resource_exhausted", "clipboard text exceeds the 100000 byte limit");
+  }
   try {
     await callHost("steward.clipboard.write", { text });
   } catch (error) {
@@ -230,6 +243,9 @@ export async function copyText(text: string): Promise<void> {
 }
 
 export async function storageGet(key: string): Promise<string | null> {
+  if (!key || utf8ByteLength(key) > 256) {
+    throw new StewardError("invalid_input", "storage key must contain 1 to 256 UTF-8 bytes");
+  }
   try {
     return await callHost<string | null>("steward.storage.get", { key });
   } catch (error) {
@@ -238,6 +254,12 @@ export async function storageGet(key: string): Promise<string | null> {
 }
 
 export async function storageSet(key: string, value: string): Promise<void> {
+  if (!key || utf8ByteLength(key) > 256) {
+    throw new StewardError("invalid_input", "storage key must contain 1 to 256 UTF-8 bytes");
+  }
+  if (utf8ByteLength(value) > 1024 * 1024) {
+    throw new StewardError("resource_exhausted", "storage value exceeds the 1 MiB limit");
+  }
   try {
     await callHost("steward.storage.set", { key, value });
   } catch (error) {
@@ -246,7 +268,9 @@ export async function storageSet(key: string, value: string): Promise<void> {
 }
 
 export async function calendarHolidays(year: number): Promise<HolidaySchedule> {
-  if (!Number.isInteger(year)) throw new Error("calendarHolidays requires an integer year");
+  if (!Number.isInteger(year) || year < 0 || year > 65_535) {
+    throw new StewardError("invalid_input", "calendarHolidays year must be between 0 and 65535");
+  }
   try {
     return await callHost<HolidaySchedule>(
       "steward.calendar.holidays",
@@ -280,8 +304,8 @@ export async function closePage(): Promise<void> {
 
 export async function setPageTitle(title: string): Promise<void> {
   const value = title.trim();
-  if (!value || value.length > 128) {
-    throw new StewardError("invalid_input", "page title must contain 1 to 128 characters");
+  if (!value || utf8ByteLength(value) > 128) {
+    throw new StewardError("invalid_input", "page title must contain 1 to 128 UTF-8 bytes");
   }
   try {
     await callHost("steward.navigation.setTitle", { title: value });
@@ -306,6 +330,9 @@ export async function toast(options: ToastOptions): Promise<void> {
   if (!options.title.trim() || !options.message.trim()) {
     throw new StewardError("invalid_input", "toast requires a title and message");
   }
+  if (utf8ByteLength(options.title) > 128 || utf8ByteLength(options.message) > 1024) {
+    throw new StewardError("invalid_input", "toast content exceeds its documented limits");
+  }
   try {
     await callHost("steward.feedback.toast", options);
   } catch (error) {
@@ -324,6 +351,15 @@ export interface ConfirmOptions {
 export async function confirm(options: ConfirmOptions): Promise<boolean> {
   if (!options.title.trim() || !options.message.trim()) {
     throw new StewardError("invalid_input", "confirm requires a title and message");
+  }
+  if (utf8ByteLength(options.title) > 128 || utf8ByteLength(options.message) > 4096) {
+    throw new StewardError("invalid_input", "confirmation content exceeds its documented limits");
+  }
+  if (
+    (options.confirmLabel !== undefined && utf8ByteLength(options.confirmLabel) > 64) ||
+    (options.cancelLabel !== undefined && utf8ByteLength(options.cancelLabel) > 64)
+  ) {
+    throw new StewardError("invalid_input", "confirmation labels must not exceed 64 UTF-8 bytes");
   }
   try {
     const result = await callHost<{ confirmed: boolean }>("steward.feedback.confirm", options, {
@@ -347,8 +383,11 @@ export interface ProgressUpdate {
 }
 
 export async function reportProgress(update: ProgressUpdate): Promise<void> {
-  if (!update.id || !update.message) {
+  if (!update.id || utf8ByteLength(update.id) > 128 || !update.message) {
     throw new StewardError("invalid_input", "progress requires an id and message");
+  }
+  if (utf8ByteLength(update.message) > 1024) {
+    throw new StewardError("invalid_input", "progress message must not exceed 1024 UTF-8 bytes");
   }
   if (
     update.current !== undefined &&
@@ -412,7 +451,38 @@ export async function walk(options: WalkOptions): Promise<WalkResult> {
   if (!options.root) {
     throw new StewardError("invalid_input", "walk requires a root path");
   }
+  if (utf8ByteLength(options.root) > 32_768) {
+    throw new StewardError("invalid_input", "walk root exceeds the 32768 byte path limit");
+  }
+  if (
+    options.maxResults !== undefined &&
+    (!Number.isSafeInteger(options.maxResults) ||
+      options.maxResults < 1 ||
+      options.maxResults > 20_000)
+  ) {
+    throw new StewardError("invalid_input", "walk maxResults must be between 1 and 20000");
+  }
+  if (
+    options.maxDepth !== undefined &&
+    (!Number.isSafeInteger(options.maxDepth) || options.maxDepth < 1 || options.maxDepth > 64)
+  ) {
+    throw new StewardError("invalid_input", "walk maxDepth must be between 1 and 64");
+  }
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isSafeInteger(options.timeoutMs) ||
+      options.timeoutMs < 1 ||
+      options.timeoutMs > 30_000)
+  ) {
+    throw new StewardError("invalid_input", "walk timeoutMs must be between 1 and 30000");
+  }
   const id = options.id ?? createWalkId();
+  if (!validWalkId(id)) {
+    throw new StewardError(
+      "invalid_input",
+      "walk id must contain 1 to 128 letters, digits, dots, underscores, or hyphens",
+    );
+  }
   try {
     return await callHost<WalkResult>(
       "steward.fs.walk",
@@ -431,8 +501,11 @@ export async function walk(options: WalkOptions): Promise<WalkResult> {
 }
 
 export async function cancelWalk(id: string): Promise<boolean> {
-  if (!id) {
-    throw new StewardError("invalid_input", "cancelWalk requires a walk id");
+  if (!validWalkId(id)) {
+    throw new StewardError(
+      "invalid_input",
+      "cancelWalk id must contain 1 to 128 letters, digits, dots, underscores, or hyphens",
+    );
   }
   try {
     const result = await callHost<{ cancelled: boolean }>("steward.fs.cancelWalk", { id });
@@ -443,8 +516,11 @@ export async function cancelWalk(id: string): Promise<boolean> {
 }
 
 export async function readText(path: string, maxBytes = 1024 * 1024): Promise<string> {
-  if (!path) {
-    throw new StewardError("invalid_input", "readText requires a path");
+  if (!path || utf8ByteLength(path) > 32_768) {
+    throw new StewardError("invalid_input", "readText requires a bounded path");
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 4 * 1024 * 1024) {
+    throw new StewardError("invalid_input", "readText maxBytes must be between 1 and 4 MiB");
   }
   try {
     return await callHost<string>("steward.fs.readText", { path, maxBytes });
@@ -454,8 +530,11 @@ export async function readText(path: string, maxBytes = 1024 * 1024): Promise<st
 }
 
 export async function writeText(path: string, contents: string): Promise<string> {
-  if (!path) {
-    throw new StewardError("invalid_input", "writeText requires a path");
+  if (!path || utf8ByteLength(path) > 32_768) {
+    throw new StewardError("invalid_input", "writeText requires a bounded path");
+  }
+  if (utf8ByteLength(contents) > 4 * 1024 * 1024) {
+    throw new StewardError("resource_exhausted", "writeText contents exceed the 4 MiB limit");
   }
   try {
     const result = await callHost<{ path: string }>("steward.fs.writeText", { path, contents });
@@ -476,8 +555,8 @@ export async function installedApplications(): Promise<InstalledApplication[]> {
 }
 
 export async function openPath(path: string): Promise<void> {
-  if (!path) {
-    throw new StewardError("invalid_input", "openPath requires a path");
+  if (!path || utf8ByteLength(path) > 32_768) {
+    throw new StewardError("invalid_input", "openPath requires a bounded path");
   }
   try {
     await callHost("steward.system.openPath", { path });
@@ -487,8 +566,8 @@ export async function openPath(path: string): Promise<void> {
 }
 
 export async function revealPath(path: string): Promise<void> {
-  if (!path) {
-    throw new StewardError("invalid_input", "revealPath requires a path");
+  if (!path || utf8ByteLength(path) > 32_768) {
+    throw new StewardError("invalid_input", "revealPath requires a bounded path");
   }
   try {
     await callHost("steward.system.revealPath", { path });
@@ -498,8 +577,13 @@ export async function revealPath(path: string): Promise<void> {
 }
 
 export async function openWith(applicationId: string, path: string): Promise<void> {
-  if (!applicationId || !path) {
-    throw new StewardError("invalid_input", "openWith requires an applicationId and path");
+  if (
+    !applicationId ||
+    utf8ByteLength(applicationId) > 32_768 ||
+    !path ||
+    utf8ByteLength(path) > 32_768
+  ) {
+    throw new StewardError("invalid_input", "openWith requires bounded applicationId and path");
   }
   try {
     await callHost("steward.system.openWith", { applicationId, path });
@@ -512,7 +596,30 @@ export async function fetchHttp(options: HttpFetchOptions): Promise<HttpResponse
   if (!options.url) {
     throw new StewardError("invalid_input", "fetchHttp requires a URL");
   }
+  if (utf8ByteLength(options.url) > 8_192) {
+    throw new StewardError("invalid_input", "fetchHttp URL exceeds the 8192 byte limit");
+  }
+  if (Object.keys(options.headers ?? {}).length > 32) {
+    throw new StewardError("invalid_input", "fetchHttp accepts at most 32 headers");
+  }
+  if (options.body !== undefined && utf8ByteLength(options.body) > 1024 * 1024) {
+    throw new StewardError("resource_exhausted", "fetchHttp body exceeds the 1 MiB limit");
+  }
   const timeoutMs = options.timeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) {
+    throw new StewardError("invalid_input", "fetchHttp timeoutMs must be between 100 and 30000");
+  }
+  if (
+    options.maxResponseBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxResponseBytes) ||
+      options.maxResponseBytes < 1 ||
+      options.maxResponseBytes > 4 * 1024 * 1024)
+  ) {
+    throw new StewardError(
+      "invalid_input",
+      "fetchHttp maxResponseBytes must be between 1 and 4 MiB",
+    );
+  }
   try {
     return await callHost<HttpResponse>(
       "steward.net.fetch",
@@ -538,8 +645,17 @@ export async function runProcess(options: ProcessRunOptions): Promise<ProcessRes
       "runProcess requires an executable and workingDirectory",
     );
   }
+  if (utf8ByteLength(options.executable) > 260) {
+    throw new StewardError("invalid_input", "runProcess executable exceeds the 260 byte limit");
+  }
+  if (utf8ByteLength(options.workingDirectory) > 32_768) {
+    throw new StewardError(
+      "invalid_input",
+      "runProcess workingDirectory exceeds the 32768 byte limit",
+    );
+  }
   const requestId = options.id ?? createProcessId();
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) {
+  if (!validProcessId(requestId)) {
     throw new StewardError("invalid_input", "process id contains unsupported characters");
   }
   // The launcher broker correlates requests with a positive u64. Keep the
@@ -547,13 +663,37 @@ export async function runProcess(options: ProcessRunOptions): Promise<ProcessRes
   // for both run and cancel calls.
   const numericRequestId = processIdNumber(requestId);
   const timeoutMs = options.timeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
+    throw new StewardError("invalid_input", "runProcess timeoutMs must be between 1 and 120000");
+  }
+  if (
+    options.maxOutputBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxOutputBytes) ||
+      options.maxOutputBytes < 1 ||
+      options.maxOutputBytes > 4 * 1024 * 1024)
+  ) {
+    throw new StewardError(
+      "invalid_input",
+      "runProcess maxOutputBytes must be between 1 and 4 MiB",
+    );
+  }
+  const argumentsValue = options.arguments ?? [];
+  if (argumentsValue.length > 256) {
+    throw new StewardError("resource_exhausted", "runProcess accepts at most 256 arguments");
+  }
+  if (argumentsValue.reduce((total, item) => total + utf8ByteLength(item), 0) > 32 * 1024) {
+    throw new StewardError("resource_exhausted", "runProcess arguments exceed the 32 KiB limit");
+  }
+  if (argumentsValue.some((item) => item.includes("\0"))) {
+    throw new StewardError("invalid_input", "runProcess arguments cannot contain NUL");
+  }
   try {
     const result = await callHost<Omit<ProcessResult, "requestId">>(
       "steward.exec.run",
       {
         requestId: numericRequestId,
         executable: options.executable,
-        arguments: options.arguments ?? [],
+        arguments: argumentsValue,
         workingDirectory: options.workingDirectory,
         timeoutMs,
         maxOutputBytes: options.maxOutputBytes,
@@ -567,8 +707,8 @@ export async function runProcess(options: ProcessRunOptions): Promise<ProcessRes
 }
 
 export async function cancelProcess(requestId: string): Promise<boolean> {
-  if (!requestId) {
-    throw new StewardError("invalid_input", "cancelProcess requires a request id");
+  if (!validProcessId(requestId)) {
+    throw new StewardError("invalid_input", "process id contains unsupported characters");
   }
   const numericId = processIdNumber(requestId);
   try {
@@ -584,6 +724,37 @@ export async function cancelProcess(requestId: string): Promise<boolean> {
 function createWalkId(): string {
   const random = Math.floor(Math.random() * 0x100000000).toString(36);
   return `walk-${Date.now().toString(36)}-${random}`;
+}
+
+function validWalkId(value: string): boolean {
+  return /^[A-Za-z0-9._-]{1,128}$/.test(value);
+}
+
+function validProcessId(value: string): boolean {
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+}
+
+function utf8ByteLength(value: string): number {
+  let length = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) {
+      length += 1;
+    } else if (code < 0x800) {
+      length += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        length += 4;
+        index += 1;
+      } else {
+        length += 3;
+      }
+    } else {
+      length += 3;
+    }
+  }
+  return length;
 }
 
 function createProcessId(): string {

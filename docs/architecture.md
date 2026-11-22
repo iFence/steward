@@ -331,6 +331,15 @@ navigation flush a lifecycle event, destroy the child process, and restore
 launcher focus. The design intentionally does not move the QuickJS VM into the
 shell or claim a cross-process render bridge.
 
+PDX-3 freezes the command-oriented bridge as host API `1.0.0`. The contract
+defines the ten public API families, their quotas, and the stable mapping for
+disabled, revoked, expired, malformed, timed-out, cancelled, and
+resource-exhausted failures. The API reference is generated from that contract,
+and compatibility fixtures replay the supported `0.3.x` through `0.5.x` lines
+through current schemas and host DTOs. The same-user process boundary remains
+explicit: isolation limits crash propagation and host-call reach, but it is not
+an operating-system security boundary between processes running as one user.
+
 VM limits:
 
 | Limit       |  Value |

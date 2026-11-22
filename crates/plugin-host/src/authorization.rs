@@ -725,6 +725,45 @@ mod tests {
     }
 
     #[test]
+    fn supported_prior_lines_launch_and_future_hosts_fail_before_runtime() {
+        let dir = temp_dir("host-version-lines");
+        for minimum in ["0.3.0", "0.4.0", "0.5.0", HOST_API_VERSION] {
+            let result = authorize(
+                &dir,
+                "com.example.test",
+                Some(minimum),
+                "SHA256:publisher",
+                "1.0.0",
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                result.authorization.host_info().api_version,
+                HOST_API_VERSION
+            );
+        }
+        let future =
+            (semver::Version::parse(HOST_API_VERSION).unwrap().major + 1).to_string() + ".0.0";
+        let error = match authorize(
+            &dir,
+            "com.example.test",
+            Some(&future),
+            "SHA256:publisher",
+            "1.0.0",
+            None,
+        ) {
+            Ok(_) => panic!("a future host API requirement must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, PluginHostError::UnsupportedFeature(_)));
+        assert_eq!(
+            error.code(),
+            steward_plugin_contract::PluginErrorCode::FeatureUnavailable
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn preferences_feedback_and_navigation_are_automatic_named_capabilities() {
         let dir = temp_dir("feedback-preferences");
         let declared = Capabilities::from_json(&serde_json::json!({

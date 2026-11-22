@@ -9,6 +9,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const contractPath = resolve(root, "contracts/plugin-api-v1.json");
 const generatedTsPath = resolve(root, "packages/extension-api/src/contract.generated.ts");
 const generatedRustPath = resolve(root, "crates/plugin-contract/src/host_contract.generated.rs");
+const apiReferencePath = resolve(root, "docs/plugin-api-reference.md");
+const compatibilityPath = resolve(root, "contracts/plugin-compatibility.json");
+const compatibilityFixturesPath = resolve(root, "contracts/plugin-api-compatibility-v1.json");
 const sdkPath = resolve(root, "packages/extension-api/src/host.ts");
 const handlersPath = resolve(root, "crates/app/src/plugin_window.rs");
 const capabilitiesPath = resolve(root, "crates/plugin-contract/src/capabilities.rs");
@@ -32,6 +35,25 @@ function assertUnique(values, label) {
   const duplicates = values.filter((value, index) => values.indexOf(value) !== index);
   if (duplicates.length)
     fail(`${label} contains duplicates: ${[...new Set(duplicates)].join(", ")}`);
+}
+
+function semanticVersion(value, label) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(value);
+  if (!match) fail(`${label} is not semantic version syntax: ${value}`);
+  return match.slice(1, 4).map(Number);
+}
+
+function compareSemanticVersions(left, right) {
+  const leftParts = semanticVersion(left, "left version");
+  const rightParts = semanticVersion(right, "right version");
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index];
+  }
+  return 0;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function validateExample(schema, value, location) {
@@ -71,6 +93,9 @@ function validateExample(schema, value, location) {
     }
   }
   if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      fail(`${location} example has fewer than ${schema.minItems} items`);
+    }
     if (schema.maxItems !== undefined && value.length > schema.maxItems) {
       fail(`${location} example has more than ${schema.maxItems} items`);
     }
@@ -79,6 +104,12 @@ function validateExample(schema, value, location) {
     }
   }
   if (value && actualType === "object") {
+    if (schema.minProperties !== undefined && Object.keys(value).length < schema.minProperties) {
+      fail(`${location} example has fewer than ${schema.minProperties} fields`);
+    }
+    if (schema.maxProperties !== undefined && Object.keys(value).length > schema.maxProperties) {
+      fail(`${location} example has more than ${schema.maxProperties} fields`);
+    }
     for (const key of schema.required ?? []) {
       if (!(key in value)) fail(`${location} example is missing required field ${key}`);
     }
@@ -129,12 +160,88 @@ function registeredHandlers(source, capabilitiesSource) {
   return names;
 }
 
+function validateCompatibility(sdkCalls) {
+  const compatibility = JSON.parse(readFileSync(compatibilityPath, "utf8"));
+  const fixtures = JSON.parse(readFileSync(compatibilityFixturesPath, "utf8"));
+  const sdkSource = readFileSync(sdkPath, "utf8");
+  const current = compatibility.current;
+  const currentCalls = new Map(contract.calls.map((call) => [call.name, call]));
+  const currentSdkCalls = new Set(sdkCalls.map((call) => call.name));
+
+  if (fixtures.schemaVersion !== 1) fail("compatibility fixture schemaVersion must be 1");
+  if (!Array.isArray(fixtures.lines) || fixtures.lines.length === 0) {
+    fail("compatibility fixtures contain no API lines");
+  }
+  assertUnique(
+    fixtures.lines.map((line) => line.hostApi),
+    "compatibility fixture API lines",
+  );
+
+  const supportedLines = new Map(compatibility.supported.map((line) => [line.hostApi, line]));
+  for (const line of fixtures.lines) {
+    semanticVersion(line.hostApi.replace(/\.x$/, ".0"), `${line.hostApi}.hostApi`);
+    semanticVersion(line.sdk.replace(/\.x$/, ".0"), `${line.hostApi}.sdk`);
+    semanticVersion(line.minimumHostVersion, `${line.hostApi}.minimumHostVersion`);
+    if (!supportedLines.has(line.hostApi)) {
+      fail(`compatibility fixture line ${line.hostApi} is absent from plugin-compatibility.json`);
+    }
+    if (compareSemanticVersions(line.minimumHostVersion, contract.hostApiVersion) > 0) {
+      fail(`compatibility fixture line ${line.hostApi} requires a future host`);
+    }
+    if (!Array.isArray(line.calls) || line.calls.length === 0) {
+      fail(`compatibility fixture line ${line.hostApi} has no calls`);
+    }
+    for (const fixture of line.calls) {
+      const call = currentCalls.get(fixture.name);
+      if (!call) fail(`${line.hostApi} fixture references unknown call ${fixture.name}`);
+      if (!fixture.name.startsWith("steward.preferences.") && !currentSdkCalls.has(fixture.name)) {
+        fail(`${line.hostApi} fixture call ${fixture.name} is absent from the current SDK`);
+      }
+      if (
+        !new RegExp(
+          `export\\s+(?:async\\s+)?function\\s+${escapeRegExp(fixture.sdkHelper)}(?:\\s*<[^>]+>)?\\s*\\(`,
+        ).test(sdkSource)
+      ) {
+        fail(`${line.hostApi} fixture helper ${fixture.sdkHelper} is not exported by the SDK`);
+      }
+      validateExample(call.request, fixture.request, `${line.hostApi}.${fixture.name}.request`);
+      validateExample(call.response, fixture.response, `${line.hostApi}.${fixture.name}.response`);
+    }
+  }
+
+  for (const line of compatibility.supported) {
+    if (!fixtures.lines.some((fixture) => fixture.hostApi === line.hostApi)) {
+      fail(`supported API line ${line.hostApi} has no compatibility fixture`);
+    }
+  }
+  semanticVersion(current.hostApiVersion, "compatibility.current.hostApiVersion");
+  semanticVersion(current.sdkVersion, "compatibility.current.sdkVersion");
+  semanticVersion(current.minimumHostVersion, "compatibility.current.minimumHostVersion");
+  semanticVersion(
+    current.minimumSupportedHostVersion,
+    "compatibility.current.minimumSupportedHostVersion",
+  );
+  if (current.hostApiVersion !== contract.hostApiVersion) {
+    fail("compatibility matrix host API version differs from the contract");
+  }
+  const currentLines = compatibility.supported.filter((line) => line.status === "current");
+  if (
+    currentLines.length !== 1 ||
+    !currentLines[0].hostApi.startsWith(
+      `${contract.hostApiVersion.split(".").slice(0, 2).join(".")}.`,
+    )
+  ) {
+    fail("compatibility matrix must contain exactly one current host API line");
+  }
+}
+
 function generatedTypeScript() {
   const calls = contract.calls.map((call) => ({
     name: call.name,
     family: call.family,
     capability: call.capability,
     transport: call.transport,
+    description: call.description,
     request: call.request.examples[0],
     response: call.response.examples[0],
   }));
@@ -149,6 +256,9 @@ function generatedTypeScript() {
 export const HOST_API_VERSION = ${JSON.stringify(contract.hostApiVersion)} as const;
 export const HOST_CONTRACT_VERSION = ${contract.contractVersion} as const;
 export const HOST_ERROR_ENVELOPE_VERSION = ${contract.errorEnvelopeVersion} as const;
+export const HOST_MINIMUM_SUPPORTED_API_VERSION = ${JSON.stringify(
+    contract.stability.minimumSupportedApiVersion,
+  )} as const;
 
 export const HOST_ERROR_CODES = ${JSON.stringify(
     errors.map((error) => error.code),
@@ -180,6 +290,10 @@ export const HOST_CALL_NAMES = ${JSON.stringify(
 export type HostCallName = (typeof HOST_CALL_NAMES)[number];
 
 export const HOST_CAPABILITIES = ${JSON.stringify(capabilities, null, 2)} as const;
+export const HOST_API_FAMILIES = ${JSON.stringify(contract.families, null, 2)} as const;
+export type HostApiFamily = (typeof HOST_API_FAMILIES)[number];
+export const HOST_FAILURE_STATES = ${JSON.stringify(contract.failureStates, null, 2)} as const;
+export type HostFailureState = (typeof HOST_FAILURE_STATES)[number];
 
 export interface HostErrorPayload {
   version: typeof HOST_ERROR_ENVELOPE_VERSION;
@@ -193,6 +307,7 @@ export interface HostCallFixture {
   family: string;
   capability: string;
   transport: "call" | "post";
+  description: string;
   request: unknown;
   response: unknown;
 }
@@ -215,6 +330,10 @@ pub const HOST_API_VERSION: &str = ${JSON.stringify(contract.hostApiVersion)};
 pub const HOST_CONTRACT_VERSION: u32 = ${contract.contractVersion};
 #[rustfmt::skip]
 pub const HOST_ERROR_ENVELOPE_VERSION: u32 = ${contract.errorEnvelopeVersion};
+#[rustfmt::skip]
+pub const HOST_MINIMUM_SUPPORTED_API_VERSION: &str = ${JSON.stringify(
+    contract.stability.minimumSupportedApiVersion,
+  )};
 ${rustStringArray(
   "HOST_ERROR_CODES",
   contract.errors.map((error) => error.code),
@@ -232,7 +351,146 @@ ${rustStringArray(
   contract.events.map((event) => event.name),
 )}
 ${rustStringArray("HOST_FEATURE_NAMES", contract.features)}
+${rustStringArray(
+  "HOST_FAMILY_NAMES",
+  contract.families.map((family) => family.name),
+)}
+${rustStringArray(
+  "HOST_FAILURE_STATES",
+  contract.failureStates.map((failure) => failure.state),
+)}
+${rustStringArray(
+  "HOST_FAILURE_STATE_CODES",
+  contract.failureStates.map((failure) => failure.code),
+)}
 `;
+}
+
+function markdownCell(value) {
+  return String(value).replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function jsonBlock(value) {
+  return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+}
+
+function generatedApiReference() {
+  const familyNames = contract.families.map((family) => family.name);
+  const failureStates = contract.failureStates
+    .map((failure) => `\`${failure.state}\` -> \`${failure.code}\``)
+    .join(", ");
+  const lines = [
+    "# Steward Plugin API Reference",
+    "",
+    "> Generated from `contracts/plugin-api-v1.json`. Do not edit this file directly.",
+    "> Run `pnpm contract:generate` after changing the contract.",
+    "",
+    `Host API version: \`${contract.hostApiVersion}\`. Contract version: \`${contract.contractVersion}\`.`,
+    `Stable API line: \`${contract.stability.line}\`. Minimum supported host API: \`${contract.stability.minimumSupportedApiVersion}\`.`,
+    "",
+    "This reference covers the command-oriented Steward bridge. NSH UI primitives and",
+    "standard NSH modules are documented separately in [nsh-plugin-api.md](nsh-plugin-api.md).",
+    "",
+    "## Versioning",
+    "",
+    `- Patch: ${contract.stability.policy.patch}`,
+    `- Minor: ${contract.stability.policy.minor}`,
+    `- Major: ${contract.stability.policy.major}`,
+    `- Deprecation: ${contract.stability.policy.deprecation}`,
+    "",
+    "## Failure Semantics",
+    "",
+    `Every API family maps the same failure states to stable codes: ${failureStates}.`,
+    "A rejection is delivered as the versioned JSON error envelope documented in",
+    "[plugin-api-contract.md](plugin-api-contract.md). Plugins must branch on `code`, not prose.",
+    "",
+    "| State | Code | Meaning |",
+    "| --- | --- | --- |",
+    ...contract.failureStates.map(
+      (failure) =>
+        `| \`${failure.state}\` | \`${failure.code}\` | ${markdownCell(failure.meaning)} |`,
+    ),
+    "",
+    "## Calls",
+  ];
+
+  for (const familyName of familyNames) {
+    const family = contract.families.find((candidate) => candidate.name === familyName);
+    const calls = contract.calls.filter((call) => call.family === familyName);
+    lines.push(
+      "",
+      `### ${familyName[0].toUpperCase()}${familyName.slice(1)}`,
+      "",
+      family.description,
+      "",
+      "| Quota | Limit | Exceeded behavior |",
+      "| --- | --- | --- |",
+      ...family.quotas.map(
+        (quota) =>
+          `| ${markdownCell(quota.subject)} | ${markdownCell(quota.limit)} | ${markdownCell(quota.behavior)} |`,
+      ),
+      "",
+      `Maximum host-operation deadline: ${family.maxOperationTimeoutMs} ms.`,
+    );
+    for (const call of calls) {
+      lines.push(
+        "",
+        `#### \`${call.name}\``,
+        "",
+        call.description,
+        "",
+        `- Transport: \`${call.transport}\``,
+        `- Capability: \`${call.capability}\``,
+        "",
+        "Request example:",
+        "",
+        jsonBlock(call.request.examples[0]),
+        "",
+        "Response example:",
+        "",
+        jsonBlock(call.response.examples[0]),
+      );
+    }
+  }
+
+  lines.push("", "## Events", "");
+  for (const event of contract.events) {
+    lines.push(
+      `### \`${event.name}\``,
+      "",
+      event.description,
+      "",
+      jsonBlock(event.payload.examples[0]),
+      "",
+    );
+  }
+
+  lines.push(
+    "## Stable Errors",
+    "",
+    "| Code | Retryable | Meaning |",
+    "| --- | --- | --- |",
+    ...contract.errors.map(
+      (error) =>
+        `| \`${error.code}\` | ${error.retryable ? "yes" : "no"} | ${markdownCell(error.description)} |`,
+    ),
+    "",
+    "## Deprecations",
+    "",
+  );
+  if (contract.stability.deprecations.length === 0) {
+    lines.push("No public API entries are deprecated in the 1.x line.");
+  } else {
+    for (const deprecation of contract.stability.deprecations) {
+      lines.push(
+        `- \`${deprecation.name}\` is deprecated since \`${deprecation.deprecatedIn}\`, ` +
+          `is replaced by \`${deprecation.replacement}\`, and is scheduled for removal in ` +
+          `\`${deprecation.removeIn}\`.`,
+      );
+    }
+  }
+
+  return `${lines.join("\n").trim()}\n`;
 }
 
 function validateContract() {
@@ -253,6 +511,70 @@ function validateContract() {
     contract.capabilities.map((capability) => `${capability.permission}\0${capability.scope}`),
     "capabilities",
   );
+  assertUnique(
+    contract.families.map((family) => family.name),
+    "API families",
+  );
+  assertUnique(
+    contract.failureStates.map((failure) => failure.state),
+    "failure states",
+  );
+  semanticVersion(contract.hostApiVersion, "hostApiVersion");
+  semanticVersion(contract.stability.stableSince, "stability.stableSince");
+  semanticVersion(
+    contract.stability.minimumSupportedApiVersion,
+    "stability.minimumSupportedApiVersion",
+  );
+  if (contract.stability.stableSince !== contract.hostApiVersion) {
+    fail("the new stability line must start at the current host API version");
+  }
+  if (
+    compareSemanticVersions(
+      contract.stability.minimumSupportedApiVersion,
+      contract.hostApiVersion,
+    ) > 0
+  ) {
+    fail("minimumSupportedApiVersion cannot be newer than hostApiVersion");
+  }
+  for (const policy of ["patch", "minor", "major", "deprecation"]) {
+    if (!contract.stability.policy?.[policy]?.trim()) {
+      fail(`stability policy is missing ${policy}`);
+    }
+  }
+  for (const deprecation of contract.stability.deprecations) {
+    for (const field of ["name", "deprecatedIn", "replacement", "removeIn"]) {
+      if (!deprecation[field]) fail(`deprecation is missing ${field}`);
+    }
+    semanticVersion(deprecation.deprecatedIn, `${deprecation.name}.deprecatedIn`);
+    semanticVersion(deprecation.removeIn, `${deprecation.name}.removeIn`);
+    if (compareSemanticVersions(deprecation.deprecatedIn, deprecation.removeIn) >= 0) {
+      fail(`${deprecation.name} removal version must follow its deprecation version`);
+    }
+  }
+  const failureCodes = new Set(contract.errors.map((error) => error.code));
+  for (const failure of contract.failureStates) {
+    if (!failureCodes.has(failure.code)) {
+      fail(`failure state ${failure.state} uses unknown error code ${failure.code}`);
+    }
+    if (!failure.meaning?.trim()) fail(`failure state ${failure.state} has no meaning`);
+  }
+  const familyNames = new Set(contract.families.map((family) => family.name));
+  for (const family of contract.families) {
+    if (!family.description?.trim()) fail(`family ${family.name} has no description`);
+    if (!Number.isSafeInteger(family.maxOperationTimeoutMs) || family.maxOperationTimeoutMs <= 0) {
+      fail(`family ${family.name} has an invalid maximum timeout`);
+    }
+    if (!Array.isArray(family.quotas) || family.quotas.length === 0) {
+      fail(`family ${family.name} has no quotas`);
+    }
+    for (const quota of family.quotas) {
+      for (const field of ["subject", "limit", "behavior"]) {
+        if (!quota[field]?.trim()) {
+          fail(`family ${family.name} quota is missing ${field}`);
+        }
+      }
+    }
+  }
 
   const capabilityNames = new Set(contract.capabilities.map((capability) => capability.permission));
   if (!contract.errorEnvelope?.examples?.[0]) {
@@ -270,6 +592,8 @@ function validateContract() {
     fail("errorEnvelope code enum must match the errors list");
   }
   for (const call of contract.calls) {
+    if (!call.description?.trim()) fail(`${call.name} has no generated reference description`);
+    if (!familyNames.has(call.family)) fail(`${call.name} uses unknown family ${call.family}`);
     if (!["call", "post"].includes(call.transport)) {
       fail(`${call.name} has invalid transport ${call.transport}`);
     }
@@ -289,6 +613,9 @@ function validateContract() {
     }
   }
   for (const event of contract.events) {
+    if (!event.description?.trim()) {
+      fail(`${event.name} has no generated reference description`);
+    }
     if (!Array.isArray(event.payload.examples) || event.payload.examples.length === 0) {
       fail(`${event.name} has no payload example`);
     }
@@ -334,6 +661,8 @@ function validateContract() {
       fail(`${path} bypasses structured host errors with .reject()`);
     }
   }
+
+  validateCompatibility(sdkCalls);
 }
 
 validateContract();
@@ -352,13 +681,14 @@ function formatted(contents, path) {
 const outputs = [
   [generatedTsPath, generatedTypeScript()],
   [generatedRustPath, generatedRust()],
+  [apiReferencePath, generatedApiReference()],
 ].map(([path, contents]) => [path, formatted(contents, path)]);
 
 if (write) {
   for (const [path, contents] of outputs) {
     writeFileSync(path, contents);
   }
-  console.log(`Generated ${outputs.map(([path]) => relative(root, path)).join(" and ")}.`);
+  console.log(`Generated ${outputs.map(([path]) => relative(root, path)).join(", ")}.`);
 } else {
   let stale = false;
   for (const [path, expected] of outputs) {
@@ -374,5 +704,8 @@ if (write) {
     }
   }
   if (stale) process.exitCode = 1;
-  else console.log("Plugin API contract, generated surfaces, SDK calls, and host handlers agree.");
+  else
+    console.log(
+      "Plugin API contract, generated reference, SDK calls, compatibility fixtures, and host handlers agree.",
+    );
 }

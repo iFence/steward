@@ -1,7 +1,253 @@
 {
   "contractVersion": 1,
-  "hostApiVersion": "0.5.0",
+  "hostApiVersion": "1.0.0",
   "errorEnvelopeVersion": 1,
+  "stability": {
+    "line": "1.x",
+    "stableSince": "1.0.0",
+    "minimumSupportedApiVersion": "0.3.0",
+    "policy": {
+      "patch": "Patch releases may fix implementation behavior but cannot remove calls, fields, events, or capability scopes, and cannot change their meaning.",
+      "minor": "Minor releases may add calls, optional request fields, optional response fields, events, features, and capability scopes. Existing stable inputs and successful responses keep their meaning.",
+      "major": "A major release may remove or change stable behavior only after the documented deprecation window and an explicit migration line.",
+      "deprecation": "A deprecated public entry remains available for at least one minor release in the current major line. Its contract record must name the replacement and the first removal version. Removal happens only in a later major release."
+    },
+    "deprecations": []
+  },
+  "failureStates": [
+    {
+      "state": "disabled",
+      "code": "feature_unavailable",
+      "meaning": "The running host does not provide the requested API family."
+    },
+    {
+      "state": "revoked",
+      "code": "permission_denied",
+      "meaning": "No active capability grant matches the plugin, publisher, version, permission, and scope."
+    },
+    {
+      "state": "expired",
+      "code": "permission_denied",
+      "meaning": "A previously active resource grant or package-version grant no longer matches."
+    },
+    {
+      "state": "malformed",
+      "code": "invalid_input",
+      "meaning": "The request fails schema, range, path, or semantic validation."
+    },
+    {
+      "state": "timedOut",
+      "code": "timeout",
+      "meaning": "A bounded host operation exceeded its deadline."
+    },
+    {
+      "state": "cancelled",
+      "code": "cancelled",
+      "meaning": "The plugin or user cancelled the operation before completion."
+    },
+    {
+      "state": "resourceExhausted",
+      "code": "resource_exhausted",
+      "meaning": "The request or API family exceeded a payload, queue, concurrency, or output quota."
+    }
+  ],
+  "families": [
+    {
+      "name": "preferences",
+      "description": "Read host-rendered, plugin-scoped preference values supplied at launch.",
+      "maxOperationTimeoutMs": 5000,
+      "quotas": [
+        {
+          "subject": "preference key",
+          "limit": "256 UTF-8 bytes per key",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "request payload",
+          "limit": "4 KiB",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "feedback",
+      "description": "Show host-rendered toasts, confirmations, and progress events.",
+      "maxOperationTimeoutMs": 300000,
+      "quotas": [
+        {
+          "subject": "toast",
+          "limit": "title 128 bytes; message 1024 bytes",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "confirmation",
+          "limit": "title 128 bytes; message 4096 bytes; labels 64 bytes each",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "progress",
+          "limit": "id 128 bytes; message 1024 bytes",
+          "behavior": "invalid_input"
+        }
+      ]
+    },
+    {
+      "name": "clipboard",
+      "description": "Read recent host clipboard entries or replace the current text value.",
+      "maxOperationTimeoutMs": 5000,
+      "quotas": [
+        {
+          "subject": "clipboard history",
+          "limit": "50 entries; 100000 bytes per entry",
+          "behavior": "oldest entries are omitted"
+        },
+        {
+          "subject": "clipboard write",
+          "limit": "100000 bytes",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "storage",
+      "description": "Read and write plugin-private string storage that survives package updates.",
+      "maxOperationTimeoutMs": 5000,
+      "quotas": [
+        {
+          "subject": "storage key",
+          "limit": "256 UTF-8 bytes",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "storage value",
+          "limit": "1 MiB",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "calendar",
+      "description": "Read Steward's cached holiday and adjusted-workday schedule.",
+      "maxOperationTimeoutMs": 20000,
+      "quotas": [
+        {
+          "subject": "calendar year",
+          "limit": "0 through 65535",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "holiday requests",
+          "limit": "16 queued requests",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "navigation",
+      "description": "Close the plugin surface, return to the launcher, and set a bounded page title.",
+      "maxOperationTimeoutMs": 5000,
+      "quotas": [
+        {
+          "subject": "page title",
+          "limit": "1 through 128 UTF-8 bytes",
+          "behavior": "invalid_input"
+        }
+      ]
+    },
+    {
+      "name": "filesystem",
+      "description": "Ask the user for selected roots and perform bounded text and metadata operations inside active path grants.",
+      "maxOperationTimeoutMs": 30000,
+      "quotas": [
+        {
+          "subject": "path",
+          "limit": "32768 bytes",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "walk",
+          "limit": "20000 results; depth 64; timeout 30000 ms",
+          "behavior": "invalid_input or timeout"
+        },
+        {
+          "subject": "read and write",
+          "limit": "4 MiB",
+          "behavior": "resource_exhausted"
+        },
+        {
+          "subject": "filesystem work queue",
+          "limit": "16 queued operations",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "system",
+      "description": "Discover installed applications and open or reveal user-selected paths through the host.",
+      "maxOperationTimeoutMs": 20000,
+      "quotas": [
+        {
+          "subject": "installed applications",
+          "limit": "2000 entries",
+          "behavior": "additional entries are omitted"
+        },
+        {
+          "subject": "system work queue",
+          "limit": "8 queued operations",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "network",
+      "description": "Perform scoped HTTPS requests with host-owned redirect, size, timeout, and grant enforcement.",
+      "maxOperationTimeoutMs": 30000,
+      "quotas": [
+        {
+          "subject": "request",
+          "limit": "URL 8192 bytes; 32 headers; body 1 MiB",
+          "behavior": "invalid_input or resource_exhausted"
+        },
+        {
+          "subject": "response",
+          "limit": "4 MiB",
+          "behavior": "resource_exhausted"
+        },
+        {
+          "subject": "network operation",
+          "limit": "timeout 100 through 30000 ms; 5 redirects",
+          "behavior": "timeout or resource_exhausted"
+        },
+        {
+          "subject": "network queue",
+          "limit": "8 queued requests",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "process",
+      "description": "Run an exact approved executable through the launcher broker without a shell.",
+      "maxOperationTimeoutMs": 120000,
+      "quotas": [
+        {
+          "subject": "arguments",
+          "limit": "256 arguments; 32768 bytes total",
+          "behavior": "resource_exhausted"
+        },
+        {
+          "subject": "controlled process",
+          "limit": "timeout 1 through 120000 ms; output 4 MiB",
+          "behavior": "timeout or resource_exhausted"
+        },
+        {
+          "subject": "process work and pending requests",
+          "limit": "8 queued tasks; 64 pending requests",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    }
+  ],
   "errorEnvelope": {
     "type": "object",
     "additionalProperties": false,
@@ -34,15 +280,51 @@
     ]
   },
   "errors": [
-    { "code": "permission_denied", "retryable": false },
-    { "code": "feature_unavailable", "retryable": false },
-    { "code": "timeout", "retryable": true },
-    { "code": "resource_exhausted", "retryable": true },
-    { "code": "host_failure", "retryable": true },
-    { "code": "invalid_input", "retryable": false },
-    { "code": "cancelled", "retryable": true },
-    { "code": "confirmation_denied", "retryable": false },
-    { "code": "io_failure", "retryable": false }
+    {
+      "code": "permission_denied",
+      "retryable": false,
+      "description": "The package declaration or an active grant does not authorize the request."
+    },
+    {
+      "code": "feature_unavailable",
+      "retryable": false,
+      "description": "The running host does not provide the requested feature or API family."
+    },
+    {
+      "code": "timeout",
+      "retryable": true,
+      "description": "A bounded host operation exceeded its deadline."
+    },
+    {
+      "code": "resource_exhausted",
+      "retryable": true,
+      "description": "A payload, output, queue, concurrency, or platform quota was exceeded."
+    },
+    {
+      "code": "host_failure",
+      "retryable": true,
+      "description": "Steward could not complete the host operation."
+    },
+    {
+      "code": "invalid_input",
+      "retryable": false,
+      "description": "The request failed schema, range, path, or semantic validation."
+    },
+    {
+      "code": "cancelled",
+      "retryable": true,
+      "description": "The operation was cancelled before completion."
+    },
+    {
+      "code": "confirmation_denied",
+      "retryable": false,
+      "description": "The user declined a host-rendered confirmation."
+    },
+    {
+      "code": "io_failure",
+      "retryable": false,
+      "description": "A filesystem or system-open operation failed at the operating-system boundary."
+    }
   ],
   "features": [
     "host_info",
@@ -54,6 +336,7 @@
   "events": [
     {
       "name": "steward.command",
+      "description": "A focused plugin window received another command invocation.",
       "payload": {
         "type": "object",
         "additionalProperties": false,
@@ -67,6 +350,7 @@
     },
     {
       "name": "steward.theme",
+      "description": "The host accent color or dark-mode setting changed.",
       "payload": {
         "type": "object",
         "additionalProperties": false,
@@ -80,6 +364,7 @@
     },
     {
       "name": "steward.visibility",
+      "description": "The plugin surface became active or inactive.",
       "payload": {
         "type": "object",
         "additionalProperties": false,
@@ -92,6 +377,7 @@
     },
     {
       "name": "steward.progress",
+      "description": "A progress update previously submitted by this plugin was accepted.",
       "payload": {
         "type": "object",
         "additionalProperties": false,
@@ -165,11 +451,12 @@
       "family": "preferences",
       "capability": "steward.preferences.get",
       "transport": "call",
+      "description": "Read one resolved host-owned preference value by key.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["key"],
-        "properties": { "key": { "type": "string", "minLength": 1 } },
+        "properties": { "key": { "type": "string", "minLength": 1, "maxLength": 256 } },
         "examples": [{ "key": "theme" }]
       },
       "response": {
@@ -182,6 +469,7 @@
       "family": "preferences",
       "capability": "steward.preferences.all",
       "transport": "call",
+      "description": "Read the complete resolved preference map for the current plugin.",
       "request": { "type": "null", "examples": [null] },
       "response": {
         "type": "object",
@@ -194,13 +482,14 @@
       "family": "feedback",
       "capability": "steward.feedback.toast",
       "transport": "call",
+      "description": "Ask the launcher to render a transient informational notice.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["title", "message"],
         "properties": {
           "title": { "type": "string", "minLength": 1, "maxLength": 128 },
-          "message": { "type": "string", "maxLength": 1024 }
+          "message": { "type": "string", "minLength": 1, "maxLength": 1024 }
         },
         "examples": [{ "title": "Indexed", "message": "Repository index is ready." }]
       },
@@ -215,13 +504,14 @@
       "family": "feedback",
       "capability": "steward.feedback.confirm",
       "transport": "call",
+      "description": "Ask the user to confirm or cancel an action through a host-rendered dialog.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["title", "message"],
         "properties": {
           "title": { "type": "string", "minLength": 1, "maxLength": 128 },
-          "message": { "type": "string", "maxLength": 4096 },
+          "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
           "confirmLabel": { "type": "string", "maxLength": 64 },
           "cancelLabel": { "type": "string", "maxLength": 64 },
           "destructive": { "type": "boolean" }
@@ -249,13 +539,14 @@
       "family": "feedback",
       "capability": "steward.feedback.progress",
       "transport": "call",
+      "description": "Publish bounded progress and receive a steward.progress event for the same plugin.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["id", "message"],
         "properties": {
           "id": { "type": "string", "minLength": 1, "maxLength": 128 },
-          "message": { "type": "string", "maxLength": 1024 },
+          "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
           "current": { "type": "integer", "minimum": 0 },
           "total": { "type": "integer", "minimum": 0 }
         },
@@ -272,16 +563,18 @@
       "family": "clipboard",
       "capability": "steward.clipboard.history",
       "transport": "call",
+      "description": "Read the newest bounded snapshot of host clipboard text entries.",
       "request": { "type": "null", "examples": [null] },
       "response": {
         "type": "array",
+        "maxItems": 50,
         "items": {
           "type": "object",
           "additionalProperties": false,
           "required": ["id", "text", "copied_at"],
           "properties": {
             "id": { "type": "string" },
-            "text": { "type": "string" },
+            "text": { "type": "string", "maxLength": 100000 },
             "copied_at": { "type": "integer" }
           }
         },
@@ -293,11 +586,12 @@
       "family": "clipboard",
       "capability": "steward.clipboard.write",
       "transport": "call",
+      "description": "Replace the current host clipboard text with bounded plugin-provided text.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["text"],
-        "properties": { "text": { "type": "string" } },
+        "properties": { "text": { "type": "string", "maxLength": 100000 } },
         "examples": [{ "text": "Steward" }]
       },
       "response": {
@@ -311,6 +605,7 @@
       "family": "storage",
       "capability": "steward.storage.get",
       "transport": "call",
+      "description": "Read one string from plugin-private storage.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -328,6 +623,7 @@
       "family": "storage",
       "capability": "steward.storage.set",
       "transport": "call",
+      "description": "Persist one bounded string in plugin-private storage.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -349,6 +645,7 @@
       "family": "calendar",
       "capability": "steward.calendar.holidays",
       "transport": "call",
+      "description": "Read the cached holiday and adjusted-workday schedule for one year.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -369,6 +666,7 @@
       "family": "navigation",
       "capability": "steward.window.close",
       "transport": "post",
+      "description": "Request that the current plugin surface close.",
       "request": { "type": "null", "examples": [null] },
       "response": { "type": "null", "examples": [null] }
     },
@@ -377,6 +675,7 @@
       "family": "navigation",
       "capability": "steward.navigation.back",
       "transport": "call",
+      "description": "Leave the plugin page and restore launcher focus for embedded presentations.",
       "request": { "type": "null", "examples": [null] },
       "response": {
         "type": "object",
@@ -389,6 +688,7 @@
       "family": "navigation",
       "capability": "steward.navigation.close",
       "transport": "call",
+      "description": "Close the plugin page and destroy the isolated plugin host process.",
       "request": { "type": "null", "examples": [null] },
       "response": {
         "type": "object",
@@ -401,6 +701,7 @@
       "family": "navigation",
       "capability": "steward.navigation.setTitle",
       "transport": "call",
+      "description": "Set the bounded title of the current plugin surface.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -419,6 +720,7 @@
       "family": "filesystem",
       "capability": "steward.fs.pick",
       "transport": "call",
+      "description": "Ask the user to select a file or folder and store the exact canonical path grant.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -441,6 +743,7 @@
       "family": "filesystem",
       "capability": "steward.fs.cancelWalk",
       "transport": "call",
+      "description": "Request cancellation of an in-flight filesystem walk by caller-supplied ID.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -461,13 +764,14 @@
       "family": "filesystem",
       "capability": "steward.fs.walk",
       "transport": "call",
+      "description": "Recursively list bounded metadata under an active selected path grant.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["id", "root"],
         "properties": {
           "id": { "type": "string", "minLength": 1, "maxLength": 128 },
-          "root": { "type": "string", "minLength": 1 },
+          "root": { "type": "string", "minLength": 1, "maxLength": 32768 },
           "maxResults": { "type": "integer", "minimum": 1, "maximum": 20000 },
           "maxDepth": { "type": "integer", "minimum": 1, "maximum": 64 },
           "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 30000 }
@@ -488,7 +792,22 @@
         "required": ["root", "entries", "truncated", "elapsedMs"],
         "properties": {
           "root": { "type": "string" },
-          "entries": { "type": "array" },
+          "entries": {
+            "type": "array",
+            "maxItems": 20000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "relativePath", "directory", "reparsePoint", "size"],
+              "properties": {
+                "path": { "type": "string" },
+                "relativePath": { "type": "string" },
+                "directory": { "type": "boolean" },
+                "reparsePoint": { "type": "boolean" },
+                "size": { "type": "integer", "minimum": 0 }
+              }
+            }
+          },
           "truncated": { "type": "boolean" },
           "elapsedMs": { "type": "integer", "minimum": 0 }
         },
@@ -515,12 +834,13 @@
       "family": "filesystem",
       "capability": "steward.fs.readText",
       "transport": "call",
+      "description": "Read bounded UTF-8 text from a file inside an active read grant.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1, "maxLength": 32768 },
           "maxBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 }
         },
         "examples": [{ "path": "D:\\projects\\steward\\README.md", "maxBytes": 1048576 }]
@@ -535,12 +855,13 @@
       "family": "filesystem",
       "capability": "steward.fs.writeText",
       "transport": "call",
+      "description": "Write bounded UTF-8 text to a path inside an active write grant.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path", "contents"],
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1, "maxLength": 32768 },
           "contents": { "type": "string", "maxLength": 4194304 }
         },
         "examples": [{ "path": "D:\\projects\\steward\\notes.txt", "contents": "hello\n" }]
@@ -558,9 +879,11 @@
       "family": "filesystem",
       "capability": "steward.fs.grants",
       "transport": "call",
+      "description": "List the active selected filesystem roots and their read/write modes.",
       "request": { "type": "null", "examples": [null] },
       "response": {
         "type": "array",
+        "maxItems": 2000,
         "items": {
           "type": "object",
           "additionalProperties": false,
@@ -579,6 +902,7 @@
       "family": "system",
       "capability": "steward.system.applications",
       "transport": "call",
+      "description": "List bounded installed-application IDs and names from Steward's catalog.",
       "request": { "type": "null", "examples": [null] },
       "response": {
         "type": "array",
@@ -587,7 +911,7 @@
           "additionalProperties": false,
           "required": ["id", "name"],
           "properties": {
-            "id": { "type": "string" },
+            "id": { "type": "string", "maxLength": 32768 },
             "name": { "type": "string" }
           }
         },
@@ -599,11 +923,12 @@
       "family": "system",
       "capability": "steward.system.openPath",
       "transport": "call",
+      "description": "Open a selected path with its registered default handler.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
-        "properties": { "path": { "type": "string", "minLength": 1 } },
+        "properties": { "path": { "type": "string", "minLength": 1, "maxLength": 32768 } },
         "examples": [{ "path": "D:\\projects\\steward" }]
       },
       "response": {
@@ -619,11 +944,12 @@
       "family": "system",
       "capability": "steward.system.revealPath",
       "transport": "call",
+      "description": "Reveal a selected path in Windows File Explorer.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
-        "properties": { "path": { "type": "string", "minLength": 1 } },
+        "properties": { "path": { "type": "string", "minLength": 1, "maxLength": 32768 } },
         "examples": [{ "path": "D:\\projects\\steward" }]
       },
       "response": {
@@ -639,13 +965,14 @@
       "family": "system",
       "capability": "steward.system.openWith",
       "transport": "call",
+      "description": "Open one selected path with an application ID from Steward's installed-app catalog.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["applicationId", "path"],
         "properties": {
-          "applicationId": { "type": "string", "minLength": 1 },
-          "path": { "type": "string", "minLength": 1 }
+          "applicationId": { "type": "string", "minLength": 1, "maxLength": 32768 },
+          "path": { "type": "string", "minLength": 1, "maxLength": 32768 }
         },
         "examples": [
           {
@@ -665,15 +992,17 @@
       "family": "network",
       "capability": "steward.net.fetch",
       "transport": "call",
+      "description": "Perform one scoped HTTPS request under active host, method, and path grants.",
       "request": {
         "type": "object",
         "additionalProperties": false,
         "required": ["url", "method", "timeoutMs"],
         "properties": {
-          "url": { "type": "string", "format": "uri" },
+          "url": { "type": "string", "format": "uri", "maxLength": 8192 },
           "method": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
           "headers": {
             "type": "object",
+            "maxProperties": 32,
             "additionalProperties": { "type": "string" }
           },
           "body": { "type": "string", "maxLength": 1048576 },
@@ -730,6 +1059,7 @@
       "family": "process",
       "capability": "steward.exec.run",
       "transport": "call",
+      "description": "Run one exact approved executable through the launcher-owned controlled-process broker.",
       "request": {
         "type": "object",
         "additionalProperties": false,
@@ -793,6 +1123,7 @@
       "family": "process",
       "capability": "steward.exec.cancel",
       "transport": "call",
+      "description": "Request cancellation of an active controlled process and its child tree.",
       "request": {
         "type": "object",
         "additionalProperties": false,

@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "lines": [
+    {
+      "hostApi": "0.3.x",
+      "sdk": "0.3.x",
+      "minimumHostVersion": "0.3.0",
+      "calls": [
+        {
+          "name": "steward.fs.pick",
+          "sdkHelper": "pickFolder",
+          "request": { "mode": "folderWrite" },
+          "response": { "path": "D:\\projects" }
+        },
+        {
+          "name": "steward.fs.readText",
+          "sdkHelper": "readText",
+          "request": { "path": "D:\\projects\\steward\\README.md", "maxBytes": 1048576 },
+          "response": "# Steward\n"
+        },
+        {
+          "name": "steward.system.openPath",
+          "sdkHelper": "openPath",
+          "request": { "path": "D:\\projects\\steward" },
+          "response": { "path": "D:\\projects\\steward" }
+        }
+      ]
+    },
+    {
+      "hostApi": "0.4.x",
+      "sdk": "0.4.x",
+      "minimumHostVersion": "0.4.0",
+      "calls": [
+        {
+          "name": "steward.net.fetch",
+          "sdkHelper": "fetchHttp",
+          "request": {
+            "url": "https://api.github.com/rate_limit",
+            "method": "GET",
+            "headers": { "Accept": "application/vnd.github+json" },
+            "timeoutMs": 10000,
+            "maxResponseBytes": 262144
+          },
+          "response": {
+            "status": 200,
+            "url": "https://api.github.com/rate_limit",
+            "headers": [{ "name": "content-type", "value": "application/json" }],
+            "body": "{\"rate\":{\"remaining\":59,\"limit\":60}}",
+            "redirects": 0,
+            "elapsedMs": 12
+          }
+        },
+        {
+          "name": "steward.exec.run",
+          "sdkHelper": "runProcess",
+          "request": {
+            "requestId": 8180697935898170,
+            "executable": "git.exe",
+            "arguments": ["status", "--porcelain=v1"],
+            "workingDirectory": "D:\\projects\\steward",
+            "timeoutMs": 30000,
+            "maxOutputBytes": 1048576
+          },
+          "response": {
+            "exitCode": 0,
+            "stdout": "## main...origin/main\n",
+            "stderr": "",
+            "durationMs": 8,
+            "timedOut": false,
+            "cancelled": false
+          }
+        },
+        {
+          "name": "steward.exec.cancel",
+          "sdkHelper": "cancelProcess",
+          "request": { "requestId": 8180697935898170 },
+          "response": { "cancelled": true }
+        }
+      ]
+    },
+    {
+      "hostApi": "0.5.x",
+      "sdk": "0.5.x",
+      "minimumHostVersion": "0.5.0",
+      "calls": [
+        {
+          "name": "steward.navigation.setTitle",
+          "sdkHelper": "setPageTitle",
+          "request": { "title": "Repositories" },
+          "response": {}
+        },
+        {
+          "name": "steward.navigation.back",
+          "sdkHelper": "backToLauncher",
+          "request": null,
+          "response": {}
+        },
+        {
+          "name": "steward.window.close",
+          "sdkHelper": "closeWindow",
+          "request": null,
+          "response": null
+        }
+      ]
+    },
+    {
+      "hostApi": "1.0.x",
+      "sdk": "1.0.x",
+      "minimumHostVersion": "1.0.0",
+      "calls": [
+        {
+          "name": "steward.preferences.get",
+          "sdkHelper": "preference",
+          "request": { "key": "theme" },
+          "response": "dark"
+        },
+        {
+          "name": "steward.feedback.confirm",
+          "sdkHelper": "confirm",
+          "request": {
+            "title": "Delete repository",
+            "message": "Move this repository to the Recycle Bin?",
+            "confirmLabel": "Move",
+            "cancelLabel": "Cancel",
+            "destructive": true
+          },
+          "response": { "confirmed": true }
+        },
+        {
+          "name": "steward.clipboard.write",
+          "sdkHelper": "copyText",
+          "request": { "text": "Steward" },
+          "response": {}
+        }
+      ]
+    }
+  ]
+}

@@ -1,23 +1,44 @@
 {
   "schemaVersion": 1,
   "current": {
-    "hostApiVersion": "0.5.0",
-    "sdkVersion": "0.5.0",
+    "hostApiVersion": "1.0.0",
+    "sdkVersion": "1.0.0",
     "nshVersion": "0.6.1",
     "manifestSchemaVersion": 3,
-    "minimumHostVersion": "0.5.0"
+    "minimumHostVersion": "1.0.0",
+    "minimumSupportedHostVersion": "0.3.0"
   },
   "supported": [
     {
+      "hostApi": "0.3.x",
+      "sdk": "0.3.x",
+      "nsh": "0.6.1",
+      "status": "supported"
+    },
+    {
+      "hostApi": "0.4.x",
+      "sdk": "0.4.x",
+      "nsh": "0.6.1",
+      "status": "supported"
+    },
+    {
       "hostApi": "0.5.x",
       "sdk": "0.5.x",
+      "nsh": "0.6.1",
+      "status": "supported"
+    },
+    {
+      "hostApi": "1.0.x",
+      "sdk": "1.0.x",
       "nsh": "0.6.1",
       "status": "current"
     }
   ],
   "compatibilityWindow": {
-    "patch": "Host and SDK patch versions keep existing calls, payload fields, and meanings.",
-    "minor": "Host and SDK minor versions may add calls, fields, events, or features.",
-    "major": "A major host API change requires a migration line; no older major line is claimed supported yet."
+    "patch": "Host and SDK patch releases keep existing calls, payload fields, meanings, and behavior.",
+    "minor": "Host and SDK minor releases may add calls, optional fields, events, features, and scopes. The 1.x line keeps all 1.0 stable inputs and successful responses valid.",
+    "major": "A major host API change requires a migration line and compatibility fixtures before the next line is declared stable.",
+    "deprecation": "Deprecated entries remain available for at least one minor release in the current major line and are removed only in a later major release.",
+    "minimumSupportedHostVersion": "0.3.0"
   }
 }

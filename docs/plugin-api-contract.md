@@ -1,6 +1,7 @@
 # Steward Plugin API Contract
 
-> Status: PDX-0 complete. Host API `0.5.0`, contract version `1`.
+> Status: PDX-3 complete. Host API `1.0.0`, stable line `1.x`, contract
+> version `1`.
 
 `contracts/plugin-api-v1.json` is the single machine-readable source of truth
 for the public plugin bridge. It defines:
@@ -9,17 +10,25 @@ for the public plugin bridge. It defines:
 - request and response JSON Schemas with committed SDK fixtures;
 - lifecycle event payloads;
 - stable public error codes and retryability;
-- base host feature names.
+- base host feature names;
+- API families, platform quotas, failure semantics, and deprecation policy.
 
 Generated TypeScript and Rust constants are committed:
 
 - `packages/extension-api/src/contract.generated.ts`;
 - `crates/plugin-contract/src/host_contract.generated.rs`.
 
-Run `pnpm contract:check` to verify that both generated files are current, the
-TypeScript SDK emits every registered call with the declared transport, every
-Rust host handler is registered, no handler bypasses the structured-error
-helper, and all contract examples match their declared schema.
+The complete call, event, error, quota, and failure reference is generated at:
+
+- `docs/plugin-api-reference.md`.
+
+Run `pnpm contract:check` to verify that the generated TypeScript, Rust, and
+reference outputs are current, the TypeScript SDK emits every registered call
+with the declared transport, every Rust host handler is registered, no handler
+bypasses the structured-error helper, all contract examples match their
+declared schema, every family has a quota and stable failure mapping, and every
+supported prior API line has compatibility fixtures accepted by the current
+host DTOs.
 
 Run `pnpm contract:generate` after editing the contract. Do not edit generated
 files by hand.

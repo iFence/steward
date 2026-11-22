@@ -114,7 +114,7 @@ pnpm install
 ```
 
 模板默认依赖与 Host API 匹配的版本化 SDK tarball，不使用 `workspace:*` 或
-源码路径。离线开发可用 `--sdk "file:D:\artifacts\steward-extension-api-0.5.0.tgz"`
+源码路径。离线开发可用 `--sdk "file:D:\artifacts\steward-extension-api-1.0.0.tgz"`
 指定本地已发布产物。SDK 下载位置、版本矩阵和发布流程见
 [plugin-sdk-distribution.md](plugin-sdk-distribution.md)。
 
@@ -181,7 +181,7 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
   "id": "com.example.my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "minHostVersion": "0.5.0",
+  "minHostVersion": "1.0.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,
@@ -274,24 +274,10 @@ Steward 会检查包内版本与 `plugin.json` 完全一致。
 
 ## 5. Steward Host API
 
-插件通过 `@steward/extension-api` 使用稳定类型：
-
-| API                      | 用途                                              |
-| ------------------------ | ------------------------------------------------- |
-| `launchParams()`         | 获取插件 ID、命令、输入、语言、主题色和明暗模式。 |
-| `onCommand(cb)`          | 插件窗口已打开时接收新的命令输入。                |
-| `onTheme(cb)`            | 接收强调色和明暗主题变化。                        |
-| `clipboardHistory()`     | 读取 Steward 剪贴板历史快照。                     |
-| `copyText(text)`         | 通过 Steward 写入剪贴板。                         |
-| `storageGet(key)`        | 读取插件私有字符串。                              |
-| `storageSet(key, value)` | 写入插件私有字符串。                              |
-| `closeWindow()`          | 请求 Steward 关闭当前插件窗口。                   |
-| `preferences()`          | 读取宿主解析后的全部偏好。                        |
-| `preference(key, value)` | 读取单个偏好并提供类型化默认值。                  |
-| `toast(options)`         | 显示启动器 Toast。                                |
-| `confirm(options)`       | 请求用户确认，拒绝时返回 `false`。                |
-| `reportProgress(update)` | 上报有界的长任务进度。                            |
-| `onProgress(cb)`         | 接收 `steward.progress` 事件。                    |
+插件通过 `@steward/extension-api` 使用稳定类型。完整的调用、请求与响应示例、
+能力范围、配额和故障语义以自动生成的
+[Plugin API Reference](plugin-api-reference.md) 为准；该文档直接来自
+`contracts/plugin-api-v1.json`，不再在多个文档中手工维护接口清单。
 
 示例：
 
@@ -320,7 +306,13 @@ void storageGet("last-value").then((value) => {
 });
 ```
 
-宿主接口清单和当前能力策略见 [NSH Plugin API](nsh-plugin-api.md)。
+Steward 与插件进程运行在同一个 Windows 用户下。进程隔离用于限制 VM 崩溃
+影响范围、宿主调用能力和受控进程生命周期，不构成同一用户下其他进程无法
+绕过的操作系统安全边界。API v1 不支持的包括动态启动器搜索提供器、后台服务、
+跨插件 IPC、任意 WebView/进程访问、原始套接字、通用凭据或秘密存储、二进制
+文件读写、回收站操作，以及文件和剪贴板变更订阅。
+
+宿主接口和当前能力策略见 [NSH Plugin API](nsh-plugin-api.md)。
 
 ## 6. 开发测试分层
 

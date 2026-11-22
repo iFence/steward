@@ -16,11 +16,16 @@ mod generated {
 
 pub use generated::{
     HOST_API_VERSION, HOST_CALL_NAMES, HOST_CONTRACT_VERSION, HOST_ERROR_CODES,
-    HOST_ERROR_ENVELOPE_VERSION, HOST_EVENT_NAMES, HOST_FEATURE_NAMES, HOST_RETRYABLE_ERROR_CODES,
+    HOST_ERROR_ENVELOPE_VERSION, HOST_EVENT_NAMES, HOST_FAILURE_STATES, HOST_FAILURE_STATE_CODES,
+    HOST_FAMILY_NAMES, HOST_FEATURE_NAMES, HOST_MINIMUM_SUPPORTED_API_VERSION,
+    HOST_RETRYABLE_ERROR_CODES,
 };
 
 #[cfg(test)]
 pub(crate) const CONTRACT_JSON: &str = include_str!("../../../contracts/plugin-api-v1.json");
+#[cfg(test)]
+pub(crate) const COMPATIBILITY_FIXTURES_JSON: &str =
+    include_str!("../../../contracts/plugin-api-compatibility-v1.json");
 
 /// Stable public host-call rejection returned to plugin code.
 ///
@@ -578,5 +583,113 @@ mod tests {
             capabilities::EXEC_CANCEL,
         ]);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn every_api_family_has_hardened_failure_and_quota_metadata() {
+        let contract = contract();
+        let families = contract["families"].as_array().unwrap();
+        assert_eq!(HOST_FAMILY_NAMES.len(), families.len());
+        assert_eq!(
+            HOST_FAILURE_STATES.len(),
+            contract["failureStates"].as_array().unwrap().len()
+        );
+        assert_eq!(HOST_FAILURE_STATE_CODES.len(), HOST_FAILURE_STATES.len());
+        assert_eq!(
+            contract["stability"]["minimumSupportedApiVersion"],
+            HOST_MINIMUM_SUPPORTED_API_VERSION
+        );
+        for (index, family) in families.iter().enumerate() {
+            assert_eq!(HOST_FAMILY_NAMES[index], family["name"]);
+            assert!(
+                family["maxOperationTimeoutMs"].as_u64().is_some(),
+                "{} has no maximum operation timeout",
+                family["name"]
+            );
+            assert!(
+                !family["quotas"].as_array().unwrap().is_empty(),
+                "{} has no quotas",
+                family["name"]
+            );
+            for (state, code) in HOST_FAILURE_STATES
+                .iter()
+                .zip(HOST_FAILURE_STATE_CODES.iter())
+            {
+                let expected = contract["failureStates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|failure| failure["state"] == *state)
+                    .unwrap();
+                assert_eq!(expected["code"], *code);
+                let parsed: HostErrorCode =
+                    serde_json::from_value(serde_json::json!(code)).unwrap();
+                let error = HostCallError::new(parsed, format!("{state} test failure"));
+                assert_eq!(error.code.as_str(), *code);
+            }
+        }
+    }
+
+    #[test]
+    fn prior_api_line_fixtures_still_parse_through_current_host_dtos() {
+        let fixtures: Value =
+            serde_json::from_str(COMPATIBILITY_FIXTURES_JSON).expect("compatibility fixtures");
+        for line in fixtures["lines"].as_array().unwrap() {
+            for fixture in line["calls"].as_array().unwrap() {
+                let name = fixture["name"].as_str().unwrap();
+                assert!(
+                    HOST_CALL_NAMES.contains(&name),
+                    "compatibility fixture {name} is not registered"
+                );
+                match name {
+                    "steward.fs.pick" => {
+                        parse_call_data::<PathPickRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<PathResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.fs.readText" => {
+                        parse_call_data::<ReadTextRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<String>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.system.openPath" | "steward.system.revealPath" => {
+                        parse_call_data::<SystemPathRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<PathResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.net.fetch" => {
+                        parse_call_data::<NetworkFetchRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<HttpResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.exec.run" => {
+                        parse_call_data::<crate::PluginExecutionRequest>(name, &fixture["request"])
+                            .unwrap();
+                        parse_call_data::<ProcessRunResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.exec.cancel" => {
+                        parse_call_data::<ExecutionCancelRequest>(name, &fixture["request"])
+                            .unwrap();
+                        parse_call_data::<CancelledResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.navigation.setTitle" => {
+                        parse_call_data::<SetTitleRequest>(name, &fixture["request"]).unwrap();
+                    }
+                    "steward.navigation.back" | "steward.window.close" => {
+                        require_null_payload(name, &fixture["request"]).unwrap();
+                    }
+                    "steward.preferences.get" => {
+                        parse_call_data::<PreferencesGetRequest>(name, &fixture["request"])
+                            .unwrap();
+                        parse_call_data::<String>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.feedback.confirm" => {
+                        parse_call_data::<ConfirmRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<ConfirmResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.clipboard.write" => {
+                        parse_call_data::<ClipboardWriteRequest>(name, &fixture["request"])
+                            .unwrap();
+                    }
+                    other => panic!("compatibility fixture {other} has no DTO assertion"),
+                }
+            }
+        }
     }
 }

@@ -717,11 +717,11 @@ fn run_child_window(
                 "steward.preferences.get",
                 call.data(),
             ) {
-                Ok(request) if !request.key.is_empty() => request,
+                Ok(request) if !request.key.is_empty() && request.key.len() <= 256 => request,
                 Ok(_) => {
                     call.reject_code(
                         HostErrorCode::InvalidInput,
-                        "steward.preferences.get requires a key string",
+                        "steward.preferences.get requires a key of at most 256 bytes",
                     );
                     return;
                 }
@@ -760,7 +760,7 @@ fn run_child_window(
                         return;
                     }
                 };
-            if request.title.trim().is_empty() {
+            if request.title.trim().is_empty() || request.message.trim().is_empty() {
                 call.reject_code(
                     HostErrorCode::InvalidInput,
                     "steward.feedback.toast requires title and message strings",
@@ -803,7 +803,7 @@ fn run_child_window(
                         return;
                     }
                 };
-            if request.title.trim().is_empty() {
+            if request.title.trim().is_empty() || request.message.trim().is_empty() {
                 call.reject_code(
                     HostErrorCode::InvalidInput,
                     "steward.feedback.confirm requires title and message strings",
@@ -933,6 +933,13 @@ fn run_child_window(
                     return;
                 }
             };
+            if request.text.len() > 100_000 {
+                call.reject_code(
+                    HostErrorCode::ResourceExhausted,
+                    "clipboard text exceeds the 100000 byte limit",
+                );
+                return;
+            }
             match arboard::Clipboard::new()
                 .and_then(|mut clipboard| clipboard.set_text(request.text))
             {
@@ -985,13 +992,17 @@ fn run_child_window(
                         return;
                     }
                 };
-            if request.key.is_empty()
-                || request.key.len() > 256
-                || request.value.len() > 1024 * 1024
-            {
+            if request.key.is_empty() || request.key.len() > 256 {
                 call.reject_code(
                     HostErrorCode::InvalidInput,
-                    "plugin storage key or value exceeds its limit",
+                    "plugin storage key must contain 1 to 256 bytes",
+                );
+                return;
+            }
+            if request.value.len() > 1024 * 1024 {
+                call.reject_code(
+                    HostErrorCode::ResourceExhausted,
+                    "plugin storage value exceeds the 1 MiB limit",
                 );
                 return;
             }

@@ -3,7 +3,7 @@
   "id": "com.example.pdx1-external",
   "name": "PDX-1 External Fixture",
   "version": "0.1.0",
-  "minHostVersion": "0.5.0",
+  "minHostVersion": "1.0.0",
   "package": "plugin.nshpkg",
   "icon": "<svg viewBox=\"0 0 1024 1024\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1024\" height=\"1024\" rx=\"224\" fill=\"#0B6E99\"/><path d=\"M256 512h512M512 256v512\" stroke=\"#FFFFFF\" stroke-width=\"96\" stroke-linecap=\"round\"/></svg>",
   "commands": [

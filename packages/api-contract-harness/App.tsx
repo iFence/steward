@@ -165,11 +165,27 @@ function App() {
     }
   }
 
+  async function invokeQuotaError() {
+    try {
+      await copyText("x".repeat(100_001));
+      status.set("missing quota error");
+    } catch (error) {
+      if (error instanceof StewardError) {
+        status.set(`${error.code}:${error.retryable}:${error.message}`);
+      } else {
+        status.set(`wrong error:${String(error)}`);
+      }
+    }
+  }
+
   return (
     <View style={{ flex: 1, padding: 10, gap: 4 }}>
       <Text>Status: {status()}</Text>
       <View role="button" onPress={invokeStructuredError}>
         <Text>structured error</Text>
+      </View>
+      <View role="button" onPress={invokeQuotaError}>
+        <Text>quota error</Text>
       </View>
       <Each of={HOST_CALL_FIXTURES} key={(call) => call.name}>
         {(call) => (

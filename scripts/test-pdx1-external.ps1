@@ -14,8 +14,13 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $FixtureSource = (Resolve-Path -LiteralPath $Fixture).Path
+$compatibility = Get-Content -Raw -Encoding UTF8 -LiteralPath (
+    Join-Path $root "contracts\plugin-compatibility.json"
+) | ConvertFrom-Json
+$sdkVersion = [string]$compatibility.current.sdkVersion
+$sdkArtifactName = "steward-extension-api-$sdkVersion.tgz"
 if (-not $SdkArtifact) {
-    $SdkArtifact = Join-Path $root "target\sdk\steward-extension-api-0.5.0.tgz"
+    $SdkArtifact = Join-Path $root "target\sdk\$sdkArtifactName"
 }
 $SdkArtifact = (Resolve-Path -LiteralPath $SdkArtifact).Path
 
@@ -210,7 +215,7 @@ try {
     }
 
     $scaffold = Join-Path $tempRoot "scaffold"
-    $scaffoldSdk = "file:" + ((Join-Path $externalSdk "steward-extension-api-0.5.0.tgz") -replace "\\", "/")
+    $scaffoldSdk = "file:" + ((Join-Path $externalSdk $sdkArtifactName) -replace "\\", "/")
     & cargo run --quiet -p steward-plugin-cli -- new `
         $scaffold `
         --id "com.example.pdx1-scaffold" `

@@ -23,45 +23,11 @@ interface StewardLaunchParams {
 
 ## Steward host bridge
 
-| Interface                 | Purpose                                                  |
-| ------------------------- | -------------------------------------------------------- |
-| `clipboardHistory()`      | Read Steward's clipboard-history snapshot.               |
-| `copyText(text)`          | Write text through Steward's clipboard capability.       |
-| `storageGet(key)`         | Read a plugin-private string value.                      |
-| `storageSet(key, value)`  | Persist a plugin-private string value.                   |
-| `calendarHolidays(year)`  | Read Steward's cached mainland China holiday schedule.   |
-| `closeWindow()`           | Ask Steward to close this plugin window.                 |
-| `backToLauncher()`        | Leave an embedded page and restore launcher focus.       |
-| `closePage()`             | Close the current plugin presentation.                   |
-| `setPageTitle(title)`     | Set the current page title.                              |
-| `preferences()`           | Read all host-resolved preferences.                      |
-| `preference(key, value)`  | Read one preference with a typed fallback.               |
-| `toast(options)`          | Show a transient launcher notice.                        |
-| `confirm(options)`        | Ask the launcher for explicit confirmation.              |
-| `reportProgress(update)`  | Report bounded progress for a long operation.            |
-| `pickFolder(write?)`      | Select and persistently grant a file/folder root.        |
-| `filesystemGrants()`      | List active selected roots and read/write modes.         |
-| `walk(options)`           | Run a bounded, cancellable metadata walk.                |
-| `cancelWalk(id)`          | Cancel a walk by ID.                                     |
-| `readText(path)`          | Read UTF-8 text under an active read grant.              |
-| `writeText(path, text)`   | Write UTF-8 text under an active write grant.            |
-| `installedApplications()` | List installed open-with targets.                        |
-| `openPath(path)`          | Open a selected path with its default handler.           |
-| `revealPath(path)`        | Reveal a selected path in Explorer.                      |
-| `openWith(appId, path)`   | Open a selected path with a catalog application.         |
-| `fetchHttp(options)`      | Make a scoped HTTPS request through Steward.             |
-| `runProcess(options)`     | Run an exact approved executable through the broker.     |
-| `cancelProcess(id)`       | Cancel a controlled process tree.                        |
-| `onProgress(cb)`          | Receive `steward.progress` events.                       |
-| `onCommand(cb)`           | Receive another command while the plugin window is open. |
-| `onTheme(cb)`             | Receive accent/dark-mode changes.                        |
-| `onVisibility(cb)`        | Receive presentation visibility changes.                 |
-| `hostInfo()`              | Read the host API version and available features.        |
-| `supportsFeature(name)`   | Check an optional feature before using it.               |
-| `requireFeature(name)`    | Throw a stable `feature_unavailable` error when absent.  |
-
-These helpers live in `@steward/extension-api`. UI and device capabilities use
-the modules exported by the pinned NSH 0.6.1 runtime.
+The canonical helper-visible bridge, including request and response examples,
+quotas, and failure behavior for every API family, is the generated
+[plugin API reference](plugin-api-reference.md). These helpers live in
+`@steward/extension-api`. UI and device capabilities use the modules exported
+by the pinned NSH 0.6.1 runtime.
 
 `calendarHolidays(year)` returns a map keyed by ISO date with values `holiday`
 or `workday`. Steward fetches a year from
@@ -76,6 +42,14 @@ discovery, system open/reveal/open-with, https/mailto URL opening, scoped
 HTTPS fetch, exact non-shell executable execution, and isolated presentation
 navigation. Raw sockets, local-network requests, webview, unrestricted
 filesystem roots, and the generic NSH image picker are denied.
+
+Plugins and Steward run as the same Windows user. Process isolation limits VM
+crash containment, host-call reach, and controlled-process lifetime; it is not
+an operating-system security boundary against another process already running
+as that user. Unsupported capabilities include dynamic launcher search
+providers, background services, cross-plugin IPC, arbitrary WebView/process
+access, raw sockets, general credentials or secret storage, binary file I/O,
+Recycle Bin operations, and file/clipboard change subscriptions.
 
 Each open plugin gets 64 MiB heap, 1 MiB stack, a 2 second load budget, a
 250 ms per-call budget, and at most 20,000 UI nodes.
