@@ -30,7 +30,7 @@ applications in full NSH windows with a 64 MiB VM, time/node quotas, and
 least-privilege capabilities.
 
 <p align="center">
-  <img src="assets/1.png" alt="Steward screenshot" width="760">
+  <img src="assets/steward-screenshot.png" alt="Steward screenshot" width="760">
 </p>
 
 ## Repository structure

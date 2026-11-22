@@ -28,7 +28,7 @@ VM。插件命令会在完整 NSH 窗口中打开已签名的 TSX 应用，并�
 64 MiB VM、调用时限、节点上限和最小权限能力。
 
 <p align="center">
-  <img src="assets/1.png" alt="Steward 截图" width="760">
+  <img src="assets/steward-screenshot.png" alt="Steward 截图" width="760">
 </p>
 
 ## 仓库结构
