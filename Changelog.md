@@ -115,6 +115,9 @@ Conventions:
 - **Settings styling**: the settings window now uses a `#1e1e1f` base
   surface, with white switch thumbs, gray off tracks, and no focus glow around
   switches.
+- **General settings layout**: General settings now aligns titles and controls
+  on opposite sides and separates each item with a subtle divider and roomier
+  vertical spacing.
 - **Redesigned About page**: Settings > About now has a centered brand
   presentation, a compact updates card with progress and release notes, and a
   direct changelog link.

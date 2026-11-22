@@ -6,9 +6,9 @@ use std::{
 };
 
 use gpui::{
-    div, img, px, rgb, App, Context, FocusHandle, FontWeight, Image, ImageFormat, ImageSource,
-    InteractiveElement, IntoElement, Keystroke, ParentElement, PathPromptOptions, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window,
+    div, img, px, rgb, Anchor, AnyElement, App, Context, FocusHandle, FontWeight, Image,
+    ImageFormat, ImageSource, InteractiveElement, IntoElement, Keystroke, ParentElement,
+    PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_kit::{
     assets::IconName,
@@ -16,12 +16,13 @@ use gpui_kit::{
         button::{Button, ButtonVariants as _},
         group_box::GroupBoxVariant,
         h_flex,
+        menu::{DropdownMenu as _, PopupMenuItem},
         scroll::ScrollableElement as _,
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
         switch::Switch,
         text::TextView,
-        v_flex, ActiveTheme, Disableable as _, FocusableExt as _, Icon, Sizable as _, Theme,
-        ThemeMode,
+        v_flex, ActiveTheme, AxisExt as _, Disableable as _, FocusableExt as _, Icon, Sizable as _,
+        Theme, ThemeMode,
     },
     prelude::FluentBuilder,
 };
@@ -74,6 +75,70 @@ pub(crate) struct StewardSettings {
     hotkey_status: SharedString,
 }
 
+type BoolGetter = Rc<dyn Fn(&App) -> bool>;
+type BoolSetter = Rc<dyn Fn(bool, &mut App)>;
+type SharedStringGetter = Rc<dyn Fn(&App) -> SharedString>;
+type SharedStringSetter = Rc<dyn Fn(SharedString, &mut App)>;
+
+fn settings_row(
+    title: SharedString,
+    control: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+) -> SettingItem {
+    let keywords = [title.clone()];
+    SettingItem::render(move |options, window, cx| {
+        let title = div()
+            .min_w_0()
+            .flex_1()
+            .text_size(px(14.0))
+            .child(title.clone());
+        let control = div().flex_shrink_0().child(control(window, cx));
+        let content = if options.layout().is_vertical() {
+            v_flex()
+                .w_full()
+                .items_start()
+                .gap_3()
+                .child(title)
+                .child(control)
+                .into_any_element()
+        } else {
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap_6()
+                .child(title)
+                .child(control)
+                .into_any_element()
+        };
+
+        div()
+            .w_full()
+            .min_h(px(32.0))
+            .border_b_1()
+            .border_color(cx.theme().border.opacity(0.35))
+            .child(content)
+    })
+    .keywords(keywords)
+}
+
+fn settings_switch_control(
+    id: SharedString,
+    accessibility_label: SharedString,
+    checked: BoolGetter,
+    on_change: BoolSetter,
+) -> impl Fn(&mut Window, &mut App) -> AnyElement {
+    move |_window, cx| {
+        let checked = checked.clone();
+        let on_change = on_change.clone();
+        Switch::new(id.clone())
+            .accessibility_label(accessibility_label.clone())
+            .checked(checked(cx))
+            .focus_ring(false)
+            .on_click(move |checked, _, cx| on_change(*checked, cx))
+            .into_any_element()
+    }
+}
+
 fn settings_switch(
     id: SharedString,
     accessibility_label: SharedString,
@@ -96,6 +161,47 @@ fn settings_switch(
             .on_click(move |checked, _, cx| on_change(*checked, cx))
     })
     .on_reset(move |cx| is_dirty(cx), move |_, cx| reset(cx))
+}
+
+fn settings_dropdown_control(
+    id: SharedString,
+    accessibility_label: SharedString,
+    options: Vec<(SharedString, SharedString)>,
+    value: SharedStringGetter,
+    on_change: SharedStringSetter,
+) -> impl Fn(&mut Window, &mut App) -> AnyElement {
+    move |_window, cx| {
+        let current_value = value(cx);
+        let current_label = options
+            .iter()
+            .find(|(option, _)| option == &current_value)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| current_value.clone());
+        let menu_options = options.clone();
+        let on_change = on_change.clone();
+
+        Button::new(id.clone())
+            .accessibility_label(format!("{accessibility_label}: {current_label}"))
+            .label(current_label)
+            .dropdown_caret(true)
+            .outline()
+            .w(px(176.0))
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                menu_options.iter().fold(menu, |menu, (option, label)| {
+                    let on_change = on_change.clone();
+                    let option = option.clone();
+                    let selected = option == current_value;
+                    menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .checked(selected)
+                            .on_click(move |_, _, cx| {
+                                on_change(option.clone(), cx);
+                            }),
+                    )
+                })
+            })
+            .into_any_element()
+    }
 }
 
 impl StewardSettings {
@@ -192,16 +298,18 @@ impl Render for StewardSettings {
             })
             .collect::<Vec<_>>();
 
-        let language_value = view.clone();
-        let language_set = view.clone();
-        let autostart_value = view.clone();
-        let autostart_set = view.clone();
+        let language_value_view = view.clone();
+        let language_set_view = view.clone();
+        let language_dirty_view = view.clone();
+        let language_reset_view = view.clone();
+        let autostart_checked_view = view.clone();
+        let autostart_set_view = view.clone();
         let autostart_services = services.clone();
         let autostart_dirty = view.clone();
         let autostart_reset_view = view.clone();
         let autostart_reset_services = services.clone();
-        let updates_value = view.clone();
-        let updates_set = view.clone();
+        let updates_checked_view = view.clone();
+        let updates_set_view = view.clone();
         let updates_services = services.clone();
         let updates_dirty = view.clone();
         let updates_reset_view = view.clone();
@@ -209,9 +317,36 @@ impl Render for StewardSettings {
         let accent_value = view.clone();
         let accent_set = view.clone();
         let hotkey_field = view.clone();
+        let language_title = SharedString::from(self.i18n.translate("settings-language"));
         let autostart_title = SharedString::from(self.i18n.translate("settings-launch-at-startup"));
         let updates_title =
             SharedString::from(self.i18n.translate("settings-update-check-on-startup"));
+        let language_value: SharedStringGetter =
+            Rc::new(move |cx| SharedString::from(language_value_view.read(cx).language.clone()));
+        let language_set: SharedStringSetter = Rc::new(move |value, cx| {
+            let language = value.to_string();
+            language_set_view.update(cx, |settings, cx| {
+                settings.select_language(language, cx);
+            });
+        });
+        let autostart_checked: BoolGetter =
+            Rc::new(move |cx| autostart_checked_view.read(cx).autostart);
+        let autostart_set: BoolSetter = Rc::new(move |enabled, cx| {
+            autostart_services.send_window_command(WindowCommand::SetAutostart(enabled));
+            autostart_set_view.update(cx, |settings, cx| {
+                settings.autostart = enabled;
+                cx.notify();
+            });
+        });
+        let updates_checked: BoolGetter =
+            Rc::new(move |cx| updates_checked_view.read(cx).check_updates_on_startup);
+        let updates_set: BoolSetter = Rc::new(move |enabled, cx| {
+            updates_services.send_window_command(WindowCommand::SetCheckUpdatesOnStartup(enabled));
+            updates_set_view.update(cx, |settings, cx| {
+                settings.check_updates_on_startup = enabled;
+                cx.notify();
+            });
+        });
         let hotkey_recording_label =
             SharedString::from(self.i18n.translate("settings-hotkey-recording"));
         let plugin_port = services.plugin_management();
@@ -232,38 +367,40 @@ impl Render for StewardSettings {
                 .icon(Icon::new(IconName::Settings2))
                 .group(
                     SettingGroup::new()
-                        .item(SettingItem::new(
-                            self.i18n.translate("settings-language"),
-                            SettingField::dropdown(
-                                language_options,
-                                move |cx| {
-                                    SharedString::from(language_value.read(cx).language.clone())
-                                },
-                                move |value, cx| {
-                                    let language = value.to_string();
-                                    language_set.update(cx, |settings, cx| {
-                                        settings.select_language(language, cx);
-                                    });
-                                },
+                        .variant(GroupBoxVariant::Normal)
+                        .item(
+                            settings_row(
+                                language_title.clone(),
+                                settings_dropdown_control(
+                                    "settings-language-dropdown".into(),
+                                    language_title.clone(),
+                                    language_options,
+                                    language_value,
+                                    language_set,
+                                ),
                             )
-                            .default_value(SharedString::from("en")),
-                        ))
-                        .item(SettingItem::new(
-                            autostart_title.clone(),
-                            settings_switch(
-                                "settings-autostart-switch".into(),
-                                autostart_title,
-                                move |cx| autostart_value.read(cx).autostart,
-                                move |enabled, cx| {
-                                    autostart_services
-                                        .send_window_command(WindowCommand::SetAutostart(enabled));
-                                    autostart_set.update(cx, |settings, cx| {
-                                        settings.autostart = enabled;
-                                        cx.notify();
+                            .on_reset(
+                                move |cx| language_dirty_view.read(cx).language != "en",
+                                move |_, cx| {
+                                    language_reset_view.update(cx, |settings, cx| {
+                                        settings.select_language("en".into(), cx);
                                     });
                                 },
+                            ),
+                        )
+                        .item(
+                            settings_row(
+                                autostart_title.clone(),
+                                settings_switch_control(
+                                    "settings-autostart-switch".into(),
+                                    autostart_title.clone(),
+                                    autostart_checked,
+                                    autostart_set,
+                                ),
+                            )
+                            .on_reset(
                                 move |cx| autostart_dirty.read(cx).autostart,
-                                move |cx| {
+                                move |_, cx| {
                                     if autostart_reset_view.read(cx).autostart {
                                         autostart_reset_services.send_window_command(
                                             WindowCommand::SetAutostart(false),
@@ -275,24 +412,20 @@ impl Render for StewardSettings {
                                     }
                                 },
                             ),
-                        ))
-                        .item(SettingItem::new(
-                            updates_title.clone(),
-                            settings_switch(
-                                "settings-update-switch".into(),
-                                updates_title,
-                                move |cx| updates_value.read(cx).check_updates_on_startup,
-                                move |enabled, cx| {
-                                    updates_services.send_window_command(
-                                        WindowCommand::SetCheckUpdatesOnStartup(enabled),
-                                    );
-                                    updates_set.update(cx, |settings, cx| {
-                                        settings.check_updates_on_startup = enabled;
-                                        cx.notify();
-                                    });
-                                },
+                        )
+                        .item(
+                            settings_row(
+                                updates_title.clone(),
+                                settings_switch_control(
+                                    "settings-update-switch".into(),
+                                    updates_title.clone(),
+                                    updates_checked,
+                                    updates_set,
+                                ),
+                            )
+                            .on_reset(
                                 move |cx| !updates_dirty.read(cx).check_updates_on_startup,
-                                move |cx| {
+                                move |_, cx| {
                                     if !updates_reset_view.read(cx).check_updates_on_startup {
                                         updates_reset_services.send_window_command(
                                             WindowCommand::SetCheckUpdatesOnStartup(true),
@@ -304,7 +437,7 @@ impl Render for StewardSettings {
                                     }
                                 },
                             ),
-                        )),
+                        ),
                 ),
             SettingPage::new(self.i18n.translate("settings-appearance"))
                 .icon(Icon::new(IconName::Palette))
