@@ -73,6 +73,8 @@ jobs:
         run: pnpm test:pdx2
       - name: ecosystem operations and quarantine lifecycle
         run: pnpm test:pdx4
+      - name: encrypted plugin secrets
+        run: pnpm test:pdx5
       - name: lint
         run: pnpm lint
       - name: format

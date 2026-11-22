@@ -1,9 +1,11 @@
 # Steward Plugin API Next Milestones
 
 > Status: PDX-0 through PDX-4 implementation complete. PDX-4 public launch is
-> blocked on clean-Windows-VM and production-publisher acceptance. PDX-1 and
-> PDX-3 SDK artifacts will be attached by the next tagged release. Current baseline is the stable
-> command-oriented `1.0.0` plugin host API in
+> blocked on clean-Windows-VM and production-publisher acceptance. PDX-5 has
+> started with encrypted plugin-private credentials in host API `1.1.0`; its
+> remaining candidates stay deferred until a reviewed workload justifies each
+> one. PDX-1 and PDX-3 SDK artifacts will be attached by the next tagged
+> release. Current baseline is the stable command-oriented `1.1.0` plugin host API in
 > [plugin-capability-roadmap.md](plugin-capability-roadmap.md), with the
 > `runProcess` request-ID mismatch repaired on 2026-11-22.
 >
@@ -293,14 +295,44 @@ Evidence:
 
 ## PDX-5: Deferred Capability Expansion
 
-Status: deferred until PDX-0 through PDX-4 are complete.
+Status: in progress. Secure secret storage and credential lifecycle are
+implemented behind host API `1.1.0`. The remaining candidates stay deferred
+until their workload, permission, isolation, quota, and compatibility cases
+are reviewed.
 
 Objective: expand beyond command-oriented UI plugins only when a reviewed
 workload demonstrates that the existing capability model is insufficient.
 
+### PDX-5.1: Secure Secret Storage
+
+Status: implementation complete on 2026-11-22. Clean-VM DPAPI acceptance is
+still required before production publication.
+
+- [x] PDX-5.1.1: add `steward.secrets.set`, `.get`, `.delete`, and `.list` to
+      host API `1.1.0`, with plugin-private automatic named permissions;
+- [x] PDX-5.1.2: encrypt values for the current Windows user with DPAPI and
+      key-specific entropy, so copied ciphertext cannot move between plugin,
+      profile, or secret slots;
+- [x] PDX-5.1.3: keep plaintext values out of SQLite, JSON indexes, audit rows,
+      logs, and API error text;
+- [x] PDX-5.1.4: enforce bounded 1-128 byte keys, 2560-byte values, 64 secrets
+      per plugin, staged replacement, deletion, name-only enumeration, and
+      secret-namespace cleanup when the plugin is removed;
+- [x] PDX-5.1.5: isolate production and developer profiles in both the secret
+      directory and DPAPI entropy;
+- [x] PDX-5.1.6: add Network Check and Secret Notes as unrelated consumers;
+      cover persistence, replacement, deletion, quotas, isolation, tampered
+      ciphertext, and non-echoing host-mocked NSH tests;
+- [x] PDX-5.1.7: add contract fixtures, SDK validation, generated reference,
+      Rust request DTOs, authorization, package policy, and compatibility
+      coverage for the new API line.
+
+Acceptance still requires a clean interactive Windows VM to verify DPAPI under
+the installed application identity in addition to the CI storage tests.
+
 Candidate work, in evaluation order:
 
-- secure secret storage and credential lifecycle;
+- ~~secure secret storage and credential lifecycle~~ (PDX-5.1 implemented);
 - binary file read/write and host-owned Recycle Bin operations;
 - file and clipboard change subscriptions;
 - richer notifications and progress surfaces;
@@ -321,10 +353,12 @@ Each candidate requires:
 ## Immediate Work Queue
 
 1. Run the PDX-4 clean-Windows-VM and production-publisher acceptance matrix.
-2. Attach the PDX-1/PDX-3 `1.0.0` SDK artifact and checksum to the next tagged
+2. Run PDX-5.1 DPAPI and credential lifecycle acceptance on a clean interactive
+   Windows VM.
+3. Attach the PDX-1/PDX-3 `1.1.0` SDK artifact and checksum to the next tagged
    Steward release, then verify the documented public download on a clean
    Windows environment.
-3. Run the PDX-2 developer workflow on a clean Windows VM with the released app
+4. Run the PDX-2 developer workflow on a clean Windows VM with the released app
    and SDK before inviting external beta testers.
 
 ## Non-Goals For This Stage

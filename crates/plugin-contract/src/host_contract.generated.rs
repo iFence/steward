@@ -2,9 +2,9 @@
 // Run `pnpm contract:generate` after changing the contract.
 
 #[rustfmt::skip]
-pub const HOST_API_VERSION: &str = "1.0.0";
+pub const HOST_API_VERSION: &str = "1.1.0";
 #[rustfmt::skip]
-pub const HOST_CONTRACT_VERSION: u32 = 1;
+pub const HOST_CONTRACT_VERSION: u32 = 2;
 #[rustfmt::skip]
 pub const HOST_ERROR_ENVELOPE_VERSION: u32 = 1;
 #[rustfmt::skip]
@@ -39,6 +39,10 @@ pub const HOST_CALL_NAMES: &[&str] = &[
     "steward.clipboard.write",
     "steward.storage.get",
     "steward.storage.set",
+    "steward.secrets.get",
+    "steward.secrets.set",
+    "steward.secrets.delete",
+    "steward.secrets.list",
     "steward.calendar.holidays",
     "steward.window.close",
     "steward.navigation.back",
@@ -72,6 +76,7 @@ pub const HOST_FEATURE_NAMES: &[&str] = &[
     "steward.feedback",
     "steward.navigation",
     "steward.preferences",
+    "steward.secrets",
 ];
 #[rustfmt::skip]
 pub const HOST_FAMILY_NAMES: &[&str] = &[
@@ -79,6 +84,7 @@ pub const HOST_FAMILY_NAMES: &[&str] = &[
     "feedback",
     "clipboard",
     "storage",
+    "secrets",
     "calendar",
     "navigation",
     "filesystem",

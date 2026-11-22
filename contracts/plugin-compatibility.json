@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "current": {
-    "hostApiVersion": "1.0.0",
-    "sdkVersion": "1.0.0",
+    "hostApiVersion": "1.1.0",
+    "sdkVersion": "1.1.0",
     "nshVersion": "0.6.1",
     "manifestSchemaVersion": 3,
-    "minimumHostVersion": "1.0.0",
+    "minimumHostVersion": "1.1.0",
     "minimumSupportedHostVersion": "0.3.0"
   },
   "supported": [
@@ -30,6 +30,12 @@
     {
       "hostApi": "1.0.x",
       "sdk": "1.0.x",
+      "nsh": "0.6.1",
+      "status": "supported"
+    },
+    {
+      "hostApi": "1.1.x",
+      "sdk": "1.1.x",
       "nsh": "0.6.1",
       "status": "current"
     }

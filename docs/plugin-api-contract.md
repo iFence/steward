@@ -1,6 +1,6 @@
 # Steward Plugin API Contract
 
-> Status: PDX-3 complete. Host API `1.0.0`, stable line `1.x`, contract
+> Status: PDX-3 complete; PDX-5.1 adds secrets. Host API `1.1.0`, stable line `1.x`, contract
 > version `1`.
 
 `contracts/plugin-api-v1.json` is the single machine-readable source of truth

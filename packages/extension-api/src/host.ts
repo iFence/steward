@@ -267,6 +267,45 @@ export async function storageSet(key: string, value: string): Promise<void> {
   }
 }
 
+export async function getSecret(key: string): Promise<string | null> {
+  validateSecretKey(key);
+  try {
+    return await callHost<string | null>("steward.secrets.get", { key });
+  } catch (error) {
+    throw hostCallError("steward.secrets.get", error);
+  }
+}
+
+export async function setSecret(key: string, value: string): Promise<void> {
+  validateSecretKey(key);
+  if (utf8ByteLength(value) > 2560) {
+    throw new StewardError("resource_exhausted", "secret value exceeds the 2560 byte limit");
+  }
+  try {
+    await callHost("steward.secrets.set", { key, value });
+  } catch (error) {
+    throw hostCallError("steward.secrets.set", error);
+  }
+}
+
+export async function deleteSecret(key: string): Promise<boolean> {
+  validateSecretKey(key);
+  try {
+    const result = await callHost<{ deleted: boolean }>("steward.secrets.delete", { key });
+    return result.deleted;
+  } catch (error) {
+    throw hostCallError("steward.secrets.delete", error);
+  }
+}
+
+export async function listSecrets(): Promise<string[]> {
+  try {
+    return await callHost<string[]>("steward.secrets.list");
+  } catch (error) {
+    throw hostCallError("steward.secrets.list", error);
+  }
+}
+
 export async function calendarHolidays(year: number): Promise<HolidaySchedule> {
   if (!Number.isInteger(year) || year < 0 || year > 65_535) {
     throw new StewardError("invalid_input", "calendarHolidays year must be between 0 and 65535");
@@ -732,6 +771,15 @@ function validWalkId(value: string): boolean {
 
 function validProcessId(value: string): boolean {
   return /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+}
+
+function validateSecretKey(key: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(key)) {
+    throw new StewardError(
+      "invalid_input",
+      "secret key must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+    );
+  }
 }
 
 function utf8ByteLength(value: string): number {

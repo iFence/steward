@@ -30,6 +30,7 @@ mod plugin_filesystem;
 mod plugin_management;
 mod plugin_network;
 mod plugin_runtime;
+mod plugin_secrets;
 mod plugin_system;
 mod plugin_window;
 mod search;

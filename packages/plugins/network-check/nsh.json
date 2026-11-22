@@ -4,7 +4,12 @@
   "version": "0.1.0",
   "build": 1,
   "capabilities": {
-    "host": ["steward.net.fetch"],
+    "host": [
+      "steward.net.fetch",
+      "steward.secrets.get",
+      "steward.secrets.set",
+      "steward.secrets.delete"
+    ],
     "network": {
       "http": [
         {

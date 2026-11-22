@@ -172,7 +172,9 @@ adapters or sidecars. They must not add a permanent Node runtime to the shell.
 5. Complete PC-5/PDX-4 clean-VM and production independent-publisher
    acceptance. Automated admission, publisher operations, quarantine, root
    revocation responses, and cross-domain fixtures are implemented.
-6. Improve plugin authoring and package management.
+6. Improve plugin authoring and package management. Encrypted plugin-private
+   secrets are implemented as PDX-5.1; other deferred capabilities still need
+   reviewed workloads.
 7. Add AI-callable capabilities with explicit consent and diagnostics.
 8. Add MCP and external ecosystem adapters only where they preserve the
    launcher's latency and memory goals.

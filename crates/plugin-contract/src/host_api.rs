@@ -186,6 +186,25 @@ pub struct StorageSetRequest {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SecretGetRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SecretSetRequest {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SecretDeleteRequest {
+    pub key: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CalendarHolidaysRequest {
@@ -289,6 +308,12 @@ pub struct PathResponse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelledResponse {
     pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeletedResponse {
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -472,6 +497,9 @@ mod tests {
         parse::<ClipboardWriteRequest>(&contract, "steward.clipboard.write");
         parse::<StorageGetRequest>(&contract, "steward.storage.get");
         parse::<StorageSetRequest>(&contract, "steward.storage.set");
+        parse::<SecretGetRequest>(&contract, "steward.secrets.get");
+        parse::<SecretSetRequest>(&contract, "steward.secrets.set");
+        parse::<SecretDeleteRequest>(&contract, "steward.secrets.delete");
         parse::<CalendarHolidaysRequest>(&contract, "steward.calendar.holidays");
         parse::<PathPickRequest>(&contract, "steward.fs.pick");
         parse::<CancelWalkRequest>(&contract, "steward.fs.cancelWalk");
@@ -501,6 +529,7 @@ mod tests {
             "steward.feedback.progress",
             "steward.clipboard.write",
             "steward.storage.set",
+            "steward.secrets.set",
             "steward.navigation.back",
             "steward.navigation.close",
             "steward.navigation.setTitle",
@@ -524,6 +553,12 @@ mod tests {
             serde_json::from_value(response(&contract, "steward.fs.walk").clone()).unwrap();
         let _: String =
             serde_json::from_value(response(&contract, "steward.fs.readText").clone()).unwrap();
+        let _: String =
+            serde_json::from_value(response(&contract, "steward.secrets.get").clone()).unwrap();
+        let _: Vec<String> =
+            serde_json::from_value(response(&contract, "steward.secrets.list").clone()).unwrap();
+        let _: DeletedResponse =
+            serde_json::from_value(response(&contract, "steward.secrets.delete").clone()).unwrap();
         let _: PathResponse =
             serde_json::from_value(response(&contract, "steward.fs.writeText").clone()).unwrap();
         let _: Vec<FilesystemGrant> =
@@ -563,6 +598,10 @@ mod tests {
             capabilities::CLIPBOARD_WRITE,
             capabilities::STORAGE_GET,
             capabilities::STORAGE_SET,
+            capabilities::SECRETS_GET,
+            capabilities::SECRETS_SET,
+            capabilities::SECRETS_DELETE,
+            capabilities::SECRETS_LIST,
             capabilities::CALENDAR_HOLIDAYS,
             capabilities::WINDOW_CLOSE,
             capabilities::NAVIGATION_BACK,
@@ -686,6 +725,21 @@ mod tests {
                     "steward.clipboard.write" => {
                         parse_call_data::<ClipboardWriteRequest>(name, &fixture["request"])
                             .unwrap();
+                    }
+                    "steward.secrets.get" => {
+                        parse_call_data::<SecretGetRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<String>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.secrets.set" => {
+                        parse_call_data::<SecretSetRequest>(name, &fixture["request"]).unwrap();
+                    }
+                    "steward.secrets.delete" => {
+                        parse_call_data::<SecretDeleteRequest>(name, &fixture["request"]).unwrap();
+                        parse_call_data::<DeletedResponse>(name, &fixture["response"]).unwrap();
+                    }
+                    "steward.secrets.list" => {
+                        require_null_payload(name, &fixture["request"]).unwrap();
+                        parse_call_data::<Vec<String>>(name, &fixture["response"]).unwrap();
                     }
                     other => panic!("compatibility fixture {other} has no DTO assertion"),
                 }

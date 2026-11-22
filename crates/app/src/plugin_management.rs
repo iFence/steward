@@ -14,9 +14,9 @@ use serde_json::Value;
 use steward_plugin_contract::capabilities::{
     CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM,
     FEEDBACK_PROGRESS, FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ, FS_READ_TEXT,
-    FS_WALK, FS_WRITE, FS_WRITE_TEXT, NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET,
-    STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH,
-    SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    FS_WALK, FS_WRITE, FS_WRITE_TEXT, NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, SECRETS_DELETE,
+    SECRETS_GET, SECRETS_LIST, SECRETS_SET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS,
+    SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::CapabilityDescriptor;
 use steward_plugin_store::{
@@ -130,9 +130,7 @@ impl PluginManagementPort {
                     Command::Update(plugin_id) => store
                         .update_from_marketplace(&plugin_id)
                         .map(|operation| Some(operation_message(operation))),
-                    Command::Remove(plugin_id) => store
-                        .remove(&plugin_id)
-                        .map(|operation| Some(operation_message(operation))),
+                    Command::Remove(plugin_id) => remove_plugin(&store, &plugin_id),
                     Command::Rollback(plugin_id) => store
                         .rollback(&plugin_id, None)
                         .map(|operation| Some(operation_message(operation))),
@@ -543,8 +541,9 @@ fn set_preference(
 
 fn release_allows_capability(descriptor: &CapabilityDescriptor) -> bool {
     match descriptor.permission.as_str() {
-        CLIPBOARD_HISTORY | CLIPBOARD_WRITE | STORAGE_GET | STORAGE_SET | CALENDAR_HOLIDAYS
-        | WINDOW_CLOSE | PREFERENCES_GET | PREFERENCES_ALL | FEEDBACK_TOAST | FEEDBACK_CONFIRM
+        CLIPBOARD_HISTORY | CLIPBOARD_WRITE | STORAGE_GET | STORAGE_SET | SECRETS_GET
+        | SECRETS_SET | SECRETS_DELETE | SECRETS_LIST | CALENDAR_HOLIDAYS | WINDOW_CLOSE
+        | PREFERENCES_GET | PREFERENCES_ALL | FEEDBACK_TOAST | FEEDBACK_CONFIRM
         | FEEDBACK_PROGRESS | FS_PICK | FS_WALK | FS_READ_TEXT | FS_WRITE_TEXT | FS_GRANTS
         | FS_CANCEL_WALK | SYSTEM_OPEN_PATH | SYSTEM_REVEAL_PATH | SYSTEM_OPEN_WITH
         | SYSTEM_APPLICATIONS | EXEC_CANCEL => true,
@@ -772,6 +771,18 @@ fn operation_message(operation: steward_plugin_store::PluginOperation) -> String
     } else {
         format!("{verb} {} {}.", operation.name, operation.version)
     }
+}
+
+fn remove_plugin(store: &PluginStore, plugin_id: &str) -> Result<Option<String>> {
+    let operation = store.remove(plugin_id)?;
+    if let Err(error) = crate::plugin_secrets::remove_plugin_secrets(store.data_dir(), plugin_id) {
+        tracing::warn!(
+            plugin_id,
+            error = ?error,
+            "plugin was removed but its encrypted secret namespace could not be cleaned"
+        );
+    }
+    Ok(Some(operation_message(operation)))
 }
 
 fn set_busy(

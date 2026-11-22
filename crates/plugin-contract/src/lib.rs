@@ -23,6 +23,7 @@ pub const BASE_HOST_FEATURES: &[&str] = &[
     "steward.feedback",
     "steward.navigation",
     "steward.preferences",
+    "steward.secrets",
 ];
 
 /// Stable identifier for one plugin launch session.
@@ -576,6 +577,7 @@ mod tests {
                 "steward.feedback",
                 "steward.navigation",
                 "steward.preferences",
+                "steward.secrets",
                 "steward.storage.get"
             ]
         );

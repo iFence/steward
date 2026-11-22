@@ -1,6 +1,6 @@
 {
-  "contractVersion": 1,
-  "hostApiVersion": "1.0.0",
+  "contractVersion": 2,
+  "hostApiVersion": "1.1.0",
   "errorEnvelopeVersion": 1,
   "stability": {
     "line": "1.x",
@@ -121,6 +121,28 @@
         {
           "subject": "storage value",
           "limit": "1 MiB",
+          "behavior": "resource_exhausted"
+        }
+      ]
+    },
+    {
+      "name": "secrets",
+      "description": "Store plugin-private credentials with Windows DPAPI protection.",
+      "maxOperationTimeoutMs": 5000,
+      "quotas": [
+        {
+          "subject": "secret key",
+          "limit": "1 through 128 bytes matching [A-Za-z0-9][A-Za-z0-9._-]*",
+          "behavior": "invalid_input"
+        },
+        {
+          "subject": "secret value",
+          "limit": "2560 UTF-8 bytes",
+          "behavior": "resource_exhausted"
+        },
+        {
+          "subject": "stored secrets",
+          "limit": "64 secrets per plugin",
           "behavior": "resource_exhausted"
         }
       ]
@@ -331,7 +353,8 @@
     "runtime_feature_discovery",
     "steward.feedback",
     "steward.navigation",
-    "steward.preferences"
+    "steward.preferences",
+    "steward.secrets"
   ],
   "events": [
     {
@@ -402,6 +425,10 @@
     { "permission": "steward.clipboard.write", "scope": "host=steward", "sensitive": true },
     { "permission": "steward.storage.get", "scope": "host=steward", "sensitive": false },
     { "permission": "steward.storage.set", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.secrets.get", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.secrets.set", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.secrets.delete", "scope": "host=steward", "sensitive": false },
+    { "permission": "steward.secrets.list", "scope": "host=steward", "sensitive": false },
     { "permission": "steward.calendar.holidays", "scope": "host=steward", "sensitive": true },
     { "permission": "steward.window.close", "scope": "host=steward", "sensitive": false },
     { "permission": "steward.navigation.back", "scope": "host=steward", "sensitive": false },
@@ -638,6 +665,81 @@
         "type": "object",
         "additionalProperties": false,
         "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.secrets.get",
+      "family": "secrets",
+      "capability": "steward.secrets.get",
+      "transport": "call",
+      "description": "Read one plugin-private secret from DPAPI-protected storage.",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": { "key": { "type": "string", "minLength": 1, "maxLength": 128 } },
+        "examples": [{ "key": "github-token" }]
+      },
+      "response": {
+        "type": ["string", "null"],
+        "examples": ["github_pat_example"]
+      }
+    },
+    {
+      "name": "steward.secrets.set",
+      "family": "secrets",
+      "capability": "steward.secrets.set",
+      "transport": "call",
+      "description": "Create or replace one plugin-private secret in DPAPI-protected storage.",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "value"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "value": { "type": "string", "maxLength": 2560 }
+        },
+        "examples": [{ "key": "github-token", "value": "github_pat_example" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "examples": [{}]
+      }
+    },
+    {
+      "name": "steward.secrets.delete",
+      "family": "secrets",
+      "capability": "steward.secrets.delete",
+      "transport": "call",
+      "description": "Delete one plugin-private secret and report whether it existed.",
+      "request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": { "key": { "type": "string", "minLength": 1, "maxLength": 128 } },
+        "examples": [{ "key": "github-token" }]
+      },
+      "response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["deleted"],
+        "properties": { "deleted": { "type": "boolean" } },
+        "examples": [{ "deleted": true }]
+      }
+    },
+    {
+      "name": "steward.secrets.list",
+      "family": "secrets",
+      "capability": "steward.secrets.list",
+      "transport": "call",
+      "description": "List the names, but never the values, of this plugin's stored secrets.",
+      "request": { "type": "null", "examples": [null] },
+      "response": {
+        "type": "array",
+        "maxItems": 64,
+        "items": { "type": "string" },
+        "examples": [["github-token"]]
       }
     },
     {

@@ -133,6 +133,37 @@
           "response": {}
         }
       ]
+    },
+    {
+      "hostApi": "1.1.x",
+      "sdk": "1.1.x",
+      "minimumHostVersion": "1.1.0",
+      "calls": [
+        {
+          "name": "steward.secrets.get",
+          "sdkHelper": "getSecret",
+          "request": { "key": "github-token" },
+          "response": "github_pat_example"
+        },
+        {
+          "name": "steward.secrets.set",
+          "sdkHelper": "setSecret",
+          "request": { "key": "github-token", "value": "github_pat_example" },
+          "response": {}
+        },
+        {
+          "name": "steward.secrets.delete",
+          "sdkHelper": "deleteSecret",
+          "request": { "key": "github-token" },
+          "response": { "deleted": true }
+        },
+        {
+          "name": "steward.secrets.list",
+          "sdkHelper": "listSecrets",
+          "request": null,
+          "response": ["github-token"]
+        }
+      ]
     }
   ]
 }

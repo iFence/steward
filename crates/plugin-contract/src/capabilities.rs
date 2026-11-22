@@ -9,6 +9,10 @@ pub const CLIPBOARD_HISTORY: &str = "steward.clipboard.history";
 pub const CLIPBOARD_WRITE: &str = "steward.clipboard.write";
 pub const STORAGE_GET: &str = "steward.storage.get";
 pub const STORAGE_SET: &str = "steward.storage.set";
+pub const SECRETS_GET: &str = "steward.secrets.get";
+pub const SECRETS_SET: &str = "steward.secrets.set";
+pub const SECRETS_DELETE: &str = "steward.secrets.delete";
+pub const SECRETS_LIST: &str = "steward.secrets.list";
 pub const CALENDAR_HOLIDAYS: &str = "steward.calendar.holidays";
 pub const WINDOW_CLOSE: &str = "steward.window.close";
 pub const NAVIGATION_BACK: &str = "steward.navigation.back";
@@ -344,6 +348,10 @@ fn is_sensitive(permission: &str, scope: &str) -> bool {
         permission,
         STORAGE_GET
             | STORAGE_SET
+            | SECRETS_GET
+            | SECRETS_SET
+            | SECRETS_DELETE
+            | SECRETS_LIST
             | WINDOW_CLOSE
             | NAVIGATION_BACK
             | NAVIGATION_CLOSE
@@ -375,6 +383,16 @@ fn describe(permission: &str, scope: &str) -> String {
         CLIPBOARD_WRITE => "Write text to the system clipboard.".into(),
         STORAGE_GET => "Read this plugin's private Steward storage.".into(),
         STORAGE_SET => "Write this plugin's private Steward storage.".into(),
+        SECRETS_GET => {
+            "Read a secret owned by this plugin from the system credential vault.".into()
+        }
+        SECRETS_SET => {
+            "Create or replace a secret owned by this plugin in the system credential vault.".into()
+        }
+        SECRETS_DELETE => {
+            "Delete a secret owned by this plugin from the system credential vault.".into()
+        }
+        SECRETS_LIST => "List the names, but never the values, of this plugin's secrets.".into(),
         CALENDAR_HOLIDAYS => "Read Steward's cached holiday schedule.".into(),
         WINDOW_CLOSE => "Close this plugin window.".into(),
         NAVIGATION_BACK => "Return from this plugin page to the launcher.".into(),

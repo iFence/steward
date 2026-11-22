@@ -1,8 +1,8 @@
 // Generated from contracts/plugin-api-v1.json. Do not edit directly.
 // Run `pnpm contract:generate` after changing the contract.
 
-export const HOST_API_VERSION = "1.0.0" as const;
-export const HOST_CONTRACT_VERSION = 1 as const;
+export const HOST_API_VERSION = "1.1.0" as const;
+export const HOST_CONTRACT_VERSION = 2 as const;
 export const HOST_ERROR_ENVELOPE_VERSION = 1 as const;
 export const HOST_MINIMUM_SUPPORTED_API_VERSION = "0.3.0" as const;
 
@@ -31,6 +31,7 @@ export const HOST_FEATURE_NAMES = [
   "steward.feedback",
   "steward.navigation",
   "steward.preferences",
+  "steward.secrets",
 ] as const;
 export type HostFeatureName = (typeof HOST_FEATURE_NAMES)[number];
 
@@ -52,6 +53,10 @@ export const HOST_CALL_NAMES = [
   "steward.clipboard.write",
   "steward.storage.get",
   "steward.storage.set",
+  "steward.secrets.get",
+  "steward.secrets.set",
+  "steward.secrets.delete",
+  "steward.secrets.list",
   "steward.calendar.holidays",
   "steward.window.close",
   "steward.navigation.back",
@@ -116,6 +121,26 @@ export const HOST_CAPABILITIES = [
   },
   {
     permission: "steward.storage.set",
+    scope: "host=steward",
+    sensitive: false,
+  },
+  {
+    permission: "steward.secrets.get",
+    scope: "host=steward",
+    sensitive: false,
+  },
+  {
+    permission: "steward.secrets.set",
+    scope: "host=steward",
+    sensitive: false,
+  },
+  {
+    permission: "steward.secrets.delete",
+    scope: "host=steward",
+    sensitive: false,
+  },
+  {
+    permission: "steward.secrets.list",
     scope: "host=steward",
     sensitive: false,
   },
@@ -281,6 +306,28 @@ export const HOST_API_FAMILIES = [
       {
         subject: "storage value",
         limit: "1 MiB",
+        behavior: "resource_exhausted",
+      },
+    ],
+  },
+  {
+    name: "secrets",
+    description: "Store plugin-private credentials with Windows DPAPI protection.",
+    maxOperationTimeoutMs: 5000,
+    quotas: [
+      {
+        subject: "secret key",
+        limit: "1 through 128 bytes matching [A-Za-z0-9][A-Za-z0-9._-]*",
+        behavior: "invalid_input",
+      },
+      {
+        subject: "secret value",
+        limit: "2560 UTF-8 bytes",
+        behavior: "resource_exhausted",
+      },
+      {
+        subject: "stored secrets",
+        limit: "64 secrets per plugin",
         behavior: "resource_exhausted",
       },
     ],
@@ -584,6 +631,51 @@ export const HOST_CALL_FIXTURES = [
       value: "[]",
     },
     response: {},
+  },
+  {
+    name: "steward.secrets.get",
+    family: "secrets",
+    capability: "steward.secrets.get",
+    transport: "call",
+    description: "Read one plugin-private secret from DPAPI-protected storage.",
+    request: {
+      key: "github-token",
+    },
+    response: "github_pat_example",
+  },
+  {
+    name: "steward.secrets.set",
+    family: "secrets",
+    capability: "steward.secrets.set",
+    transport: "call",
+    description: "Create or replace one plugin-private secret in DPAPI-protected storage.",
+    request: {
+      key: "github-token",
+      value: "github_pat_example",
+    },
+    response: {},
+  },
+  {
+    name: "steward.secrets.delete",
+    family: "secrets",
+    capability: "steward.secrets.delete",
+    transport: "call",
+    description: "Delete one plugin-private secret and report whether it existed.",
+    request: {
+      key: "github-token",
+    },
+    response: {
+      deleted: true,
+    },
+  },
+  {
+    name: "steward.secrets.list",
+    family: "secrets",
+    capability: "steward.secrets.list",
+    transport: "call",
+    description: "List the names, but never the values, of this plugin's stored secrets.",
+    request: null,
+    response: ["github-token"],
   },
   {
     name: "steward.calendar.holidays",

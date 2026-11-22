@@ -3,7 +3,7 @@
   "id": "it.aspirin.network-check",
   "name": "Network Check",
   "version": "0.1.0",
-  "minHostVersion": "0.4.0",
+  "minHostVersion": "1.1.0",
   "icon": "<svg viewBox=\"0 0 1024 1024\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1024\" height=\"1024\" rx=\"224\" fill=\"#0B6E99\"></rect><circle cx=\"512\" cy=\"512\" r=\"288\" fill=\"none\" stroke=\"#E8F7FF\" stroke-width=\"64\"></circle><path d=\"M224 512h576M512 224c-96 96-144 192-144 288s48 192 144 288M512 224c96 96 144 192 144 288s-48 192-144 288\" fill=\"none\" stroke=\"#E8F7FF\" stroke-width=\"48\"></path></svg>",
   "package": "plugin.nshpkg",
   "commands": [

@@ -26,8 +26,9 @@ use steward_plugin_contract::host_api::{
     parse_call_data, require_null_payload, CalendarHolidaysRequest, CancelWalkRequest,
     ClipboardWriteRequest, ConfirmRequest, ExecutionCancelRequest, HostCallError, HostErrorCode,
     PathPickMode, PathPickRequest, PreferencesGetRequest, ProgressRequest, ReadTextRequest,
-    SetTitleRequest, StorageGetRequest, StorageSetRequest, SystemOpenWithRequest,
-    SystemPathRequest, ToastRequest, WalkRequest, WriteTextRequest,
+    SecretDeleteRequest, SecretGetRequest, SecretSetRequest, SetTitleRequest, StorageGetRequest,
+    StorageSetRequest, SystemOpenWithRequest, SystemPathRequest, ToastRequest, WalkRequest,
+    WriteTextRequest,
 };
 use steward_plugin_contract::{
     LaunchRequest, PluginErrorCode, PluginExecutionRequest, PluginExecutionResult, PluginNotice,
@@ -45,6 +46,7 @@ use crate::plugin_containment::PluginProcessContainment;
 use crate::plugin_execution::{ExecutionAudit, ExecutionBroker, ExecutionResultSink};
 use crate::plugin_filesystem::{display_path, FileAccess, FileService, PickerMode};
 use crate::plugin_network::{NetworkAudit, NetworkRequest, NetworkService};
+use crate::plugin_secrets::{SecretStore, SecretStoreError};
 use crate::plugin_system::SystemService;
 use crate::state::{AppState, PluginRuntimeEvent};
 
@@ -645,6 +647,7 @@ fn run_child_window(
     let session_id = start.session_id;
     let initial = start.request;
     let host_plugin_id = initial.plugin_id.clone();
+    let secrets = Arc::new(SecretStore::new(&data_dir, &host_plugin_id));
     let audit = CapabilityAuditSink::new(&data_dir, &launch.authorization);
     let file_access = FileAccess {
         data_dir: data_dir.clone(),
@@ -1019,6 +1022,81 @@ fn run_child_window(
                     HostErrorCode::HostFailure,
                     format!("write plugin storage: {error}"),
                 ),
+            }
+        }
+    });
+    host.handle("steward.secrets.get", {
+        let secrets = secrets.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record("steward.secrets.get");
+            let request =
+                match parse_call_data::<SecretGetRequest>("steward.secrets.get", call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            match secrets.get(&request.key) {
+                Ok(value) => {
+                    call.resolve(value.map_or(serde_json::Value::Null, serde_json::Value::String))
+                }
+                Err(error) => reject_secret_store_error(call, error),
+            }
+        }
+    });
+    host.handle("steward.secrets.set", {
+        let secrets = secrets.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record("steward.secrets.set");
+            let request =
+                match parse_call_data::<SecretSetRequest>("steward.secrets.set", call.data()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            match secrets.set(&request.key, &request.value) {
+                Ok(()) => call.resolve(serde_json::json!({})),
+                Err(error) => reject_secret_store_error(call, error),
+            }
+        }
+    });
+    host.handle("steward.secrets.delete", {
+        let secrets = secrets.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record("steward.secrets.delete");
+            let request =
+                match parse_call_data::<SecretDeleteRequest>("steward.secrets.delete", call.data())
+                {
+                    Ok(request) => request,
+                    Err(error) => {
+                        call.reject_host_error(error);
+                        return;
+                    }
+                };
+            match secrets.delete(&request.key) {
+                Ok(deleted) => call.resolve(serde_json::json!({ "deleted": deleted })),
+                Err(error) => reject_secret_store_error(call, error),
+            }
+        }
+    });
+    host.handle("steward.secrets.list", {
+        let secrets = secrets.clone();
+        let audit = audit.clone();
+        move |call| {
+            audit.record("steward.secrets.list");
+            if let Err(error) = require_null_payload("steward.secrets.list", call.data()) {
+                call.reject_host_error(error);
+                return;
+            }
+            match secrets.list() {
+                Ok(keys) => call.resolve(serde_json::to_value(keys).unwrap_or_default()),
+                Err(error) => reject_secret_store_error(call, error),
             }
         }
     });
@@ -2454,6 +2532,26 @@ fn persist_plugin_storage(path: &Path, storage: &BTreeMap<String, String>) -> Re
     std::fs::rename(&temporary, path).map_err(|error| error.to_string())
 }
 
+fn reject_secret_store_error(call: HostCall, error: SecretStoreError) {
+    match error {
+        SecretStoreError::InvalidKey => call.reject_code(
+            HostErrorCode::InvalidInput,
+            "secret key must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+        ),
+        SecretStoreError::ResourceExhausted(message) => {
+            call.reject_code(HostErrorCode::ResourceExhausted, message)
+        }
+        #[cfg(not(target_os = "windows"))]
+        SecretStoreError::Unavailable => call.reject_code(
+            HostErrorCode::FeatureUnavailable,
+            "secure secret storage is unavailable on this platform",
+        ),
+        SecretStoreError::HostFailure(message) => {
+            call.reject_code(HostErrorCode::HostFailure, message)
+        }
+    }
+}
+
 pub(crate) fn close(_cx: &mut App, state: &Rc<RefCell<AppState>>, plugin_id: &str) {
     let process = state.borrow_mut().plugin_windows.remove(plugin_id);
     drop(process);
@@ -2507,6 +2605,15 @@ mod tests {
                 "steward.storage.set" => {
                     parse_call_data::<StorageSetRequest>(name, data).unwrap();
                 }
+                "steward.secrets.get" => {
+                    parse_call_data::<SecretGetRequest>(name, data).unwrap();
+                }
+                "steward.secrets.set" => {
+                    parse_call_data::<SecretSetRequest>(name, data).unwrap();
+                }
+                "steward.secrets.delete" => {
+                    parse_call_data::<SecretDeleteRequest>(name, data).unwrap();
+                }
                 "steward.calendar.holidays" => {
                     parse_call_data::<CalendarHolidaysRequest>(name, data).unwrap();
                 }
@@ -2549,6 +2656,7 @@ mod tests {
                 | "steward.navigation.back"
                 | "steward.navigation.close"
                 | "steward.fs.grants"
+                | "steward.secrets.list"
                 | "steward.system.applications" => {
                     require_null_payload(name, data).unwrap();
                 }

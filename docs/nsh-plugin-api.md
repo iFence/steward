@@ -48,7 +48,7 @@ crash containment, host-call reach, and controlled-process lifetime; it is not
 an operating-system security boundary against another process already running
 as that user. Unsupported capabilities include dynamic launcher search
 providers, background services, cross-plugin IPC, arbitrary WebView/process
-access, raw sockets, general credentials or secret storage, binary file I/O,
+access, raw sockets, shared credential brokers, binary file I/O,
 Recycle Bin operations, and file/clipboard change subscriptions.
 
 Each open plugin gets 64 MiB heap, 1 MiB stack, a 2 second load budget, a

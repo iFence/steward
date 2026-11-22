@@ -9,8 +9,9 @@ use steward_plugin_contract::capabilities::{
     describe_declared_capabilities, is_legacy_official_plugin_id, CALENDAR_HOLIDAYS,
     CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM, FEEDBACK_PROGRESS,
     FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK, FS_WRITE_TEXT,
-    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS,
-    SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, SECRETS_DELETE, SECRETS_GET, SECRETS_LIST,
+    SECRETS_SET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH,
+    SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::{CapabilityDescriptor, HOST_API_VERSION};
 use steward_plugin_registry::PluginManifest;
@@ -496,6 +497,10 @@ fn host_allowed(name: &str) -> bool {
             | CLIPBOARD_WRITE
             | STORAGE_GET
             | STORAGE_SET
+            | SECRETS_GET
+            | SECRETS_SET
+            | SECRETS_DELETE
+            | SECRETS_LIST
             | CALENDAR_HOLIDAYS
             | WINDOW_CLOSE
             | PREFERENCES_GET
@@ -630,6 +635,10 @@ mod capability_policy_tests {
             SYSTEM_REVEAL_PATH,
             SYSTEM_OPEN_WITH,
             SYSTEM_APPLICATIONS,
+            SECRETS_GET,
+            SECRETS_SET,
+            SECRETS_DELETE,
+            SECRETS_LIST,
             NET_FETCH,
             EXEC_RUN,
             EXEC_CANCEL,

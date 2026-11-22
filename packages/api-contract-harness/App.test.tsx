@@ -44,6 +44,7 @@ test("contract fixtures cover every host bridge family", () => {
     "feedback",
     "clipboard",
     "storage",
+    "secrets",
     "calendar",
     "navigation",
     "filesystem",
@@ -126,6 +127,18 @@ test("SDK rejects a quota violation before sending a host call", async () => {
   await app.press("text:quota error");
   expect(app.texts()).toContain(
     "Status: resource_exhausted:true:clipboard text exceeds the 100000 byte limit",
+  );
+  expect(app.host.calls()).toEqual([]);
+});
+
+test("SDK rejects oversized secrets before sending a host call", async () => {
+  const app = await open("./App.tsx", {
+    host: { params, handlers: handlers() },
+  });
+
+  await app.press("text:secret quota error");
+  expect(app.texts()).toContain(
+    "Status: resource_exhausted:true:secret value exceeds the 2560 byte limit",
   );
   expect(app.host.calls()).toEqual([]);
 });

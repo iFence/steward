@@ -1,5 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
-import { fetchHttp } from "@steward/extension-api";
+import { Input } from "nsh/base";
+import { deleteSecret, fetchHttp, getSecret, setSecret } from "@steward/extension-api";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -8,14 +9,18 @@ function message(error: unknown): string {
 function App() {
   const status = signal("Check Steward's scoped HTTPS path.");
   const details = signal("");
+  const tokenInput = signal("");
 
   async function checkNetwork() {
     try {
       status.set("Requesting api.github.com/rate_limit...");
+      const token = await getSecret("github-token");
+      const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
       const response = await fetchHttp({
         url: "https://api.github.com/rate_limit",
         method: "GET",
-        headers: { Accept: "application/vnd.github+json" },
+        headers,
         timeoutMs: 10_000,
         maxResponseBytes: 256 * 1024,
       });
@@ -34,11 +39,58 @@ function App() {
     }
   }
 
+  async function saveToken() {
+    const token = tokenInput().trim();
+    if (!token) {
+      status.set("Enter a GitHub token before saving.");
+      return;
+    }
+    try {
+      await setSecret("github-token", token);
+      tokenInput.set("");
+      status.set("GitHub token saved in the system-protected secret store.");
+    } catch (error) {
+      status.set(message(error));
+    }
+  }
+
+  async function clearToken() {
+    try {
+      const deleted = await deleteSecret("github-token");
+      status.set(deleted ? "Saved GitHub token deleted." : "No saved GitHub token was present.");
+    } catch (error) {
+      status.set(message(error));
+    }
+  }
+
   return (
     <View style={{ flex: 1, padding: 24, gap: 14, backgroundColor: "#10252d" }}>
       <Text style={{ color: "#ffffff", fontSize: 28, fontWeight: "bold" }}>Network Check</Text>
       <Text style={{ color: "#a8d7e8" }}>{status()}</Text>
       <Text style={{ color: "#e4f6fc" }}>{details()}</Text>
+      <Input
+        testID="github-token"
+        value={tokenInput()}
+        placeholder="Optional GitHub token"
+        onChange={(event) => tokenInput.set(event.value)}
+        style={{ color: "#ffffff", padding: 8, backgroundColor: "#173b47", borderRadius: 6 }}
+      />
+      <View style={{ flexDirection: "row", gap: 10 }}>
+        <View
+          role="button"
+          onPress={saveToken}
+          style={{ backgroundColor: "#185E73", borderRadius: 8, padding: 8 }}
+        >
+          <Text style={{ color: "#ffffff" }}>Save token</Text>
+        </View>
+        <View
+          role="button"
+          onPress={clearToken}
+          style={{ backgroundColor: "#3b3030", borderRadius: 8, padding: 8 }}
+        >
+          <Text style={{ color: "#ffffff" }}>Clear token</Text>
+        </View>
+      </View>
       <View
         role="button"
         onPress={checkNetwork}

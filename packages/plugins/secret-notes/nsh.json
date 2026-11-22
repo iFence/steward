@@ -1,0 +1,14 @@
+{
+  "name": "Secret Notes",
+  "id": "it.aspirin.secret-notes",
+  "version": "0.1.0",
+  "build": 1,
+  "capabilities": {
+    "host": [
+      "steward.secrets.get",
+      "steward.secrets.set",
+      "steward.secrets.delete",
+      "steward.secrets.list"
+    ]
+  }
+}

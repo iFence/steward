@@ -35,6 +35,12 @@ Conventions:
   bridge, keeps `0.3.x` through `0.5.x` packages compatible, documents quotas
   and failure behavior for every API family, and publishes a reference
   generated directly from the machine-readable contract.
+- **Encrypted plugin secrets**: host API `1.1.0` adds plugin-private
+  `getSecret`, `setSecret`, `deleteSecret`, and `listSecrets` helpers. Values
+  are encrypted for the current Windows user with DPAPI, isolated by plugin,
+  key, and data profile, and never written to SQLite or diagnostics. Network
+  Check can optionally retain a GitHub token, and the new Secret Notes plugin
+  demonstrates the complete lifecycle.
 - **Plugin management**: Settings now has a Plugins page showing installed
   package versions, signature/trust status, publisher key IDs, package hashes,
   policy review items, rollback history, and local marketplace entries.

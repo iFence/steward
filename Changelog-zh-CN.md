@@ -10,6 +10,12 @@
 
 ## Unreleased
 
+- **加密的插件秘密存储**：Host API `1.1.0` 新增插件私有的
+  `getSecret`、`setSecret`、`deleteSecret` 和 `listSecrets`。秘密值通过
+  Windows DPAPI 绑定当前用户加密，并按插件、密钥和数据配置隔离，不会写入
+  SQLite 或诊断日志。Network Check 可选择保存 GitHub token，新插件
+  Secret Notes 展示了完整的凭据管理流程。
+
 - **发布者与插件市场运营**：市场运营人员可以登记由 NSH 根证书认证的发布者、轮换或恢复发布密钥，
   并查看防篡改的操作审计记录；隔离插件包、插件版本、发布密钥或发布者后，公开市场同步与安装都会
   重新检查隔离状态，并可为事件生成根签名撤销响应。

@@ -9,10 +9,13 @@ import {
   closeWindow,
   confirm,
   copyText,
+  deleteSecret,
   fetchHttp,
   filesystemGrants,
+  getSecret,
   HOST_CALL_FIXTURES,
   installedApplications,
+  listSecrets,
   openPath,
   openWith,
   pickFolder,
@@ -20,6 +23,7 @@ import {
   reportProgress,
   revealPath,
   runProcess,
+  setSecret,
   setPageTitle,
   StewardError,
   storageGet,
@@ -64,6 +68,20 @@ async function invoke(name: string): Promise<string> {
       return "";
     case "steward.storage.set":
       await storageSet((request as { key: string }).key, (request as { value: string }).value);
+      return "";
+    case "steward.secrets.get":
+      await getSecret((request as { key: string }).key);
+      return "";
+    case "steward.secrets.set": {
+      const input = request as { key: string; value: string };
+      await setSecret(input.key, input.value);
+      return "";
+    }
+    case "steward.secrets.delete":
+      await deleteSecret((request as { key: string }).key);
+      return "";
+    case "steward.secrets.list":
+      await listSecrets();
       return "";
     case "steward.calendar.holidays":
       await calendarHolidays((request as { year: number }).year);
@@ -178,6 +196,19 @@ function App() {
     }
   }
 
+  async function invokeSecretQuotaError() {
+    try {
+      await setSecret("github-token", "x".repeat(2561));
+      status.set("missing secret quota error");
+    } catch (error) {
+      if (error instanceof StewardError) {
+        status.set(`${error.code}:${error.retryable}:${error.message}`);
+      } else {
+        status.set(`wrong error:${String(error)}`);
+      }
+    }
+  }
+
   return (
     <View style={{ flex: 1, padding: 10, gap: 4 }}>
       <Text>Status: {status()}</Text>
@@ -186,6 +217,9 @@ function App() {
       </View>
       <View role="button" onPress={invokeQuotaError}>
         <Text>quota error</Text>
+      </View>
+      <View role="button" onPress={invokeSecretQuotaError}>
+        <Text>secret quota error</Text>
       </View>
       <Each of={HOST_CALL_FIXTURES} key={(call) => call.name}>
         {(call) => (

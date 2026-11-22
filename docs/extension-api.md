@@ -1,6 +1,6 @@
 # Steward Extension API v1
 
-> Host API version: `1.0.0`. See
+> Host API version: `1.1.0`. See
 > [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md) for
 > version negotiation, feature discovery, and stable error codes.
 
@@ -34,10 +34,13 @@ import {
   closePage,
   closeWindow,
   confirm,
+  deleteSecret,
   filesystemGrants,
   fetchHttp,
+  getSecret,
   hostInfo,
   installedApplications,
+  listSecrets,
   copyText,
   launchParams,
   onCommand,
@@ -51,6 +54,7 @@ import {
   preference,
   preferences,
   reportProgress,
+  setSecret,
   setPageTitle,
   readText,
   revealPath,
@@ -105,9 +109,9 @@ quotas, failure mappings, and events. It is generated from
 reference and contract checks in the same change.
 
 The SDK helpers remain the supported authoring surface. Calls are grouped into
-preferences, feedback, clipboard, storage, calendar, navigation, filesystem,
-system, network, and process API families. Every family uses the stable error
-codes and bounded-operation behavior documented in the reference.
+preferences, feedback, clipboard, storage, secrets, calendar, navigation,
+filesystem, system, network, and process API families. Every family uses the
+stable error codes and bounded-operation behavior documented in the reference.
 
 The current release ceiling allows clipboard history, `${dataDir}` filesystem
 access, selected-path host calls, system open/reveal with a selected root,
@@ -136,6 +140,40 @@ automatic named capabilities:
 
 Confirmation is host-owned and must be used before destructive or externally
 visible actions.
+
+## Encrypted plugin secrets
+
+`getSecret`, `setSecret`, `deleteSecret`, and `listSecrets` provide
+plugin-private credential storage without coupling secrets to the plaintext
+string storage file. Values are encrypted with Windows DPAPI for the current
+user. DPAPI entropy includes the data profile and secret key, so encrypted
+files cannot be copied between plugins, profiles, or secret names.
+
+```json
+{
+  "capabilities": {
+    "host": [
+      "steward.secrets.get",
+      "steward.secrets.set",
+      "steward.secrets.delete",
+      "steward.secrets.list"
+    ]
+  }
+}
+```
+
+```ts
+await setSecret("github-token", token);
+const saved = await getSecret("github-token");
+const names = await listSecrets();
+await deleteSecret("github-token");
+```
+
+Keys use `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. Values are limited to 2560 UTF-8
+bytes and each plugin can store 64 secrets. Never render a saved secret unless
+the user explicitly asks to reveal it, and never include it in logs or
+diagnostics. These calls are automatic named capabilities because the namespace
+is derived by the host from the calling package.
 
 ## Presentation and navigation
 

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 3,
+  "id": "it.aspirin.secret-notes",
+  "name": "Secret Notes",
+  "version": "0.1.0",
+  "minHostVersion": "1.1.0",
+  "icon": "<svg viewBox=\"0 0 1024 1024\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"1024\" height=\"1024\" rx=\"224\" fill=\"#665B3D\"></rect><rect x=\"224\" y=\"288\" width=\"576\" height=\"448\" rx=\"56\" fill=\"#F3E9CC\"></rect><path d=\"M320 416h384M320 512h384M320 608h256\" stroke=\"#665B3D\" stroke-width=\"48\" stroke-linecap=\"round\"></path></svg>",
+  "package": "plugin.nshpkg",
+  "commands": [
+    {
+      "name": "secret-notes",
+      "title": "Secret Notes",
+      "keywords": ["secret", "credential", "token", "password", "vault"],
+      "trigger": { "type": "command" },
+      "presentation": "embedded"
+    }
+  ]
+}

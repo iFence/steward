@@ -5,6 +5,8 @@
 > remain blocked. This document defines a general third-party plugin capability
 > roadmap. `git-repos` is one reference workload used to validate the platform,
 > not the boundary of the API design.
+> PDX-5.1 adds DPAPI-encrypted plugin-private secret storage; the remaining
+> PDX-5 candidates remain deferred pending reviewed workloads.
 >
 > This work belongs to Phase 4 platform admission and follows the completed M5
 > local plugin ecosystem. It must also be read together with

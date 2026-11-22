@@ -13,7 +13,7 @@ await toast({ title: "Hello", message: `Plugin ${params.pluginId}` });
 Install the tarball attached to a Steward GitHub release:
 
 ```powershell
-pnpm add "https://github.com/iFence/steward/releases/latest/download/steward-extension-api-1.0.0.tgz"
+pnpm add "https://github.com/iFence/steward/releases/latest/download/steward-extension-api-1.1.0.tgz"
 ```
 
 See `docs/plugin-sdk-distribution.md` in the Steward repository for the

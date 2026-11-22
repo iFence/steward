@@ -1,7 +1,8 @@
 # Steward Plugin Host API Compatibility
 
 > Status: PDX-3 complete. The stable host API line is `1.x`; the current host
-> API version is `1.0.0`.
+> API version is `1.1.0`, with encrypted plugin-private secrets added in the
+> PDX-5 line.
 
 Steward uses semantic versions for the public plugin host contract. The current
 version is exported as `HOST_API_VERSION` from `steward-plugin-contract` and
@@ -11,10 +12,10 @@ The machine-readable matrix is
 and the generated [plugin API reference](plugin-api-reference.md) is the
 canonical call, quota, event, and failure guide.
 
-The supported API lines are `0.3.x`, `0.4.x`, `0.5.x`, and `1.0.x`. Packages
-from those prior lines continue to declare their original `minHostVersion`.
-New packages target `1.0.0`. Compatibility fixtures replay each supported line
-through the current contract schemas and Rust host DTOs.
+The supported API lines are `0.3.x`, `0.4.x`, `0.5.x`, `1.0.x`, and `1.1.x`.
+Packages from prior lines continue to declare their original
+`minHostVersion`. New packages target `1.1.0`. Compatibility fixtures replay
+each supported line through the current contract schemas and Rust host DTOs.
 
 ## Version Negotiation
 
@@ -45,6 +46,7 @@ The base features are:
 - `steward.feedback`
 - `steward.navigation`
 - `steward.preferences`
+- `steward.secrets`
 
 Capability-derived features use stable names such as
 `steward.clipboard.write`, `steward.system.openUrl:https`, and `plugin.data`.
@@ -95,8 +97,9 @@ steward.net.fetch [host=api.example.com;schemes=https;methods=GET;...]
 steward.exec.run [executable=git.exe]
 ```
 
-Private `${dataDir}` access, plugin-private string storage, window-close, and
-navigation lifecycle calls are automatic when declared. Sensitive permissions require an active grant
+Private `${dataDir}` access, plugin-private string storage, window-close,
+navigation lifecycle calls, and plugin-private encrypted secrets are automatic
+when declared. Sensitive permissions require an active grant
 matching plugin ID, publisher key ID, semantic version range, permission, and
 scope. Declaring `steward.*` or any other wildcard host permission is rejected
 for new third-party packages.
@@ -202,6 +205,29 @@ Both calls append payload-free capability audit records with allowed, denied,
 failed, or cancelled outcomes. Request and response bodies, arguments, headers,
 and process output are not copied into audit storage.
 
+## Encrypted Plugin Secrets
+
+The `1.1.0` API adds:
+
+```text
+steward.secrets.get
+steward.secrets.set
+steward.secrets.delete
+steward.secrets.list
+```
+
+Secret values are encrypted with Windows DPAPI for the current user. The
+plugin profile and secret key contribute to DPAPI entropy, so ciphertext copied
+to another secret slot, plugin, or development profile fails closed. Values are
+limited to 2560 bytes, keys to 128 bytes, and each plugin to 64 entries.
+`list()` returns names only. Plaintext values never enter SQLite, the secret
+name index, capability audit rows, or structured logs.
+
+These calls are automatic named capabilities because they only access storage
+owned by the calling plugin. They do not grant access to another plugin's
+credentials, Windows Credential Manager, OAuth brokers, or secret values
+embedded in package files.
+
 ## Presentation And Navigation
 
 The `0.5.0` API adds:
@@ -247,12 +273,15 @@ The current test baseline covers:
   environment, argument limits, output caps, cancellation, and Windows
   process-tree termination;
 - headless Network Check and Git Repositories consumers of the new APIs;
+- headless Network Check and Secret Notes consumers of encrypted secrets,
+  including replacement, deletion, quota rejection, namespace isolation,
+  tampered-ciphertext failure, and non-echoing UI behavior;
 - manifest presentation routing, protocol lifecycle round trips, and host-API
   mode mismatch rejection;
 - headless UI Showcase navigation, title, and visibility mocks;
 - package inspection policy and signed-package lifecycle tests;
-- `0.3.x`, `0.4.x`, and `0.5.x` compatibility fixtures through current contract
-  schemas and Rust request/response DTOs;
+- `0.3.x` through `1.0.x` compatibility fixtures through current contract schemas
+  and Rust request/response DTOs;
 - all API families have quota metadata and stable mappings for disabled,
   revoked, expired, malformed, timed-out, cancelled, and resource-exhausted
   paths;
@@ -265,5 +294,5 @@ Plugins and Steward run under the same Windows user. The child process boundary
 contains crashes and limits host-call reach, but it is not a defense against
 other processes running as that user. API v1 does not expose dynamic search
 providers, background services, cross-plugin IPC, arbitrary WebView/process
-access, raw sockets, general secret storage, binary file I/O, Recycle Bin
+access, raw sockets, shared credential brokers, binary file I/O, Recycle Bin
 operations, or file/clipboard change subscriptions.

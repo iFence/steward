@@ -114,7 +114,7 @@ pnpm install
 ```
 
 模板默认依赖与 Host API 匹配的版本化 SDK tarball，不使用 `workspace:*` 或
-源码路径。离线开发可用 `--sdk "file:D:\artifacts\steward-extension-api-1.0.0.tgz"`
+源码路径。离线开发可用 `--sdk "file:D:\artifacts\steward-extension-api-1.1.0.tgz"`
 指定本地已发布产物。SDK 下载位置、版本矩阵和发布流程见
 [plugin-sdk-distribution.md](plugin-sdk-distribution.md)。
 
@@ -181,7 +181,7 @@ Steward 插件同时需要 `plugin.json` 和 `nsh.json`。两者的插件 ID
   "id": "com.example.my-plugin",
   "name": "My Plugin",
   "version": "0.1.0",
-  "minHostVersion": "1.0.0",
+  "minHostVersion": "1.1.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,

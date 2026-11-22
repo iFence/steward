@@ -525,8 +525,18 @@ function validateContract() {
     contract.stability.minimumSupportedApiVersion,
     "stability.minimumSupportedApiVersion",
   );
-  if (contract.stability.stableSince !== contract.hostApiVersion) {
-    fail("the new stability line must start at the current host API version");
+  const stableSince = compareSemanticVersions(
+    contract.stability.stableSince,
+    contract.hostApiVersion,
+  );
+  if (stableSince > 0) {
+    fail("stability.stableSince cannot be newer than hostApiVersion");
+  }
+  if (
+    semanticVersion(contract.stability.stableSince, "stability.stableSince")[0] !==
+    semanticVersion(contract.hostApiVersion, "hostApiVersion")[0]
+  ) {
+    fail("the current stability line must use the same major version as hostApiVersion");
   }
   if (
     compareSemanticVersions(

@@ -12,7 +12,7 @@ the signed `plugin.nshpkg` referenced by the manifest.
   "id": "it.aspirin.calendar",
   "name": "Calendar",
   "version": "0.1.4",
-  "minHostVersion": "1.0.0",
+  "minHostVersion": "1.1.0",
   "package": "plugin.nshpkg",
   "preferences": {
     "schemaVersion": 1,
@@ -113,6 +113,6 @@ Installation layout:
 Old `permissions`, `fs_roots`, `http`, `isolation`, `detachable`, and JSON View
 fields are rejected.
 
-The current host API is `1.0.0`. Existing official packages may omit
+The current host API is `1.1.0`. Existing official packages may omit
 `minHostVersion` during migration. See
 [plugin-host-api-compatibility.md](plugin-host-api-compatibility.md).

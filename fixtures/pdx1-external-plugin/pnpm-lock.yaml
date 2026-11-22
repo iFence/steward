@@ -9,15 +9,15 @@ importers:
   .:
     dependencies:
       '@steward/extension-api':
-        specifier: file:../../target/sdk/steward-extension-api-1.0.0.tgz
-        version: file:../../target/sdk/steward-extension-api-1.0.0.tgz
+        specifier: file:../../target/sdk/steward-extension-api-1.1.0.tgz
+        version: file:../../target/sdk/steward-extension-api-1.1.0.tgz
 
 packages:
 
-  '@steward/extension-api@file:../../target/sdk/steward-extension-api-1.0.0.tgz':
-    resolution: {integrity: sha512-fvXoEUVvGNdvKd68lFzqJkIW2xdwGQd25HHeRncO1n+g/ALl+I078k4WpamW4VLXn9F8E6EAZ53MtEEbm12K8A==, tarball: file:../../target/sdk/steward-extension-api-1.0.0.tgz}
-    version: 1.0.0
+  '@steward/extension-api@file:../../target/sdk/steward-extension-api-1.1.0.tgz':
+    resolution: {integrity: sha512-HhU7Hxif3V81MSebuPj6+XQYABd4WjB7eCSxTnOh1IEYi+ijEEo9d86J/8jz5wvhTg8sG3UJYqaav2OBLBszkg==, tarball: file:../../target/sdk/steward-extension-api-1.1.0.tgz}
+    version: 1.1.0
 
 snapshots:
 
-  '@steward/extension-api@file:../../target/sdk/steward-extension-api-1.0.0.tgz': {}
+  '@steward/extension-api@file:../../target/sdk/steward-extension-api-1.1.0.tgz': {}

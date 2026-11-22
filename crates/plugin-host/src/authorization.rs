@@ -8,8 +8,9 @@ use steward_plugin_contract::capabilities::{
     CALENDAR_HOLIDAYS, CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM,
     FEEDBACK_PROGRESS, FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ, FS_READ_TEXT,
     FS_WALK, FS_WRITE, FS_WRITE_TEXT, NAVIGATION_BACK, NAVIGATION_CLOSE, NAVIGATION_SET_TITLE,
-    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS,
-    SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, SECRETS_DELETE, SECRETS_GET, SECRETS_LIST,
+    SECRETS_SET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_URL,
+    SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::{CapabilityDescriptor, HostInfo, HOST_API_VERSION};
 use steward_storage::{NewCapabilityAuditEntry, Storage};
@@ -21,6 +22,10 @@ const CURRENT_HOST_CALLS: &[&str] = &[
     CLIPBOARD_WRITE,
     STORAGE_GET,
     STORAGE_SET,
+    SECRETS_GET,
+    SECRETS_SET,
+    SECRETS_DELETE,
+    SECRETS_LIST,
     CALENDAR_HOLIDAYS,
     WINDOW_CLOSE,
     NAVIGATION_BACK,
@@ -799,6 +804,36 @@ mod tests {
             NAVIGATION_SET_TITLE,
         ] {
             assert!(result.granted.host.iter().any(|name| name == feature));
+            assert!(result
+                .authorization
+                .features
+                .iter()
+                .any(|name| name == feature));
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn plugin_private_secret_calls_are_automatic_named_capabilities() {
+        let dir = temp_dir("secrets");
+        let declared = Capabilities::from_json(&serde_json::json!({
+            "host": [SECRETS_GET, SECRETS_SET, SECRETS_DELETE, SECRETS_LIST]
+        }))
+        .unwrap();
+        let result = authorize(
+            &dir,
+            "com.example.test",
+            Some(HOST_API_VERSION),
+            "SHA256:publisher",
+            "1.0.0",
+            Some(&declared),
+        )
+        .unwrap();
+        assert_eq!(
+            result.granted.host,
+            vec![SECRETS_GET, SECRETS_SET, SECRETS_DELETE, SECRETS_LIST]
+        );
+        for feature in [SECRETS_GET, SECRETS_SET, SECRETS_DELETE, SECRETS_LIST] {
             assert!(result
                 .authorization
                 .features
