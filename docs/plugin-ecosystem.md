@@ -2,7 +2,8 @@
 
 > Status: M5 complete. Local package lifecycle, inspection, marketplace
 > indexing, publisher identity, revocation, and automated policy checks are
-> implemented. PC-5 public admission is in progress; see
+> implemented. PC-5/PDX-4 public-admission and ecosystem operations are
+> implemented but launch-gated on clean-VM acceptance; see
 > [plugin-public-admission.md](plugin-public-admission.md).
 
 ## Package Manager
@@ -121,8 +122,10 @@ changed index or artifact cannot bypass trust.
 `marketplace sync` indexes otherwise valid packages for local manual review.
 `marketplace sync --public` applies the stricter public-admission gate and
 rejects any package whose capability declarations need manual review. Accepted
-entries record the admission policy version in the index. This command does not
-enable the hosted public marketplace.
+entries record the admission policy version and full admission report in the
+index. Public synchronization also requires an active registered publisher key
+and filters active quarantine records. This command does not enable the hosted
+public marketplace before clean-VM acceptance.
 
 The Settings > Plugins page uses the same store in a background worker. It
 shows installed packages, signature/trust state, publisher key ID, package
@@ -156,6 +159,13 @@ steward-plugin revoke create .\revocations-2.json `
 The root key is read only for the signing operation and is never written to
 Steward state or logs. Applied revocation lists are validated by NSH before
 being persisted and are also used by every subsequent plugin launch.
+
+Publisher registration, scheduled key rotation, compromise recovery,
+hash-chained operator audit, marketplace quarantine, and quarantine-generated
+root revocation are documented in
+[plugin-operations.md](plugin-operations.md). Public admission reports include
+capability deltas from the previous release and are uploaded by the release
+workflow.
 
 ## Automated Policy Checks
 

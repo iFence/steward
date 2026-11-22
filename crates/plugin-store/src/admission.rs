@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use steward_plugin_contract::HOST_API_VERSION;
+use steward_plugin_contract::{CapabilityDescriptor, HOST_API_VERSION};
 
 use crate::PackageInspection;
 
@@ -15,6 +15,9 @@ pub const PUBLIC_ADMISSION_POLICY_VERSION: u16 = 1;
 pub struct AdmissionReview {
     pub policy_version: u16,
     pub accepted: bool,
+    pub package_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
     pub plugin_id: String,
     pub name: String,
     pub version: String,
@@ -24,7 +27,48 @@ pub struct AdmissionReview {
     pub host_api_version: String,
     pub denied_capabilities: Vec<String>,
     pub capability_groups: Vec<AdmissionCapabilityGroup>,
+    #[serde(default, skip_serializing_if = "AdmissionCapabilityDelta::is_empty")]
+    pub capability_delta: AdmissionCapabilityDelta,
     pub checks: Vec<AdmissionCheck>,
+}
+
+/// Capability changes between two reviewed releases.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdmissionCapabilityDelta {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<CapabilityDescriptor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<CapabilityDescriptor>,
+}
+
+impl AdmissionCapabilityDelta {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+
+    pub fn between(previous: &PackageInspection, current: &PackageInspection) -> Self {
+        let previous = previous
+            .declared_capabilities
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let current_capabilities = current
+            .declared_capabilities
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        Self {
+            added: current_capabilities
+                .difference(&previous)
+                .cloned()
+                .collect(),
+            removed: previous
+                .difference(&current_capabilities)
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 /// Capability declarations grouped for policy-review display.
@@ -46,6 +90,13 @@ pub struct AdmissionCheck {
 }
 
 pub(crate) fn review(inspection: &PackageInspection) -> AdmissionReview {
+    review_with_previous(inspection, None)
+}
+
+pub(crate) fn review_with_previous(
+    inspection: &PackageInspection,
+    previous: Option<&PackageInspection>,
+) -> AdmissionReview {
     let current_host = Version::parse(HOST_API_VERSION).expect("host API version must be semver");
     let required_host = inspection
         .min_host_version
@@ -155,6 +206,8 @@ pub(crate) fn review(inspection: &PackageInspection) -> AdmissionReview {
     AdmissionReview {
         policy_version: PUBLIC_ADMISSION_POLICY_VERSION,
         accepted,
+        package_sha256: inspection.package_sha256.clone(),
+        previous_version: previous.map(|previous| previous.version.clone()),
         plugin_id: inspection.app_id.clone(),
         name: inspection.name.clone(),
         version: inspection.version.clone(),
@@ -164,6 +217,9 @@ pub(crate) fn review(inspection: &PackageInspection) -> AdmissionReview {
         host_api_version: HOST_API_VERSION.into(),
         denied_capabilities: inspection.policy.denied_capabilities.clone(),
         capability_groups: capability_groups(inspection),
+        capability_delta: previous
+            .map(|previous| AdmissionCapabilityDelta::between(previous, inspection))
+            .unwrap_or_default(),
         checks,
     }
 }

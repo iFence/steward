@@ -8,8 +8,9 @@
 > confirmation, and progress APIs are complete. PC-2 scoped filesystem and
 > system-open APIs and PC-3 scoped HTTPS plus controlled execution are also
 > complete. PC-4 managed embedded presentation and navigation are complete.
-> PC-5 public admission is in progress with automated policy review complete;
-> hosted publisher operations and clean-VM acceptance remain open.
+> PC-5/PDX-4 public admission and ecosystem operations are implemented;
+> clean-VM acceptance and production independent-publisher evidence remain
+> open.
 
 ## Invariants
 
@@ -20,8 +21,9 @@
 - The current `plugin.json` schema, launch parameters, and TypeScript helper
   surface remain compatible.
 - The shell never owns a plugin VM.
-- Third-party plugins remain inadmissible until process isolation, resource
-  containment, capability review, and marketplace policy are complete.
+- Public third-party marketplace publishing remains disabled until process
+  isolation, resource containment, capability review, publisher operations,
+  and clean-VM acceptance are complete.
 
 ## Status
 
@@ -35,15 +37,16 @@
 | Phase 4: scoped filesystem and system open (PC-2) | Complete                       |
 | Phase 4: network and controlled execution (PC-3)  | Complete                       |
 | Phase 4: embedded presentation and navigation (PC-4) | Complete                    |
-| Phase 4: third-party marketplace admission (PC-5) | In progress                    |
+| Phase 4: third-party marketplace admission (PC-5) | Implementation complete; acceptance blocked |
 
 M5 local ecosystem infrastructure is complete: package scaffolding,
 inspection UI, staged lifecycle operations, rollback history, a local
 marketplace index, publisher identity, revocation application, and automated
 policy checks. It does not yet admit public third-party publishers into a
-hosted marketplace. Automated public-admission review and strict marketplace
-indexing are implemented; publisher services and clean-VM acceptance remain
-Phase 4 gates.
+live hosted marketplace. Automated public-admission review, strict marketplace
+indexing, publisher registration/key lifecycle, operator audit, quarantine, and
+root-signed revocation responses are implemented; clean-VM and production
+independent-publisher acceptance remain Phase 4 gates.
 
 ## Phase 1: Launch and Diagnostics
 

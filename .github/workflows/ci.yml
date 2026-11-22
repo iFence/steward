@@ -71,6 +71,8 @@ jobs:
         run: pnpm test:pdx1
       - name: developer mode and static reload lifecycle
         run: pnpm test:pdx2
+      - name: ecosystem operations and quarantine lifecycle
+        run: pnpm test:pdx4
       - name: lint
         run: pnpm lint
       - name: format

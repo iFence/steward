@@ -1,8 +1,8 @@
 # Steward Plugin Capability Roadmap
 
-> Status: PC-0 through PC-4 are implemented. PC-5 is in progress on automated
-> public admission, while the clean-VM and hosted-operations gates remain
-> blocked. This document defines a general third-party plugin capability
+> Status: PC-0 through PC-4 are implemented. PC-5/PDX-4 implementation is
+> complete, while the clean-VM and production independent-publisher gates
+> remain blocked. This document defines a general third-party plugin capability
 > roadmap. `git-repos` is one reference workload used to validate the platform,
 > not the boundary of the API design.
 >
@@ -491,9 +491,11 @@ Implementation evidence (2026-11-21):
 
 ### PC-5: Third-Party Admission
 
-Status: in progress. Automated capability review and strict marketplace
-indexing are implemented; public publication remains blocked on the Phase 3
-clean-VM gate and hosted publisher operations.
+Status: implementation complete. Automated capability review, publisher
+registration and key lifecycle, operator audit, quarantine, root-signed
+revocation responses, and release capability deltas are implemented. Public
+publication remains blocked on the Phase 3 clean-VM gate and production
+independent-publisher acceptance.
 
 Deliverables:
 
@@ -518,7 +520,7 @@ Acceptance:
 - The release review clearly documents the remaining same-user security
   boundary.
 
-Implementation progress (2026-11-21):
+Implementation progress (2026-11-22):
 
 - `steward-plugin review` returns a versioned, machine-readable admission
   report with stable `signature`, `trust_chain`, `publisher_identity`,
@@ -535,15 +537,23 @@ Implementation progress (2026-11-21):
 - [plugin-public-admission.md](plugin-public-admission.md) records the current
   permission, update, publisher, revocation, release-gate, and same-user
   boundary.
+- `steward-plugin publisher` registers root-certified release keys, rotates or
+  recovers keys, suspends publishers, and writes a validated hash-chained
+  operator audit.
+- Public marketplace sync and resolution require an active registered publisher
+  and reject active package, plugin/version, release-key, or publisher
+  quarantines. Quarantine-generated NSH revocation lists are root-signed.
+- Public review reports include prior-version capability deltas, and release CI
+  writes and uploads admission reports beside signed archives.
+- Three independent test publishers cover unrelated filesystem, network,
+  process, preference, and navigation declarations without host-side
+  business-specific code.
 
 Remaining PC-5 work:
 
-- hosted publisher registration, key-rotation recovery, dispute handling, and
-  operator audit records;
-- public repository quarantine and revocation operations;
-- external-style validation across at least three domains;
+- production independent-publisher evidence across at least three domains;
 - clean Windows VM acceptance for signed install, update, crash, rollback,
-  revocation, and uninstall.
+  quarantine, revocation, and uninstall.
 
 ## 6. Validation Workloads
 

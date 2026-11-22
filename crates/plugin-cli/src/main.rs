@@ -5,7 +5,8 @@ use anyhow::{Context as _, Result};
 use steward_plugin_store::{
     create_revocation_list, default_developer_data_dir, package_development_project,
     request_development_reload, scaffold_plugin, DevelopmentReloadRequest, PluginOperationKind,
-    PluginStore, PluginStoreConfig, ScaffoldOptions,
+    PluginStore, PluginStoreConfig, PublisherRegistrationRequest, PublisherStatus,
+    QuarantineRequest, QuarantineTarget, ScaffoldOptions,
 };
 
 fn main() {
@@ -379,9 +380,29 @@ fn source_is_newer(project: &Path, package: &Path) -> bool {
 fn review(store: &PluginStore, args: &[String]) -> Result<()> {
     let mut args = args.to_vec();
     let path = positional(&mut args, "plugin source")?;
+    let previous = take_path_option(&mut args, "--previous")?;
+    let output = take_path_option(&mut args, "--output")?;
     let json = take_flag(&mut args, "--json");
     reject_extra(&args)?;
-    let review = store.review(Path::new(&path))?;
+    let review = if let Some(previous) = previous.as_deref() {
+        store.review_with_previous(Path::new(&path), previous)?
+    } else {
+        store.review(Path::new(&path))?
+    };
+    if let Some(output) = output {
+        if let Some(parent) = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        std::fs::write(
+            &output,
+            serde_json::to_vec_pretty(&review).context("serialize admission report")?,
+        )
+        .with_context(|| format!("write {}", output.display()))?;
+    }
     if json {
         print_json(&review)?;
     } else {
@@ -584,6 +605,106 @@ fn marketplace(store: &PluginStore, args: &[String]) -> Result<()> {
                 print_operation(&operation);
             }
         }
+        "quarantines" => {
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let records = store.quarantines()?;
+            if json {
+                print_json(&records)?;
+            } else if records.is_empty() {
+                println!("No marketplace quarantines.");
+            } else {
+                for record in records {
+                    println!(
+                        "{} [{}] {:?} - {} (operator {}, incident {})",
+                        record.id,
+                        status_name(record.status),
+                        record.target,
+                        record.reason,
+                        record.operator,
+                        record.incident_ref.as_deref().unwrap_or("none")
+                    );
+                    if let Some(revocation) = record.revocation {
+                        println!(
+                            "  root-signed revocation sequence {}: {}",
+                            revocation.sequence,
+                            revocation.path.display()
+                        );
+                    }
+                }
+            }
+        }
+        "quarantine" => {
+            let package_sha256 = take_value_option(&mut args, "--package-sha256")?;
+            let plugin_id = take_value_option(&mut args, "--plugin-id")?;
+            let version = take_value_option(&mut args, "--version")?;
+            let key_id = take_value_option(&mut args, "--key-id")?;
+            let publisher_id = take_value_option(&mut args, "--publisher-id")?;
+            let reason = required_option(&mut args, "--reason")?;
+            let operator = required_option(&mut args, "--operator")?;
+            let incident_ref = take_value_option(&mut args, "--incident")?;
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let target =
+                quarantine_target(package_sha256, plugin_id, version, key_id, publisher_id)?;
+            let record = store.create_quarantine(QuarantineRequest::new(
+                target,
+                reason,
+                operator,
+                incident_ref,
+            ))?;
+            if json {
+                print_json(&record)?;
+            } else {
+                println!(
+                    "Quarantined {:?} as {} ({})",
+                    record.target, record.id, record.reason
+                );
+            }
+        }
+        "release-quarantine" => {
+            let quarantine_id = positional(&mut args, "quarantine id")?;
+            let operator = required_option(&mut args, "--operator")?;
+            let reason = required_option(&mut args, "--reason")?;
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let record = store.release_quarantine(&quarantine_id, &operator, &reason)?;
+            if json {
+                print_json(&record)?;
+            } else {
+                println!("Released public marketplace quarantine {quarantine_id}");
+            }
+        }
+        "revoke-quarantine" => {
+            let quarantine_id = positional(&mut args, "quarantine id")?;
+            let output = positional(&mut args, "revocation output")?;
+            let root_key = required_option(&mut args, "--root-key")?;
+            let sequence = required_option(&mut args, "--sequence")?
+                .parse::<u64>()
+                .context("parse --sequence")?;
+            let previous = take_value_option(&mut args, "--previous")?;
+            let operator = required_option(&mut args, "--operator")?;
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let (record, created) = store.revoke_quarantine(
+                &quarantine_id,
+                Path::new(&root_key),
+                previous.as_deref().map(Path::new),
+                sequence,
+                Path::new(&output),
+                &operator,
+            )?;
+            if json {
+                print_json(&record)?;
+            } else {
+                println!(
+                    "Published root-signed revocation sequence {} for {} to {}",
+                    created.sequence,
+                    quarantine_id,
+                    created.path.display()
+                );
+            }
+        }
         other => anyhow::bail!("unknown marketplace action '{other}'"),
     }
     Ok(())
@@ -593,20 +714,129 @@ fn publisher(store: &PluginStore, args: &[String]) -> Result<()> {
     let mut args = args.to_vec();
     let action = positional(&mut args, "publisher action")?;
     match action.as_str() {
+        "register" => {
+            let package = positional(&mut args, "signed package")?;
+            let id = required_option(&mut args, "--id")?;
+            let name = required_option(&mut args, "--name")?;
+            let contact = required_option(&mut args, "--contact")?;
+            let actor = required_option(&mut args, "--operator")?;
+            let mut domains = Vec::new();
+            while let Some(domain) = take_value_option(&mut args, "--domain")? {
+                domains.push(domain);
+            }
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let publisher = store.register_publisher(
+                PublisherRegistrationRequest::new(id, name, contact, domains),
+                Path::new(&package),
+                &actor,
+            )?;
+            if json {
+                print_json(&publisher)?;
+            } else {
+                print_publisher(&publisher);
+            }
+        }
+        "rotate" => {
+            let publisher_id = positional(&mut args, "publisher id")?;
+            let package = required_option(&mut args, "--package")?;
+            let actor = required_option(&mut args, "--operator")?;
+            let reason = required_option(&mut args, "--reason")?;
+            let recovery = take_flag(&mut args, "--recovery");
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let publisher = store.rotate_publisher_key(
+                &publisher_id,
+                Path::new(&package),
+                &actor,
+                &reason,
+                recovery,
+            )?;
+            if json {
+                print_json(&publisher)?;
+            } else {
+                print_publisher(&publisher);
+            }
+        }
+        "revoke-key" => {
+            let publisher_id = positional(&mut args, "publisher id")?;
+            let key_id = required_option(&mut args, "--key-id")?;
+            let actor = required_option(&mut args, "--operator")?;
+            let reason = required_option(&mut args, "--reason")?;
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let publisher = store.revoke_publisher_key(&publisher_id, &key_id, &actor, &reason)?;
+            if json {
+                print_json(&publisher)?;
+            } else {
+                print_publisher(&publisher);
+            }
+        }
+        "status" => {
+            let publisher_id = positional(&mut args, "publisher id")?;
+            let status = parse_publisher_status(&required_option(&mut args, "--status")?)?;
+            let actor = required_option(&mut args, "--operator")?;
+            let reason = required_option(&mut args, "--reason")?;
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let publisher = store.set_publisher_status(&publisher_id, status, &actor, &reason)?;
+            if json {
+                print_json(&publisher)?;
+            } else {
+                print_publisher(&publisher);
+            }
+        }
         "list" => {
             let json = take_flag(&mut args, "--json");
             reject_extra(&args)?;
-            let index = store.marketplace()?;
+            let publishers = store.publishers()?;
             if json {
-                print_json(&index.publishers)?;
-            } else if index.publishers.is_empty() {
-                println!("No marketplace publisher identities.");
+                print_json(&publishers)?;
+            } else if publishers.is_empty() {
+                println!("No publishers registered.");
             } else {
-                for publisher in index.publishers {
+                for publisher in publishers {
                     println!(
-                        "{} ({} package(s))",
-                        publisher.key_id, publisher.package_count
+                        "{} [{}] {} - {}",
+                        publisher.id,
+                        publisher_status_name(publisher.status),
+                        publisher.display_name,
+                        publisher.active_key_id().unwrap_or("no active release key")
                     );
+                }
+            }
+        }
+        "show" => {
+            let publisher_id = positional(&mut args, "publisher id")?;
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let publisher = store.publisher(&publisher_id)?;
+            if json {
+                print_json(&publisher)?;
+            } else {
+                print_publisher(&publisher);
+            }
+        }
+        "audit" => {
+            let json = take_flag(&mut args, "--json");
+            reject_extra(&args)?;
+            let records = store.operator_audit()?;
+            if json {
+                print_json(&records)?;
+            } else if records.is_empty() {
+                println!("No operator audit records.");
+            } else {
+                for record in records {
+                    println!(
+                        "#{} {} {} {} {} - {}",
+                        record.sequence,
+                        record.recorded_at,
+                        record.actor,
+                        record.action,
+                        record.subject,
+                        record.detail
+                    );
+                    println!("  hash: {}", record.hash);
                 }
             }
         }
@@ -785,6 +1015,24 @@ fn print_admission_review(review: &steward_plugin_store::AdmissionReview) {
             review.denied_capabilities.join(", ")
         );
     }
+    if let Some(previous) = &review.previous_version {
+        println!("  capability delta from {previous}:");
+        if review.capability_delta.is_empty() {
+            println!("    no declaration changes");
+        }
+        for capability in &review.capability_delta.added {
+            println!(
+                "    added {} [{}] - {}",
+                capability.permission, capability.scope, capability.description
+            );
+        }
+        for capability in &review.capability_delta.removed {
+            println!(
+                "    removed {} [{}]",
+                capability.permission, capability.scope
+            );
+        }
+    }
     println!("  checks:");
     for check in &review.checks {
         println!(
@@ -793,6 +1041,101 @@ fn print_admission_review(review: &steward_plugin_store::AdmissionReview) {
             check.code,
             check.detail
         );
+    }
+}
+
+fn print_publisher(publisher: &steward_plugin_store::PublisherRecord) {
+    println!(
+        "{} [{}] {}",
+        publisher.id,
+        publisher_status_name(publisher.status),
+        publisher.display_name
+    );
+    println!("  contact: {}", publisher.contact);
+    println!("  domains: {}", publisher.domains.join(", "));
+    println!("  release keys:");
+    for key in &publisher.keys {
+        println!(
+            "    {} [{}]{}",
+            key.key_id,
+            key_status_name(key.status),
+            key.reason
+                .as_deref()
+                .map(|reason| format!(" - {reason}"))
+                .unwrap_or_default()
+        );
+    }
+}
+
+fn quarantine_target(
+    package_sha256: Option<String>,
+    plugin_id: Option<String>,
+    version: Option<String>,
+    key_id: Option<String>,
+    publisher_id: Option<String>,
+) -> Result<QuarantineTarget> {
+    let selectors = [
+        package_sha256.is_some(),
+        plugin_id.is_some(),
+        key_id.is_some(),
+        publisher_id.is_some(),
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if selectors != 1 {
+        anyhow::bail!(
+            "quarantine requires exactly one of --package-sha256, --plugin-id, --key-id, or --publisher-id"
+        );
+    }
+    if version.is_some() && plugin_id.is_none() {
+        anyhow::bail!("--version can only be used with --plugin-id");
+    }
+    if let Some(package_sha256) = package_sha256 {
+        return Ok(QuarantineTarget::Package { package_sha256 });
+    }
+    if let Some(plugin_id) = plugin_id {
+        return Ok(QuarantineTarget::Plugin { plugin_id, version });
+    }
+    if let Some(key_id) = key_id {
+        return Ok(QuarantineTarget::ReleaseKey { key_id });
+    }
+    Ok(QuarantineTarget::Publisher {
+        publisher_id: publisher_id.expect("publisher selector checked"),
+    })
+}
+
+fn parse_publisher_status(value: &str) -> Result<PublisherStatus> {
+    match value {
+        "active" => Ok(PublisherStatus::Active),
+        "suspended" => Ok(PublisherStatus::Suspended),
+        "revoked" => Ok(PublisherStatus::Revoked),
+        _ => anyhow::bail!(
+            "unknown publisher status '{value}'; expected active, suspended, or revoked"
+        ),
+    }
+}
+
+fn publisher_status_name(status: PublisherStatus) -> &'static str {
+    match status {
+        PublisherStatus::Active => "active",
+        PublisherStatus::Suspended => "suspended",
+        PublisherStatus::Revoked => "revoked",
+    }
+}
+
+fn key_status_name(status: steward_plugin_store::PublisherKeyStatus) -> &'static str {
+    match status {
+        steward_plugin_store::PublisherKeyStatus::Active => "active",
+        steward_plugin_store::PublisherKeyStatus::Retired => "retired",
+        steward_plugin_store::PublisherKeyStatus::Revoked => "revoked",
+    }
+}
+
+fn status_name(status: steward_plugin_store::QuarantineStatus) -> &'static str {
+    match status {
+        steward_plugin_store::QuarantineStatus::Active => "active",
+        steward_plugin_store::QuarantineStatus::Released => "released",
     }
 }
 
@@ -929,7 +1272,8 @@ Commands:
       [--package <relative-path>] [--entry <relative-path>]
       [--signing-key <path>] [--signing-cert <path>]
       [--no-build] [--no-open] [--reload static]
-  steward-plugin review <zip-or-dir> [--json]
+  steward-plugin review <zip-or-dir> [--previous <zip-or-dir>]
+      [--output <report.json>] [--json]
   steward-plugin list [--json]
   steward-plugin install <zip-or-dir> [--json]
   steward-plugin update <zip-or-dir> [--json]
@@ -939,7 +1283,28 @@ Commands:
   steward-plugin marketplace list [--json]
   steward-plugin marketplace install <plugin-id> [--json]
   steward-plugin marketplace update <plugin-id> [--json]
+  steward-plugin marketplace quarantine [--package-sha256 <hex> |
+      --plugin-id <id> [--version <semver>] | --key-id <id> |
+      --publisher-id <id>] --reason <text> --operator <identity>
+      [--incident <reference>] [--json]
+  steward-plugin marketplace quarantines [--json]
+  steward-plugin marketplace release-quarantine <quarantine-id>
+      --operator <identity> --reason <text> [--json]
+  steward-plugin marketplace revoke-quarantine <quarantine-id> <output.json>
+      --root-key <offline-root-key> --sequence <n> [--previous <path>]
+      --operator <identity> [--json]
+  steward-plugin publisher register <signed-package> --id <id> --name <name>
+      --contact <value> --domain <domain> --operator <identity> [--json]
+  steward-plugin publisher rotate <publisher-id> --package <signed-package>
+      --operator <identity> --reason <text> [--recovery] [--json]
+  steward-plugin publisher revoke-key <publisher-id> --key-id <id>
+      --operator <identity> --reason <text> [--json]
+  steward-plugin publisher status <publisher-id>
+      --status active|suspended|revoked --operator <identity>
+      --reason <text> [--json]
   steward-plugin publisher list [--json]
+  steward-plugin publisher show <publisher-id> [--json]
+  steward-plugin publisher audit [--json]
   steward-plugin publisher inspect <zip-or-dir> [--json]
   steward-plugin revoke apply <revocations.json> [--json]
   steward-plugin revoke create <output.json> --root-key <path> --sequence <n>
@@ -948,6 +1313,8 @@ Commands:
 Local marketplace packages are placed in
 <data-dir>/marketplace/packages/*.zip and indexed with `marketplace sync`.
 Use `marketplace sync --public` to apply the stricter public-admission policy.
+Public synchronization requires a registered, active publisher key. Publisher
+operations are recorded in a tamper-evident operator audit chain.
 "#
     );
 }

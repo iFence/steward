@@ -1,7 +1,8 @@
 # Steward Plugin API Next Milestones
 
-> Status: PDX-0 through PDX-3 complete. PDX-1 and PDX-3 SDK artifacts will be
-> attached by the next tagged release. Current baseline is the stable
+> Status: PDX-0 through PDX-4 implementation complete. PDX-4 public launch is
+> blocked on clean-Windows-VM and production-publisher acceptance. PDX-1 and
+> PDX-3 SDK artifacts will be attached by the next tagged release. Current baseline is the stable
 > command-oriented `1.0.0` plugin host API in
 > [plugin-capability-roadmap.md](plugin-capability-roadmap.md), with the
 > `runProcess` request-ID mismatch repaired on 2026-11-22.
@@ -238,34 +239,57 @@ Evidence:
 
 ## PDX-4: Third-Party Admission And Ecosystem Operations
 
-Status: planned. Depends on PDX-3 and the Phase 3 clean-VM gate.
+Status: implementation complete and CI-gated on 2026-11-22. Public marketplace
+launch remains blocked on the Phase 3 clean-Windows-VM gate and production
+evidence from independent publishers. Depends on PDX-3.
 
 Objective: accept external packages into a public distribution channel with
 auditable publisher and revocation operations.
 
 ### Required Work
 
-- PDX-4.1: validate plugins from at least three independent publishers and
-  unrelated domains outside the Steward monorepo;
-- PDX-4.2: complete clean-Windows-VM acceptance for signed install, update,
+- [ ] PDX-4.1: validate plugins from at least three independent publishers and
+      unrelated domains outside the Steward monorepo;
+- [ ] PDX-4.2: complete clean-Windows-VM acceptance for signed install, update,
   crash containment, rollback, revocation, and uninstall;
-- PDX-4.3: implement hosted publisher registration, release-key rotation,
-  recovery, and operator audit records;
-- PDX-4.4: implement public marketplace quarantine and root-signed revocation
-  operations with defined ownership and incident procedures;
-- PDX-4.5: require public admission reports and capability deltas in release
-  review;
-- PDX-4.6: publish support expectations, security reporting, and publisher
-  dispute procedures.
+- [x] PDX-4.3: implement hosted publisher registration, release-key rotation,
+      recovery, and operator audit records;
+- [x] PDX-4.4: implement public marketplace quarantine and root-signed revocation
+      operations with defined ownership and incident procedures;
+- [x] PDX-4.5: require public admission reports and capability deltas in release
+      review;
+- [x] PDX-4.6: publish support expectations, security reporting, and publisher
+      dispute procedures.
+
+Evidence:
+
+- `steward-plugin publisher register|rotate|revoke-key|status|audit` persists
+  registered publishers, root-certified release keys, recovery state, and a
+  hash-chained operator audit;
+- public marketplace synchronization and resolution require an active
+  registered publisher key and recheck active quarantines;
+- package, plugin/version, release-key, and publisher quarantines can produce a
+  root-signed NSH revocation response and record the incident decision;
+- public admission reports include package identity, stable checks, capability
+  groups, prior version, and added/removed capability declarations; release CI
+  writes and uploads those reports;
+- `pnpm test:pdx4` covers three independent publishers and domains, unrelated
+  filesystem/network/process/preference capability declarations, key rotation
+  isolation, recovery, quarantine filtering, and root revocation;
+- [plugin-operations.md](plugin-operations.md),
+  [plugin-support-policy.md](plugin-support-policy.md), and
+  [SECURITY.md](../SECURITY.md) define ownership, support, incident, security
+  reporting, and dispute procedures.
 
 ### Acceptance Gate
 
-- all clean-VM lifecycle scenarios pass with production-signed artifacts;
-- independent plugins exercise filesystem, network, process, preferences, and
-  navigation capabilities without host-side business-specific code;
-- a publisher key can be rotated or revoked without breaking unrelated
-  publishers;
-- a bad package can be quarantined and revoked from the public channel.
+- [ ] all clean-VM lifecycle scenarios pass with production-signed artifacts;
+- [ ] production independent plugins exercise filesystem, network, process,
+      preferences, and navigation capabilities without host-side
+      business-specific code;
+- [x] a publisher key can be rotated or revoked without breaking unrelated
+      publishers;
+- [x] a bad package can be quarantined and revoked from the public channel.
 
 ## PDX-5: Deferred Capability Expansion
 
@@ -296,10 +320,11 @@ Each candidate requires:
 
 ## Immediate Work Queue
 
-1. Attach the PDX-1/PDX-3 `1.0.0` SDK artifact and checksum to the next tagged
+1. Run the PDX-4 clean-Windows-VM and production-publisher acceptance matrix.
+2. Attach the PDX-1/PDX-3 `1.0.0` SDK artifact and checksum to the next tagged
    Steward release, then verify the documented public download on a clean
    Windows environment.
-2. Run the PDX-2 developer workflow on a clean Windows VM with the released app
+3. Run the PDX-2 developer workflow on a clean Windows VM with the released app
    and SDK before inviting external beta testers.
 
 ## Non-Goals For This Stage

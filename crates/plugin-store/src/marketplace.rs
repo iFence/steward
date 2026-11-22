@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::admission::{self, PUBLIC_ADMISSION_POLICY_VERSION};
 use crate::archive::sha256_file;
+use crate::operations;
+use crate::PackageInspection;
 use crate::{
     atomic_write, safe_relative_path, unix_seconds, PluginStore, MARKETPLACE_SCHEMA_VERSION,
 };
@@ -22,9 +24,13 @@ pub struct MarketplaceEntry {
     pub artifact_sha256: String,
     pub package_sha256: String,
     pub publisher_key_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_id: Option<String>,
     pub review_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission_policy_version: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<admission::AdmissionReview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,7 +107,7 @@ pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<Market
     std::fs::create_dir_all(&packages_dir)
         .with_context(|| format!("create {}", packages_dir.display()))?;
     let mut errors = Vec::new();
-    let mut candidates = BTreeMap::<(String, String), MarketplaceEntry>::new();
+    let mut candidates = BTreeMap::<(String, String), (MarketplaceEntry, PackageInspection)>::new();
     let mut publishers = BTreeSet::new();
     let mut scanned = 0;
     let entries = std::fs::read_dir(&packages_dir)
@@ -155,6 +161,24 @@ pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<Market
                 ));
                 continue;
             }
+            let publisher_key_id = inspection.publisher_key_id.as_deref().unwrap_or_default();
+            if operations::authorized_publisher(store, publisher_key_id)?.is_none() {
+                errors.push(format!(
+                    "{}: public marketplace publisher key '{}' is not registered and active",
+                    path.display(),
+                    publisher_key_id
+                ));
+                continue;
+            }
+            if let Some(quarantine) = operations::package_quarantined(store, &inspection)? {
+                errors.push(format!(
+                    "{}: package is quarantined by '{}' ({})",
+                    path.display(),
+                    quarantine.id,
+                    quarantine.reason
+                ));
+                continue;
+            }
         }
         let file_name = path
             .file_name()
@@ -166,6 +190,12 @@ pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<Market
             .to_string_lossy()
             .replace('\\', "/");
         let publisher_key_id = inspection.publisher_key_id.clone().unwrap_or_default();
+        let publisher_id = if public_admission {
+            operations::authorized_publisher(store, &publisher_key_id)?
+                .map(|publisher| publisher.id)
+        } else {
+            None
+        };
         let candidate = MarketplaceEntry {
             id: inspection.app_id.clone(),
             name: inspection.name.clone(),
@@ -173,14 +203,16 @@ pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<Market
             build: inspection.build,
             artifact: display,
             artifact_sha256: sha256_file(&path)?,
-            package_sha256: inspection.package_sha256,
+            package_sha256: inspection.package_sha256.clone(),
             publisher_key_id: publisher_key_id.clone(),
+            publisher_id,
             review_required: !public_admission && !inspection.policy.warnings.is_empty(),
             admission_policy_version: public_admission.then_some(PUBLIC_ADMISSION_POLICY_VERSION),
+            admission: public_admission.then(|| admission::review(&inspection)),
         };
         let key = (candidate.id.clone(), candidate.version.clone());
         if let Some(existing) = candidates.get(&key) {
-            if existing.package_sha256 != candidate.package_sha256 {
+            if existing.0.package_sha256 != candidate.package_sha256 {
                 errors.push(format!(
                     "{}: duplicate plugin {} {} with a different package hash",
                     file_name, candidate.id, candidate.version
@@ -189,10 +221,45 @@ pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<Market
             }
         }
         publishers.insert(publisher_key_id);
-        candidates.insert(key, candidate);
+        candidates.insert(key, (candidate, inspection));
     }
 
-    let mut entries = candidates.into_values().collect::<Vec<_>>();
+    if public_admission {
+        let keys = candidates.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            let current = candidates
+                .get(&key)
+                .expect("marketplace candidate key exists");
+            let previous = candidates
+                .iter()
+                .filter(|(candidate_key, (entry, inspection))| {
+                    candidate_key.0 == key.0
+                        && entry
+                            .admission
+                            .as_ref()
+                            .is_some_and(|review| review.accepted)
+                        && inspection.version != current.1.version
+                        && compare_versions(&inspection.version, &current.1.version)
+                            == std::cmp::Ordering::Less
+                })
+                .max_by(|(_, (left_entry, _)), (_, (right_entry, _))| {
+                    compare_versions(&left_entry.version, &right_entry.version)
+                })
+                .map(|(_, (_, inspection))| inspection.clone());
+            if let Some(previous) = previous.as_ref() {
+                let candidate = candidates.get_mut(&key).expect("candidate exists");
+                candidate.0.admission = Some(admission::review_with_previous(
+                    &candidate.1,
+                    Some(previous),
+                ));
+            }
+        }
+    }
+
+    let mut entries = candidates
+        .into_values()
+        .map(|(entry, _)| entry)
+        .collect::<Vec<_>>();
     entries.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
@@ -249,6 +316,22 @@ pub(crate) fn resolve(store: &PluginStore, plugin_id: &str) -> Result<(PathBuf, 
             "marketplace artifact hash does not match its index entry: {}",
             artifact.display()
         );
+    }
+    if entry.admission_policy_version.is_some() {
+        let inspection = store.inspect(&artifact)?;
+        let key_id = inspection.publisher_key_id.as_deref().unwrap_or_default();
+        if operations::authorized_publisher(store, key_id)?.is_none() {
+            anyhow::bail!(
+                "public marketplace publisher key '{key_id}' is not registered and active"
+            );
+        }
+        if let Some(quarantine) = operations::package_quarantined(store, &inspection)? {
+            anyhow::bail!(
+                "public marketplace package is quarantined by '{}' ({})",
+                quarantine.id,
+                quarantine.reason
+            );
+        }
     }
     Ok((artifact, entry))
 }

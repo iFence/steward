@@ -158,3 +158,23 @@ command declares `presentation: "embedded"`.
 | P4-A08 | Activation | Switching away and back does not create another window or process; the launcher stays hidden while the embedded page is active. |
 | P4-A09 | Process isolation | A crash or forced exit in an embedded plugin leaves the launcher, tray, hotkey, and other plugins alive; no embedded request gains in-shell execution. |
 | P4-A10 | Mode validation | Changing the launch mode without changing the signed manifest fails before package verification. |
+
+## PDX-4 Public Admission Acceptance
+
+Run this matrix on a clean Windows 11 23H2+ x64 VM with production-signed
+archives from at least three independent publishers and unrelated domains. Keep
+the VM image identifier, executable and archive hashes, admission reports,
+operator audit export, incident IDs, and revocation sequence with the evidence.
+
+| ID | Check | Pass criteria |
+|---|---|---|
+| PDX4-A01 | Publisher registration | Three independent root-certified release keys register under separate publishers/domains; duplicate IDs and cross-publisher key reuse fail |
+| PDX4-A02 | Public admission | Every accepted archive has an admission report with stable checks and a capability delta from its prior build |
+| PDX4-A03 | Lifecycle | Production-signed install, update, crash containment, rollback, and uninstall pass with no shell, tray, hotkey, or cross-plugin regression |
+| PDX4-A04 | Key isolation | Rotate or recover one publisher key; unrelated publisher keys and packages remain active and resolvable |
+| PDX4-A05 | Quarantine | Quarantine a bad package; public sync and resolution remove it even when an older index entry remains |
+| PDX4-A06 | Revocation | Publish and apply the quarantine-generated root-signed revocation response; the bad package fails inspection and launch |
+| PDX4-A07 | Recovery | Release a false-positive quarantine and verify audit history remains intact; install a newly signed forward build after key recovery |
+| PDX4-A08 | Capability domains | The independent packages exercise scoped filesystem, network, controlled process, preferences, and navigation without host-side business-specific code |
+
+PDX-4 remains blocked until every row passes on the acceptance VM.

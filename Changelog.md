@@ -12,6 +12,16 @@ Conventions:
 
 ### Plugin Ecosystem
 
+- **Publisher and marketplace operations**: public-marketplace operators can
+  register root-certified publishers, rotate or recover release keys without
+  affecting unrelated publishers, and inspect a tamper-evident operator audit.
+  Exact packages, plugin versions, release keys, or publishers can be
+  quarantined; public sync and installation recheck quarantine state, and an
+  incident can produce a root-signed NSH revocation response.
+- **Release admission evidence**: `steward-plugin review` can compare a release
+  with its predecessor and write a machine-readable report containing stable
+  checks and capability additions/removals. The release workflow uploads these
+  reports beside the signed plugin archives.
 - **Developer loop**: new isolated developer mode runs alongside the installed
   app with its own data, plugins, trust roots, and instance lock. Settings can
   install local ZIPs or package folders, reload a plugin from its static

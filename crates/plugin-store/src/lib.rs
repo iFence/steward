@@ -9,6 +9,7 @@ mod archive;
 mod developer;
 mod doctor;
 mod marketplace;
+mod operations;
 mod package;
 mod revocation;
 mod scaffold;
@@ -23,7 +24,8 @@ use steward_plugin_contract::CapabilityDescriptor;
 use steward_plugin_registry::PluginManifest;
 
 pub use admission::{
-    AdmissionCapabilityGroup, AdmissionCheck, AdmissionReview, PUBLIC_ADMISSION_POLICY_VERSION,
+    AdmissionCapabilityDelta, AdmissionCapabilityGroup, AdmissionCheck, AdmissionReview,
+    PUBLIC_ADMISSION_POLICY_VERSION,
 };
 pub use developer::{
     default_developer_data_dir, package_development_project, request_development_reload,
@@ -32,6 +34,11 @@ pub use developer::{
 pub use doctor::{DoctorCheck, DoctorReport, DoctorStage};
 pub use marketplace::{
     MarketplaceEntry, MarketplaceIndex, MarketplacePublisher, MarketplaceSyncReport,
+};
+pub use operations::{
+    OperatorAuditRecord, PublisherKeyRecord, PublisherKeyStatus, PublisherRecord,
+    PublisherRegistrationRequest, PublisherStatus, QuarantineRecord, QuarantineRequest,
+    QuarantineRevocation, QuarantineStatus, QuarantineTarget, OPERATIONS_SCHEMA_VERSION,
 };
 pub use package::{PackageInspection, PackagePolicyReport};
 pub use revocation::{
@@ -194,6 +201,30 @@ impl PluginStore {
         Ok(admission::review(&self.inspect(path)?))
     }
 
+    pub fn review_with_previous(&self, path: &Path, previous: &Path) -> Result<AdmissionReview> {
+        let current = self.inspect(path)?;
+        let previous = self.inspect(previous)?;
+        if current.app_id != previous.app_id {
+            anyhow::bail!(
+                "previous release plugin '{}' does not match current plugin '{}'",
+                previous.app_id,
+                current.app_id
+            );
+        }
+        let current_version =
+            semver::Version::parse(&current.version).context("parse current plugin version")?;
+        let previous_version =
+            semver::Version::parse(&previous.version).context("parse previous plugin version")?;
+        if previous_version >= current_version {
+            anyhow::bail!(
+                "previous plugin version {} must be older than current version {}",
+                previous.version,
+                current.version
+            );
+        }
+        Ok(admission::review_with_previous(&current, Some(&previous)))
+    }
+
     pub fn install(&self, path: &Path) -> Result<PluginOperation> {
         store::install(
             self,
@@ -298,6 +329,102 @@ impl PluginStore {
             marketplace_errors,
             revocations: self.applied_revocations().ok().flatten(),
         }
+    }
+
+    pub fn register_publisher(
+        &self,
+        request: PublisherRegistrationRequest,
+        signed_package: &Path,
+        actor: &str,
+    ) -> Result<PublisherRecord> {
+        operations::register_publisher(self, request, signed_package, actor)
+    }
+
+    pub fn rotate_publisher_key(
+        &self,
+        publisher_id: &str,
+        signed_package: &Path,
+        actor: &str,
+        reason: &str,
+        recovery: bool,
+    ) -> Result<PublisherRecord> {
+        operations::rotate_publisher_key(
+            self,
+            publisher_id,
+            signed_package,
+            actor,
+            reason,
+            recovery,
+        )
+    }
+
+    pub fn revoke_publisher_key(
+        &self,
+        publisher_id: &str,
+        key_id: &str,
+        actor: &str,
+        reason: &str,
+    ) -> Result<PublisherRecord> {
+        operations::revoke_publisher_key(self, publisher_id, key_id, actor, reason)
+    }
+
+    pub fn set_publisher_status(
+        &self,
+        publisher_id: &str,
+        status: PublisherStatus,
+        actor: &str,
+        reason: &str,
+    ) -> Result<PublisherRecord> {
+        operations::set_publisher_status(self, publisher_id, status, actor, reason)
+    }
+
+    pub fn publishers(&self) -> Result<Vec<PublisherRecord>> {
+        operations::publishers(self)
+    }
+
+    pub fn publisher(&self, publisher_id: &str) -> Result<PublisherRecord> {
+        operations::publisher(self, publisher_id)
+    }
+
+    pub fn operator_audit(&self) -> Result<Vec<OperatorAuditRecord>> {
+        operations::operator_audit(self)
+    }
+
+    pub fn create_quarantine(&self, request: QuarantineRequest) -> Result<QuarantineRecord> {
+        operations::create_quarantine(self, request)
+    }
+
+    pub fn quarantines(&self) -> Result<Vec<QuarantineRecord>> {
+        operations::quarantines(self)
+    }
+
+    pub fn release_quarantine(
+        &self,
+        quarantine_id: &str,
+        operator: &str,
+        reason: &str,
+    ) -> Result<QuarantineRecord> {
+        operations::release_quarantine(self, quarantine_id, operator, reason)
+    }
+
+    pub fn revoke_quarantine(
+        &self,
+        quarantine_id: &str,
+        root_key_path: &Path,
+        previous: Option<&Path>,
+        sequence: u64,
+        output: &Path,
+        operator: &str,
+    ) -> Result<(QuarantineRecord, CreatedRevocationList)> {
+        operations::revoke_quarantine(
+            self,
+            quarantine_id,
+            root_key_path,
+            previous,
+            sequence,
+            output,
+            operator,
+        )
     }
 
     pub fn apply_revocations(&self, path: &Path) -> Result<AppliedRevocations> {

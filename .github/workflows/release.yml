@@ -195,6 +195,7 @@ jobs:
           name: steward-plugins
           path: |
             target/plugins/*.zip
+            target/plugins/admission/*.json
             target/plugins/SHA256SUMS-plugins.txt
           if-no-files-found: error
 

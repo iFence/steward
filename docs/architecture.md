@@ -380,14 +380,18 @@ hashes, version/build, and publisher key ID, but package trust is always checked
 again when it is installed. Root-signed NSH revocation lists can be applied to
 the same persistent trust store used by plugin launch.
 
-PC-5 adds a versioned public-admission review over the same inspection result.
-It requires a trusted publisher, compatible host API, successful release policy,
-and named capability declarations with no manual-review warnings.
-`marketplace sync --public` uses that gate before writing an index; local sync
-continues to surface review-required entries for development. The public
-marketplace and publisher registration service are not enabled yet. See
+PC-5/PDX-4 adds a versioned public-admission review over the same inspection
+result. It requires a trusted publisher, compatible host API, successful release
+policy, and named capability declarations with no manual-review warnings.
+`marketplace sync --public` also requires an active registered publisher key and
+applies active quarantines before writing an index; local sync continues to
+surface review-required entries for development. Publisher registration, key
+rotation/recovery, the hash-chained operator audit, quarantine, and root-signed
+revocation responses are implemented, while public launch remains gated on
+clean-VM and production independent-publisher acceptance. See
 [plugin-ecosystem.md](plugin-ecosystem.md) and
-[plugin-public-admission.md](plugin-public-admission.md).
+[plugin-public-admission.md](plugin-public-admission.md), with operating roles in
+[plugin-operations.md](plugin-operations.md).
 
 ## Verification and Operations
 

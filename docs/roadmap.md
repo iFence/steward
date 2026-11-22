@@ -16,7 +16,7 @@ release gates live in [nsh-migration.md](nsh-migration.md).
 | Windows support polish (M4)             | blocked: clean-VM and interactive IME/display acceptance |
 | Plugin ecosystem v1 (M5)                | complete                                                 |
 | Plugin capability layer (PC-0 to PC-4)  | complete                                                 |
-| Public third-party admission (PC-5)     | in progress; blocked on clean-VM and hosted operations   |
+| Public third-party admission (PC-5)     | implementation complete; blocked on clean-VM/production   |
 | AI capability and MCP layers (M6-M8)    | planned                                                  |
 | External runtime compatibility (M9-M10) | later                                                    |
 
@@ -169,8 +169,9 @@ adapters or sidecars. They must not add a permanent Node runtime to the shell.
 3. Complete PC-3 network, controlled process execution, and cross-domain
    validation. (Done)
 4. Complete PC-4 embedded presentation and navigation. (Done)
-5. Complete PC-5 automated admission, publisher operations, cross-domain
-   validation, and clean-VM acceptance.
+5. Complete PC-5/PDX-4 clean-VM and production independent-publisher
+   acceptance. Automated admission, publisher operations, quarantine, root
+   revocation responses, and cross-domain fixtures are implemented.
 6. Improve plugin authoring and package management.
 7. Add AI-callable capabilities with explicit consent and diagnostics.
 8. Add MCP and external ecosystem adapters only where they preserve the

@@ -4,9 +4,10 @@
 > on clean-VM and production-artifact acceptance. M4 implementation is complete
 > and blocked on the clean-VM, mixed-DPI, and real-IME acceptance run. M5 plugin
 > ecosystem v1 is complete. Plugin capability milestones PC-0 through PC-4 are
-> complete. PC-5 public third-party admission is in progress; automated policy
-> review is implemented, while hosted publisher operations and the clean-VM
-> gate remain blocked.
+> complete. PC-5/PDX-4 implementation is complete; automated policy review,
+> publisher operations, quarantine, audit, and revocation responses are
+> implemented, while clean-VM and production-publisher acceptance remain
+> blocked.
 >
 > This is the canonical migration plan, decision record, and release ledger.
 > Milestone changes must update this file with the changed files, verification
@@ -875,7 +876,7 @@ Design decision:
   zero-hidden-VM invariant. A true single-window renderer remains a separate
   architecture change.
 
-### PC-5: Third-Party Admission (in progress)
+### PC-5: Third-Party Admission (implementation complete)
 
 Files:
 
@@ -903,6 +904,13 @@ Delivered:
 - [x] Packaging and benchmark scripts accept manifest schema v2 and v3.
 - [x] The admission policy, publisher/revocation process, update-consent
       expectations, release gate, and same-user boundary are documented.
+- [x] PDX-4 publisher registration, rotation, recovery, status, key revocation,
+      operator audit, marketplace quarantine, and root-signed revocation
+      responses are implemented.
+- [x] Public admission reports carry prior-version capability deltas; release CI
+      writes and uploads reports beside signed archives.
+- [x] Three independent publisher/domain fixtures exercise unrelated
+      filesystem, network, process, preference, and navigation declarations.
 
 Local verification (2026-11-21):
 
@@ -921,13 +929,10 @@ Local verification (2026-11-21):
 
 Remaining blocked:
 
-- Hosted publisher registration, key-rotation recovery, disputes, operator
-  audit, repository quarantine, and public marketplace operations are not
-  implemented.
 - Clean-Windows-VM signed install, update, crash, rollback, revocation, and
   uninstall acceptance has not run.
-- External-style plugins from at least three domains remain required before
-  public admission.
+- Production independent-publisher evidence from at least three domains remains
+  required before public admission.
 
 ### PDX-3: Public API v1 Hardening (2026-11-22, complete)
 
@@ -959,6 +964,41 @@ Delivered:
       capabilities intentionally left outside API v1.
 - [x] A future `minHostVersion` fails before package runtime with the stable
       `feature_unavailable` launch category.
+
+### PDX-4: Ecosystem Operations (2026-11-22, implementation complete)
+
+Files:
+
+- `crates/plugin-store/src/{operations.rs,admission.rs,marketplace.rs,lib.rs}`
+- `crates/plugin-store/tests/store.rs`
+- `crates/plugin-cli/src/main.rs`
+- `scripts/{test-pdx4-operations.ps1,check-plugin-policies.ps1}`
+- `.github/workflows/{ci.yml,release.yml}`
+- `docs/{plugin-operations.md,plugin-support-policy.md,plugin-public-admission.md}`
+- `SECURITY.md`
+
+Delivered:
+
+- [x] Root-certified publisher registration, scheduled key rotation,
+      compromise recovery, publisher status, key revocation, and a
+      hash-validated operator audit chain.
+- [x] Public marketplaces require active registered keys and recheck package,
+      plugin/version, release-key, and publisher quarantines during both sync
+      and resolution.
+- [x] Quarantine records produce root-signed NSH package or key revocations
+      without reading the offline root into Steward state.
+- [x] Admission reports include package identity, stable checks, capability
+      groups, previous release, and added/removed capabilities. Release CI
+      writes and uploads the reports.
+- [x] Support expectations, private security reporting, publisher disputes,
+      ownership, and incident procedures are documented.
+
+Remaining acceptance:
+
+- Clean-Windows-VM install, update, crash, rollback, quarantine, revocation,
+  reinstall, and uninstall evidence with production-signed artifacts.
+- Production plugins from at least three independent publishers/domains that
+  exercise the shared capability families on the acceptance VM.
 
 ## Verification Commands
 
