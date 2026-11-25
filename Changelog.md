@@ -121,6 +121,8 @@ Conventions:
 - **General settings layout**: General settings now aligns titles and controls
   on opposite sides and separates each item with a subtle divider and roomier
   vertical spacing.
+- **Plugin settings header**: the Plugins page no longer shows the redundant
+  management summary above its actions and installed-plugin details.
 - **Redesigned About page**: Settings > About now has a centered brand
   presentation, a compact updates card with progress and release notes, and a
   direct changelog link.

@@ -24,7 +24,6 @@ settings-theme-jade = Нефрит
 settings-theme-rose = Роза
 settings-theme-amber = Янтарь
 settings-plugins = Плагины
-settings-plugins-description = Управление установленными плагинами, разрешениями, пользовательскими доступами, подписями, издателями, пакетами локального магазина и историей отката.
 settings-plugin-capabilities = Разрешения
 settings-plugin-no-capabilities = Разрешения не объявлены.
 settings-plugin-capability-automatic = Автоматически

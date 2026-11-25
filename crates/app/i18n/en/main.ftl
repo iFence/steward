@@ -24,7 +24,6 @@ settings-theme-jade = Jade
 settings-theme-rose = Rose
 settings-theme-amber = Amber
 settings-plugins = Plugins
-settings-plugins-description = Manage installed plugins, capabilities, user grants, signatures, publishers, marketplace packages, and rollback history.
 settings-plugin-capabilities = Capabilities
 settings-plugin-no-capabilities = No capabilities are declared.
 settings-plugin-capability-automatic = Automatic

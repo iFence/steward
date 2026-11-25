@@ -24,7 +24,6 @@ settings-theme-jade = Jade
 settings-theme-rose = Rose
 settings-theme-amber = Ambre
 settings-plugins = Extensions
-settings-plugins-description = Gérez les extensions installées, les autorisations, les signatures, les éditeurs, les paquets du marché local et l’historique de retour arrière.
 settings-plugin-capabilities = Autorisations
 settings-plugin-no-capabilities = Aucune autorisation n’est déclarée.
 settings-plugin-capability-automatic = Automatique

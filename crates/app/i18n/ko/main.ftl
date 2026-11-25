@@ -24,7 +24,6 @@ settings-theme-jade = 비취
 settings-theme-rose = 로즈
 settings-theme-amber = 앰버
 settings-plugins = 플러그인
-settings-plugins-description = 설치된 플러그인, 권한, 사용자 승인, 서명, 게시자, 로컬 마켓 패키지 및 롤백 기록을 관리합니다.
 settings-plugin-capabilities = 권한
 settings-plugin-no-capabilities = 선언된 권한이 없습니다.
 settings-plugin-capability-automatic = 자동

@@ -204,7 +204,6 @@ mod tests {
                 "settings-download-and-install",
                 "settings-release-notes",
                 "settings-plugins",
-                "settings-plugins-description",
                 "settings-plugin-capabilities",
                 "settings-plugin-no-capabilities",
                 "settings-plugin-capability-automatic",

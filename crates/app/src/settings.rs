@@ -765,58 +765,49 @@ fn render_plugins(
     let local_directory_port = port.clone();
     let developer_mode = developer_diagnostics.is_enabled();
     let busy = snapshot.busy;
-    let mut content = v_flex()
-        .gap_3()
-        .w_full()
-        .child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .flex_wrap()
-                .child(
-                    Button::new("plugins-install-local-zip")
-                        .label(i18n.translate("settings-plugin-install-zip"))
-                        .outline()
-                        .compact()
-                        .disabled(busy)
-                        .on_click(move |_, _, cx| {
-                            prompt_local_plugin(local_zip_port.clone(), false, cx);
-                        }),
-                )
-                .child(
-                    Button::new("plugins-install-local-directory")
-                        .label(i18n.translate("settings-plugin-install-directory"))
-                        .outline()
-                        .compact()
-                        .disabled(busy)
-                        .on_click(move |_, _, cx| {
-                            prompt_local_plugin(local_directory_port.clone(), true, cx);
-                        }),
-                )
-                .child(
-                    Button::new("plugins-refresh")
-                        .label(i18n.translate("settings-plugin-refresh"))
-                        .outline()
-                        .compact()
-                        .loading(busy)
-                        .disabled(busy)
-                        .on_click(move |_, _, _| refresh_port.refresh()),
-                )
-                .child(
-                    Button::new("plugins-sync-marketplace")
-                        .label(i18n.translate("settings-plugin-sync-marketplace"))
-                        .outline()
-                        .compact()
-                        .disabled(busy)
-                        .on_click(move |_, _, _| sync_port.sync_marketplace()),
-                ),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(cx.theme().muted_foreground)
-                .child(i18n.translate("settings-plugins-description")),
-        );
+    let mut content = v_flex().gap_3().w_full().child(
+        h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
+            .child(
+                Button::new("plugins-install-local-zip")
+                    .label(i18n.translate("settings-plugin-install-zip"))
+                    .outline()
+                    .compact()
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| {
+                        prompt_local_plugin(local_zip_port.clone(), false, cx);
+                    }),
+            )
+            .child(
+                Button::new("plugins-install-local-directory")
+                    .label(i18n.translate("settings-plugin-install-directory"))
+                    .outline()
+                    .compact()
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| {
+                        prompt_local_plugin(local_directory_port.clone(), true, cx);
+                    }),
+            )
+            .child(
+                Button::new("plugins-refresh")
+                    .label(i18n.translate("settings-plugin-refresh"))
+                    .outline()
+                    .compact()
+                    .loading(busy)
+                    .disabled(busy)
+                    .on_click(move |_, _, _| refresh_port.refresh()),
+            )
+            .child(
+                Button::new("plugins-sync-marketplace")
+                    .label(i18n.translate("settings-plugin-sync-marketplace"))
+                    .outline()
+                    .compact()
+                    .disabled(busy)
+                    .on_click(move |_, _, _| sync_port.sync_marketplace()),
+            ),
+    );
 
     if let Some(message) = &snapshot.message {
         content = content.child(

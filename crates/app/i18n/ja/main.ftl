@@ -24,7 +24,6 @@ settings-theme-jade = ひすい
 settings-theme-rose = ローズ
 settings-theme-amber = 琥珀
 settings-plugins = プラグイン
-settings-plugins-description = インストール済みプラグイン、権限、ユーザー許可、署名、発行者、ローカルマーケット、ロールバック履歴を管理します。
 settings-plugin-capabilities = 権限
 settings-plugin-no-capabilities = 権限は宣言されていません。
 settings-plugin-capability-automatic = 自動

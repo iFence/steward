@@ -24,7 +24,6 @@ settings-theme-jade = 青玉
 settings-theme-rose = 玫瑰
 settings-theme-amber = 琥珀
 settings-plugins = 插件
-settings-plugins-description = 管理已安装插件、能力授权、签名、发布者、本地市场包与回滚历史。
 settings-plugin-capabilities = 能力
 settings-plugin-no-capabilities = 未声明任何能力。
 settings-plugin-capability-automatic = 自动授权
