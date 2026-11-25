@@ -18,7 +18,7 @@ The machine-readable matrix is
 | ---------------------- | --------------- | ---------------------------------------------------- |
 | Steward Host API       | `1.1.0`         | Packages declare the minimum in `plugin.json`        |
 | Plugin SDK             | `1.1.0`         | Must match the current Host API line                 |
-| NSH CLI and runtime    | `0.6.1`         | Exact pin for plugin compilation and signed packages |
+| NSH CLI and runtime    | `0.7.0`         | Exact pin for plugin compilation and signed packages |
 | Plugin manifest schema | `3`             | Schema `2` remains readable for legacy packages      |
 | Minimum host version   | `1.1.0`         | New external packages copy this value                |
 | Supported prior lines  | `0.3.x`-`1.0.x` | Compatibility fixtures run on every contract check   |
@@ -104,10 +104,10 @@ exports:
 ## Create A Plugin
 
 Install the documented prerequisites: Windows, Rust `1.97.1`, Node.js 20 or
-newer, pnpm 11, and NSH CLI `0.6.1`.
+newer, pnpm 11, and NSH CLI `0.7.0`.
 
 ```powershell
-cargo install --locked --version 0.6.1 nsh-cli
+cargo install --locked --version 0.7.0 nsh-cli
 cargo install --locked --git https://github.com/iFence/steward steward-plugin-cli
 ```
 

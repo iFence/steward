@@ -63,7 +63,7 @@ steward/
 安装匹配版本的 NSH CLI：
 
 ```powershell
-cargo install --locked --version 0.6.1 nsh-cli
+cargo install --locked --version 0.7.0 nsh-cli
 ```
 
 构建与运行：

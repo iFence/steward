@@ -27,7 +27,7 @@ The canonical helper-visible bridge, including request and response examples,
 quotas, and failure behavior for every API family, is the generated
 [plugin API reference](plugin-api-reference.md). These helpers live in
 `@steward/extension-api`. UI and device capabilities use the modules exported
-by the pinned NSH 0.6.1 runtime.
+by the pinned NSH 0.7.0 runtime.
 
 `calendarHolidays(year)` returns a map keyed by ISO date with values `holiday`
 or `workday`. Steward fetches a year from

@@ -39,12 +39,12 @@ Steward
 - Rust `1.97.1`
 - Node.js 20 或更高版本
 - pnpm 11
-- NSH CLI `0.6.1`
+- NSH CLI `0.7.0`
 
 安装 NSH CLI：
 
 ```powershell
-cargo install --locked --version 0.6.1 nsh-cli
+cargo install --locked --version 0.7.0 nsh-cli
 ```
 
 安装仓库依赖并验证基础环境：
@@ -71,12 +71,12 @@ nsh component add gpui
 ```
 
 源码版 `nsh` 不支持 `component add`，需要从对应 NSH 版本构建宿主。
-以下命令会把 NSH `v0.6.1` 的 GPUI 宿主构建到 Cargo bin 目录：
+以下命令会把 NSH `v0.7.0` 的 GPUI 宿主构建到 Cargo bin 目录：
 
 ```powershell
-$nshSource = "D:\rustprojects\nsh-v0.6.1"
+$nshSource = "D:\rustprojects\nsh-v0.7.0"
 
-git clone --depth 1 --branch v0.6.1 `
+git clone --depth 1 --branch v0.7.0 `
   https://github.com/longbridge/nsh.git `
   $nshSource
 
@@ -92,7 +92,7 @@ try {
 }
 ```
 
-> 如果 Windows 上 NSH `v0.6.1` 的 GPUI 热更新开发服务器仍报告
+> 如果 Windows 上 NSH `v0.7.0` 的 GPUI 热更新开发服务器仍报告
 > `RefCell already borrowed`。这不影响 `nsh test` 和静态 bundle 预览。
 > 遇到该问题时使用下文“GPUI bundle 预览”的方式。
 
@@ -102,7 +102,7 @@ try {
 `steward-plugin new` 生成依赖已发布 SDK tarball 的独立项目：
 
 ```powershell
-cargo install --locked --version 0.6.1 nsh-cli
+cargo install --locked --version 0.7.0 nsh-cli
 cargo install --locked --git https://github.com/iFence/steward steward-plugin-cli
 
 steward-plugin new .\my-plugin `
@@ -701,7 +701,7 @@ Steward 运行时会定时扫描插件目录，安装后通常无需重启。
 
 ### GPUI 报告 `RefCell already borrowed`
 
-这是 NSH `v0.6.1` GPUI 热更新开发服务器在当前 GPUI Fast 版本下的问题。
+这是 NSH `v0.7.0` GPUI 热更新开发服务器在当前 GPUI Fast 版本下的问题。
 改用“GPUI bundle 预览”或 `nsh test`。
 
 ### `nsh test` 提示 `.nsh` 目录拒绝访问

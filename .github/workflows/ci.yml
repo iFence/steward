@@ -56,7 +56,7 @@ jobs:
         with:
           shared-key: pdx1-plugin-cli
       - name: Install pinned NSH CLI
-        run: cargo install --locked nsh-cli --version 0.6.1
+        run: cargo install --locked nsh-cli --version 0.7.0
       - name: install
         run: pnpm install --frozen-lockfile
       - name: plugin contract

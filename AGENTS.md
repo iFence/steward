@@ -77,9 +77,9 @@ Steward plugin host process (one per open plugin window)
   `[workspace.dependencies]`.
 - Use `nucleo` for fuzzy matching, `rusqlite` for SQLite, `serde` for JSON,
   and NSH crates for UI/runtime behavior.
-- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.17`, and `gpui-kit` to
-  `=0.10.0`.
-- Pin the published NSH crates to `=0.6.1`. Use the published
+- Pin `gpui-fast` and `gpui-fast-platform` to `=0.1.19`, and `gpui-kit` to
+  `=0.11.0`.
+- Pin the published NSH crates to `=0.7.0`. Use the published
   `nsh-platform-gpui` crate directly. Update `docs/nsh-migration.md` before
   changing these pins.
 - Keep the runtime footprint small. Do not add a second matcher, database

@@ -65,7 +65,7 @@ Prerequisites:
 Install the matching NSH CLI:
 
 ```powershell
-cargo install --locked --version 0.6.1 nsh-cli
+cargo install --locked --version 0.7.0 nsh-cli
 ```
 
 Build and run:

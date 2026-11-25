@@ -35,6 +35,9 @@ Conventions:
   bridge, keeps `0.3.x` through `0.5.x` packages compatible, documents quotas
   and failure behavior for every API family, and publishes a reference
   generated directly from the machine-readable contract.
+- **Native Shell 0.7.0**: Steward now runs on NSH `0.7.0` with GPUI Fast
+  `0.1.19` and GPUI Kit `0.11.0`, including refreshed TSX build tooling and
+  runtime keyboard-scope handling.
 - **Encrypted plugin secrets**: host API `1.1.0` adds plugin-private
   `getSecret`, `setSecret`, `deleteSecret`, and `listSecrets` helpers. Values
   are encrypted for the current Windows user with DPAPI, isolated by plugin,

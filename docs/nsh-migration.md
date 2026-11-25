@@ -55,13 +55,13 @@ application runtime:
 1. Steward's launcher is an NSH Rust root rendered by `nsh-platform-gpui`;
    the settings window is a GPUI Kit view with `Root` and `Settings`.
 2. The product uses GPUI Fast directly and pins:
-   - `gpui-fast = =0.1.17`
-   - `gpui-fast-platform = =0.1.17`
-   - `gpui-kit = =0.10.0` with its `gpui-fast` feature, so NSH and the
+   - `gpui-fast = =0.1.19`
+   - `gpui-fast-platform = =0.1.19`
+   - `gpui-kit = =0.11.0` with its `gpui-fast` feature, so NSH and the
      settings components share one GPUI backend.
-3. NSH crates are pinned to published version `0.6.1`. The published
-   `nsh-platform-gpui` crate works with GPUI Fast's blanket `IntoElement`
-   implementation, so Steward does not vendor a compatibility patch.
+3. NSH crates are pinned to published version `0.7.0`. The published
+   `nsh-platform-gpui` crate requires GPUI Fast `0.1.19`, so Steward upgrades
+   the renderer and NSH together without a compatibility patch.
 4. Each plugin command opens one isolated plugin-host presentation. Schema-v3
    commands select `windowed` or `embedded`; embedded uses a managed frameless
    hosted surface without moving the VM into the shell. A second command for
@@ -225,6 +225,7 @@ Files:
 - `Cargo.lock`
 - `crates/app/Cargo.toml`
 - `crates/app/src/nsh_surface.rs`
+- `crates/app/src/shell.rs`
 - `crates/app/examples/nsh_smoke.rs`
 - `.github/workflows/ci.yml`
 
@@ -262,6 +263,27 @@ Evidence:
 - NSH 0.6.1 `nsh check` passed for all three official plugins. `nsh test`
   passed Calendar (13 tests), Clipboard History (1 test), and UI Showcase
   (1 test). The matching 0.6.1 `nsh-gpui-host` built successfully.
+- Dependency refresh (2026-11-25): NSH crates and CLI moved from `0.6.1` to
+  `0.7.0`, GPUI Fast and its platform crate from `0.1.17` to `0.1.19`, and
+  GPUI Kit from `0.10.0` to `0.11.0`. GPUI Kit `0.11.0` is required because it
+  moves `gpui-pre` to `0.3.14`, matching GPUI Fast `0.1.19`.
+- NSH 0.7.0 added `scope` and `over_focused` to `KeyOptions`. Steward's launcher
+  keys use `KeyScope::Window` and `over_focused: false`, preserving the prior
+  window-only behavior without taking precedence over focused controls.
+- NSH 0.7.0 validation passed with one copy each of `nsh-platform-gpui` and
+  `gpui-fast`: `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, and `pnpm build`.
+  `pnpm contract:check`, `pnpm sdk:pack`, and `pnpm test:contract` also passed.
+  `cargo test --workspace` ran 122 app tests with 120 passed and 1 ignored;
+  the existing Windows process-tree fixture failed because its PowerShell
+  child did not write the descendant marker before the five-second deadline.
+  A targeted rerun reproduced the same harness failure, while all plugin and
+  application tests unrelated to that fixture passed.
+- The isolated NSH 0.7.0 CLI passed `nsh check` for all seven official plugins.
+  `nsh test` passed Calendar (17), Clipboard History (4), Git Repositories (2),
+  Local Files (1), Network Check (2), Secret Notes (1), and UI Showcase (4):
+  31 tests total.
 
 ### NSH-2: Steward shell
 

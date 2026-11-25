@@ -23,18 +23,18 @@ license = "MIT"
 # NSH migration stack. Keep these exact until the migration evidence in
 # docs/nsh-migration.md is updated. GPUI Fast and NSH are compiled together and
 # must be upgraded as one reviewed change.
-gpui = { package = "gpui-fast", version = "=0.1.17", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui_platform = { package = "gpui-fast-platform", version = "=0.1.17", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui-kit = { version = "=0.10.0", features = ["gpui-fast"] }
-nsh-core = "=0.6.1"
-nsh-base = { version = "=0.6.1", default-features = false }
-nsh-engine = "=0.6.1"
-nsh-package = "=0.6.1"
-nsh-platform-gpui = { version = "=0.6.1", default-features = false, features = [
+gpui = { package = "gpui-fast", version = "=0.1.19", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { package = "gpui-fast-platform", version = "=0.1.19", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui-kit = { version = "=0.11.0", features = ["gpui-fast"] }
+nsh-core = "=0.7.0"
+nsh-base = { version = "=0.7.0", default-features = false }
+nsh-engine = "=0.7.0"
+nsh-package = "=0.7.0"
+nsh-platform-gpui = { version = "=0.7.0", default-features = false, features = [
     "js",
     "svg",
 ] }
-nsh-testing = { version = "=0.6.1", default-features = false }
+nsh-testing = { version = "=0.7.0", default-features = false }
 thiserror = "2"
 global-hotkey = "0.8"
 tray-icon = "0.24"
