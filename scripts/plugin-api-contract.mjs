@@ -708,7 +708,7 @@ if (write) {
     } catch {
       stale = true;
     }
-    if (actual !== expected) {
+    if (actual.replace(/\r\n/g, "\n") !== expected.replace(/\r\n/g, "\n")) {
       stale = true;
       console.error(`${relative(root, path)} is out of date. Run pnpm contract:generate.`);
     }

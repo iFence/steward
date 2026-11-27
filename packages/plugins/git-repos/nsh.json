@@ -3,6 +3,11 @@
   "id": "it.aspirin.git-repos",
   "version": "0.2.0",
   "build": 2,
+  "resolve": {
+    "alias": {
+      "@steward/extension-api": "../../extension-api/src/host.ts"
+    }
+  },
   "capabilities": {
     "host": [
       "steward.storage.get",

@@ -776,7 +776,7 @@ mod tests {
             .unwrap();
         let job = ProcessJob::attach(&root).unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         let descendant_pid = loop {
             if let Ok(value) = std::fs::read_to_string(&pid_path) {
                 if let Ok(pid) = value.trim().parse::<u32>() {

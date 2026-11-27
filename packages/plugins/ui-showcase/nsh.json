@@ -3,6 +3,11 @@
   "id": "it.aspirin.ui-showcase",
   "version": "1.1.0",
   "build": 4,
+  "resolve": {
+    "alias": {
+      "@steward/extension-api": "../../extension-api/src/host.ts"
+    }
+  },
   "capabilities": {
     "host": [
       "steward.feedback.toast",
