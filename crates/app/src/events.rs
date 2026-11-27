@@ -23,6 +23,8 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
     let mut cached_launcher_hwnd: Option<windows_sys::Win32::Foundation::HWND> = None;
     #[cfg(target_os = "windows")]
     let mut launcher_was_foreground = false;
+    #[cfg(target_os = "windows")]
+    let mut launcher_was_visible = false;
 
     cx.spawn(async move |cx| loop {
         state.borrow_mut().search.borrow_mut().poll();
@@ -48,10 +50,18 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
         while let Ok(event) = hotkey_events.try_recv() {
             if event.state == HotKeyState::Pressed {
                 let action = state.borrow().hotkey_registry.resolve(event.id).cloned();
-                if action.is_some_and(|action| action.as_str() == crate::hotkeys::SUMMON_ACTION) {
-                    let started = std::time::Instant::now();
-                    handlers::toggle_launcher(cx, &state);
-                    crate::metrics::duration("summon", started.elapsed(), serde_json::json!({}));
+                if let Some(action) = action {
+                    if action.as_str() == crate::hotkeys::SUMMON_ACTION {
+                        let started = std::time::Instant::now();
+                        handlers::toggle_launcher(cx, &state);
+                        crate::metrics::duration(
+                            "summon",
+                            started.elapsed(),
+                            serde_json::json!({}),
+                        );
+                    } else if action.as_str() == crate::hotkeys::SETTINGS_ACTION {
+                        handlers::open_settings(cx, &state);
+                    }
                 }
             }
         }
@@ -77,6 +87,7 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
 
         #[cfg(target_os = "windows")]
         {
+            let mut launcher_visible = false;
             let handle = state.borrow().window;
             match handle {
                 None => cached_launcher_hwnd = None,
@@ -91,6 +102,7 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
 
             if let Some(hwnd) = cached_launcher_hwnd {
                 if crate::platform::is_hwnd_visible(hwnd) {
+                    launcher_visible = true;
                     let foreground = crate::platform::foreground_hwnd();
                     if foreground == hwnd {
                         launcher_was_foreground = true;
@@ -108,6 +120,21 @@ pub(crate) fn spawn(state: Rc<RefCell<AppState>>, cx: &mut App) -> anyhow::Resul
                     }
                 } else {
                     launcher_was_foreground = false;
+                }
+            }
+            if launcher_visible != launcher_was_visible {
+                launcher_was_visible = launcher_visible;
+                let registration = if launcher_visible {
+                    crate::hotkeys::register_launcher_settings_hotkey(&state)
+                } else {
+                    crate::hotkeys::unregister_launcher_settings_hotkey(&state)
+                };
+                if let Err(error) = registration {
+                    tracing::warn!(
+                        error = %format!("{error:#}"),
+                        visible = launcher_visible,
+                        "sync launcher settings hotkey"
+                    );
                 }
             }
         }

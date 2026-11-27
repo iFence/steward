@@ -86,7 +86,24 @@ pub(crate) fn reveal_in_explorer(path: &std::path::Path) -> Result<()> {
 /// Open the Windows shell's Properties dialog for `path`.
 #[cfg(target_os = "windows")]
 pub(crate) fn show_properties(path: &std::path::Path) -> Result<()> {
-    shell_execute(path, "properties")
+    use windows_sys::Win32::UI::Shell::{SHObjectProperties, SHOP_FILEPATH};
+
+    let text = path.to_string_lossy();
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let shown = unsafe {
+        SHObjectProperties(
+            std::ptr::null_mut(),
+            SHOP_FILEPATH as u32,
+            wide.as_ptr(),
+            std::ptr::null(),
+        )
+    };
+    if shown == 0 {
+        // Some shell namespace entries do not expose a file-properties page
+        // through SHObjectProperties; retain the generic shell verb fallback.
+        shell_execute(path, "properties")?;
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]

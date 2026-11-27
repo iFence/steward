@@ -34,6 +34,7 @@ pub struct UiSettings {
     accent: String,
     autostart: bool,
     summon_hotkey: String,
+    settings_hotkey: String,
     check_updates_on_startup: bool,
 }
 
@@ -44,6 +45,7 @@ impl UiSettings {
         accent: String,
         autostart: bool,
         summon_hotkey: String,
+        settings_hotkey: String,
         check_updates_on_startup: bool,
     ) -> Self {
         Self {
@@ -52,6 +54,7 @@ impl UiSettings {
             accent,
             autostart,
             summon_hotkey,
+            settings_hotkey,
             check_updates_on_startup,
         }
     }
@@ -221,6 +224,14 @@ impl AppServices {
             .unwrap_or_else(|_| "control+alt+Space".into())
     }
 
+    pub fn settings_hotkey(&self) -> String {
+        self.settings
+            .settings
+            .read()
+            .map(|settings| settings.settings_hotkey.clone())
+            .unwrap_or_else(|_| "control+Comma".into())
+    }
+
     pub fn check_updates_on_startup(&self) -> bool {
         self.settings
             .settings
@@ -252,6 +263,12 @@ impl AppServices {
     pub fn set_summon_hotkey(&self, hotkey: impl Into<String>) {
         if let Ok(mut settings) = self.settings.settings.write() {
             settings.summon_hotkey = hotkey.into();
+        }
+    }
+
+    pub fn set_settings_hotkey(&self, hotkey: impl Into<String>) {
+        if let Ok(mut settings) = self.settings.settings.write() {
+            settings.settings_hotkey = hotkey.into();
         }
     }
 
@@ -342,6 +359,14 @@ impl LauncherServices {
         self.query.search_revision.load(Ordering::Relaxed)
     }
 
+    pub fn settings_hotkey(&self) -> String {
+        self.settings
+            .settings
+            .read()
+            .map(|settings| settings.settings_hotkey.clone())
+            .unwrap_or_else(|_| "control+Comma".into())
+    }
+
     pub fn ui_strings(&self) -> UiStrings {
         self.settings
             .settings
@@ -410,7 +435,9 @@ pub enum WindowCommand {
     SetAccent(String),
     SetAutostart(bool),
     SetSummonHotkey(String),
+    SetSettingsHotkey(String),
     SetCheckUpdatesOnStartup(bool),
+    OpenSettings,
     Quit,
 }
 
@@ -681,6 +708,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                "control+Comma".into(),
                 false,
             ),
             Arc::new(AtomicU64::new(0)),

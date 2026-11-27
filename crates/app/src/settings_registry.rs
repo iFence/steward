@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::config::{
-    CHECK_UPDATES_SETTING, LANGUAGE_SETTING, SUMMON_HOTKEY_SETTING, THEME_COLOR_SETTING,
+    CHECK_UPDATES_SETTING, LANGUAGE_SETTING, SETTINGS_HOTKEY_SETTING, SUMMON_HOTKEY_SETTING,
+    THEME_COLOR_SETTING,
 };
 use crate::launcher_model::FeatureId;
 
@@ -64,6 +65,14 @@ impl SettingsRegistry {
                 key: SUMMON_HOTKEY_SETTING,
                 feature: FeatureId::StewardSettings,
                 default_value: "control+alt+Space",
+                backup_allowed: true,
+                requires_permission: false,
+                page: SettingsPage::General,
+            },
+            SettingsDefinition {
+                key: SETTINGS_HOTKEY_SETTING,
+                feature: FeatureId::StewardSettings,
+                default_value: "control+Comma",
                 backup_allowed: true,
                 requires_permission: false,
                 page: SettingsPage::General,

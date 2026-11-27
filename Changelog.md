@@ -10,7 +10,14 @@ Conventions:
 
 ## Unreleased
 
-No unreleased changes yet.
+- **Launcher actions**: The result action popup now provides working file
+  location, copy path, and Properties commands. Incomplete application-window,
+  recent-file, and alternate-user entries are hidden until they are implemented.
+- **Settings access**: The launcher’s original bottom-left status icon is now
+  clickable with hover feedback, and a configurable Settings shortcut opens the
+  settings window while the launcher is visible; the default is `Ctrl+,`.
+- **About page polish**: Check for Updates now has a visible outline, and the
+  duplicate version label beside the update actions has been removed.
 
 ---
 

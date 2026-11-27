@@ -177,6 +177,7 @@ pub(crate) struct AppState {
     pub tray: RefCell<Option<TrayHandle>>,
     pub hotkey_manager: Option<GlobalHotKeyManager>,
     pub summon_hotkey: Option<HotKey>,
+    pub settings_hotkey: Option<HotKey>,
     pub hotkey_registry: crate::hotkey_registry::HotkeyRegistry,
     pub plugin_windows: PluginWindowManager,
     pub plugin_events: crossbeam_channel::Sender<PluginRuntimeEvent>,

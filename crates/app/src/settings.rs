@@ -20,7 +20,7 @@ use gpui_kit::{
         input::{Input, InputEvent, InputState},
         menu::{DropdownMenu as _, PopupMenuItem},
         scroll::ScrollableElement as _,
-        setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+        setting::{RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
         switch::Switch,
         text::TextView,
         v_flex, ActiveTheme, AxisExt as _, Disableable as _, FocusableExt as _, Icon, Sizable as _,
@@ -65,6 +65,12 @@ static ABOUT_LOGO: LazyLock<Arc<Image>> = LazyLock::new(|| {
     ))
 });
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HotkeyField {
+    Summon,
+    Settings,
+}
+
 pub(crate) struct StewardSettings {
     services: Arc<AppServices>,
     i18n: Rc<Localization>,
@@ -72,10 +78,13 @@ pub(crate) struct StewardSettings {
     accent: String,
     autostart: bool,
     summon_hotkey: String,
+    settings_hotkey: String,
     check_updates_on_startup: bool,
-    recording_hotkey: bool,
-    hotkey_focus: FocusHandle,
-    hotkey_status: SharedString,
+    recording_hotkey: Option<HotkeyField>,
+    summon_hotkey_focus: FocusHandle,
+    settings_hotkey_focus: FocusHandle,
+    summon_hotkey_status: SharedString,
+    settings_hotkey_status: SharedString,
     plugin_search: Entity<InputState>,
     _plugin_search_subscription: Subscription,
     pending_update_dialog: bool,
@@ -176,6 +185,7 @@ fn settings_dropdown_control(
     options: Vec<(SharedString, SharedString)>,
     value: SharedStringGetter,
     on_change: SharedStringSetter,
+    width: f32,
 ) -> impl Fn(&mut Window, &mut App) -> AnyElement {
     move |_window, cx| {
         let current_value = value(cx);
@@ -192,7 +202,7 @@ fn settings_dropdown_control(
             .label(current_label)
             .dropdown_caret(true)
             .outline()
-            .w(px(176.0))
+            .w(px(width))
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                 menu_options.iter().fold(menu, |menu, (option, label)| {
                     let on_change = on_change.clone();
@@ -211,6 +221,85 @@ fn settings_dropdown_control(
     }
 }
 
+fn settings_hotkey_control(
+    id: &'static str,
+    field: HotkeyField,
+    view: Entity<StewardSettings>,
+    focus: FocusHandle,
+    recording_label: SharedString,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement + 'static {
+    move |_options, window, cx| {
+        let (recording, value, status) = {
+            let settings = view.read(cx);
+            let recording = settings.recording_hotkey == Some(field) && focus.is_focused(window);
+            let value = if recording {
+                recording_label.clone()
+            } else {
+                SharedString::from(hotkey_display(match field {
+                    HotkeyField::Summon => &settings.summon_hotkey,
+                    HotkeyField::Settings => &settings.settings_hotkey,
+                }))
+            };
+            let status = match field {
+                HotkeyField::Summon => settings.summon_hotkey_status.clone(),
+                HotkeyField::Settings => settings.settings_hotkey_status.clone(),
+            };
+            (recording, value, status)
+        };
+        let click_focus = focus.clone();
+        let click_view = view.clone();
+        let key_view = view.clone();
+        v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .id(id)
+                    .h(px(34.0))
+                    .w(px(220.0))
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(if recording {
+                        cx.theme().ring
+                    } else {
+                        cx.theme().border
+                    })
+                    .bg(cx.theme().muted)
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .cursor_pointer()
+                    .on_click(move |_, window, cx| {
+                        click_focus.focus(window, cx);
+                        click_view.update(cx, |settings, cx| {
+                            settings.begin_hotkey_recording(field, cx);
+                        });
+                    })
+                    .on_key_down(move |event, _, cx| {
+                        if event.is_held {
+                            return;
+                        }
+                        key_view.update(cx, |settings, cx| {
+                            settings.record_hotkey(field, &event.keystroke, cx);
+                        });
+                    })
+                    .child(value),
+            )
+            .when(!status.is_empty(), |this| {
+                this.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(status),
+                )
+            })
+            .into_any_element()
+    }
+}
+
 impl StewardSettings {
     pub(crate) fn new(
         window: &mut Window,
@@ -223,8 +312,10 @@ impl StewardSettings {
         let accent = services.accent();
         let autostart = services.autostart();
         let hotkey = services.summon_hotkey();
+        let settings_hotkey = services.settings_hotkey();
         let check_updates_on_startup = services.check_updates_on_startup();
-        let hotkey_focus = cx.focus_handle();
+        let summon_hotkey_focus = cx.focus_handle();
+        let settings_hotkey_focus = cx.focus_handle();
         let plugin_search = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(SharedString::from(i18n.translate("settings-plugin-search")))
@@ -240,10 +331,13 @@ impl StewardSettings {
             accent,
             autostart,
             summon_hotkey: hotkey,
+            settings_hotkey,
             check_updates_on_startup,
-            recording_hotkey: false,
-            hotkey_focus,
-            hotkey_status: SharedString::default(),
+            recording_hotkey: None,
+            summon_hotkey_focus,
+            settings_hotkey_focus,
+            summon_hotkey_status: SharedString::default(),
+            settings_hotkey_status: SharedString::default(),
             plugin_search,
             _plugin_search_subscription,
             pending_update_dialog: false,
@@ -306,10 +400,19 @@ impl StewardSettings {
         cx.notify();
     }
 
-    fn record_hotkey(&mut self, keystroke: &Keystroke, cx: &mut Context<Self>) {
+    fn begin_hotkey_recording(&mut self, field: HotkeyField, cx: &mut Context<Self>) {
+        self.recording_hotkey = Some(field);
+        *self.hotkey_status_mut(field) = SharedString::default();
+        cx.notify();
+    }
+
+    fn record_hotkey(&mut self, field: HotkeyField, keystroke: &Keystroke, cx: &mut Context<Self>) {
+        if self.recording_hotkey != Some(field) {
+            return;
+        }
         if matches!(keystroke.key.as_str(), "escape" | "tab") {
-            self.recording_hotkey = false;
-            self.hotkey_status = SharedString::default();
+            self.recording_hotkey = None;
+            *self.hotkey_status_mut(field) = SharedString::default();
             cx.notify();
             return;
         }
@@ -318,17 +421,47 @@ impl StewardSettings {
             return;
         }
         let Some(value) = hotkey_from_keystroke(keystroke) else {
-            self.hotkey_status = self.i18n.translate("settings-hotkey-invalid").into();
-            self.recording_hotkey = false;
+            self.set_hotkey_invalid(field);
             cx.notify();
             return;
         };
-        self.recording_hotkey = false;
-        self.summon_hotkey = value.clone();
-        self.services
-            .send_window_command(WindowCommand::SetSummonHotkey(value));
-        self.hotkey_status = SharedString::default();
+        let conflicts = match field {
+            HotkeyField::Summon => value == self.settings_hotkey,
+            HotkeyField::Settings => value == self.summon_hotkey,
+        };
+        if conflicts {
+            self.set_hotkey_invalid(field);
+            cx.notify();
+            return;
+        }
+        self.recording_hotkey = None;
+        *self.hotkey_status_mut(field) = SharedString::default();
+        match field {
+            HotkeyField::Summon => {
+                self.summon_hotkey = value.clone();
+                self.services
+                    .send_window_command(WindowCommand::SetSummonHotkey(value));
+            }
+            HotkeyField::Settings => {
+                self.settings_hotkey = value.clone();
+                self.services
+                    .send_window_command(WindowCommand::SetSettingsHotkey(value));
+            }
+        }
         cx.notify();
+    }
+
+    fn hotkey_status_mut(&mut self, field: HotkeyField) -> &mut SharedString {
+        match field {
+            HotkeyField::Summon => &mut self.summon_hotkey_status,
+            HotkeyField::Settings => &mut self.settings_hotkey_status,
+        }
+    }
+
+    fn set_hotkey_invalid(&mut self, field: HotkeyField) {
+        let message = self.i18n.translate("settings-hotkey-invalid");
+        *self.hotkey_status_mut(field) = message.into();
+        self.recording_hotkey = None;
     }
 }
 
@@ -370,11 +503,15 @@ impl Render for StewardSettings {
         let updates_reset_services = services.clone();
         let accent_value = view.clone();
         let accent_set = view.clone();
-        let hotkey_field = view.clone();
+        let summon_hotkey_view = view.clone();
+        let settings_hotkey_view = view.clone();
         let language_title = SharedString::from(self.i18n.translate("settings-language"));
         let autostart_title = SharedString::from(self.i18n.translate("settings-launch-at-startup"));
         let updates_title =
             SharedString::from(self.i18n.translate("settings-update-check-on-startup"));
+        let summon_hotkey_title = SharedString::from(self.i18n.translate("settings-global-hotkey"));
+        let settings_hotkey_title =
+            SharedString::from(self.i18n.translate("settings-settings-hotkey"));
         let language_value: SharedStringGetter =
             Rc::new(move |cx| SharedString::from(language_value_view.read(cx).language.clone()));
         let language_set: SharedStringSetter = Rc::new(move |value, cx| {
@@ -432,6 +569,7 @@ impl Render for StewardSettings {
                                     language_options,
                                     language_value,
                                     language_set,
+                                    132.0,
                                 ),
                             )
                             .on_reset(
@@ -514,73 +652,30 @@ impl Render for StewardSettings {
                 ),
             SettingPage::new(self.i18n.translate("settings-hotkeys"))
                 .icon(Icon::default().data(include_bytes!("../../../assets/icons/keyboard.svg")))
-                .group(SettingGroup::new().item(SettingItem::new(
-                    self.i18n.translate("settings-global-hotkey"),
-                    SettingField::render(move |_options, window, cx| {
-                        let settings = hotkey_field.read(cx);
-                        let focus = settings.hotkey_focus.clone();
-                        let recording = settings.recording_hotkey && focus.is_focused(window);
-                        let value = if recording {
-                            hotkey_recording_label.clone()
-                        } else {
-                            SharedString::from(hotkey_display(&settings.summon_hotkey))
-                        };
-                        let status = settings.hotkey_status.clone();
-                        let view = hotkey_field.clone();
-                        let click_focus = focus.clone();
-                        let click_view = view.clone();
-                        let key_view = view.clone();
-                        v_flex()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .id("summon-hotkey-recorder")
-                                    .h(px(34.0))
-                                    .w(px(220.0))
-                                    .px_3()
-                                    .flex()
-                                    .items_center()
-                                    .rounded(cx.theme().radius)
-                                    .border_1()
-                                    .border_color(if recording {
-                                        cx.theme().ring
-                                    } else {
-                                        cx.theme().border
-                                    })
-                                    .bg(cx.theme().muted)
-                                    .text_sm()
-                                    .text_color(cx.theme().foreground)
-                                    .track_focus(&focus)
-                                    .tab_index(0)
-                                    .cursor_pointer()
-                                    .on_click(move |_, window, cx| {
-                                        click_focus.focus(window, cx);
-                                        click_view.update(cx, |settings, cx| {
-                                            settings.recording_hotkey = true;
-                                            settings.hotkey_status = SharedString::default();
-                                            cx.notify();
-                                        });
-                                    })
-                                    .on_key_down(move |event, _, cx| {
-                                        if event.is_held {
-                                            return;
-                                        }
-                                        key_view.update(cx, |settings, cx| {
-                                            settings.record_hotkey(&event.keystroke, cx);
-                                        });
-                                    })
-                                    .child(value),
-                            )
-                            .when(!status.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(status),
-                                )
-                            })
-                    }),
-                ))),
+                .group(
+                    SettingGroup::new()
+                        .variant(GroupBoxVariant::Normal)
+                        .item(SettingItem::new(
+                            summon_hotkey_title,
+                            SettingField::render(settings_hotkey_control(
+                                "summon-hotkey-recorder",
+                                HotkeyField::Summon,
+                                summon_hotkey_view,
+                                self.summon_hotkey_focus.clone(),
+                                hotkey_recording_label.clone(),
+                            )),
+                        ))
+                        .item(SettingItem::new(
+                            settings_hotkey_title,
+                            SettingField::render(settings_hotkey_control(
+                                "settings-hotkey-recorder",
+                                HotkeyField::Settings,
+                                settings_hotkey_view,
+                                self.settings_hotkey_focus.clone(),
+                                hotkey_recording_label,
+                            )),
+                        )),
+                ),
             SettingPage::new(self.i18n.translate("settings-plugins"))
                 .icon(Icon::new(IconName::Puzzle))
                 .group(SettingGroup::new().item(SettingItem::render({
@@ -1516,7 +1611,7 @@ fn render_about_updates(
     buttons = buttons.child(
         Button::new("settings-check-updates")
             .label(i18n.translate("settings-check-for-updates"))
-            .ghost()
+            .outline()
             .compact()
             .loading(matches!(state, UpdateState::Checking))
             .disabled(busy)
@@ -1589,12 +1684,6 @@ fn render_about_updates(
                                         .text_size(px(14.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child("Steward Updates"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(version.clone()),
                                 )
                                 .when(show_update_status, |this| this.child(update_status)),
                         ),
@@ -1815,7 +1904,7 @@ fn is_modifier_key(key: &str) -> bool {
     )
 }
 
-fn hotkey_from_keystroke(keystroke: &Keystroke) -> Option<String> {
+pub(crate) fn hotkey_from_keystroke(keystroke: &Keystroke) -> Option<String> {
     if is_modifier_key(&keystroke.key) {
         return None;
     }
@@ -1895,6 +1984,27 @@ mod tests {
         assert_eq!(
             hotkey_from_keystroke(&keystroke).as_deref(),
             Some("control+alt+Space")
+        );
+    }
+
+    #[test]
+    fn ctrl_comma_is_a_persistable_settings_shortcut() {
+        let keystroke = Keystroke {
+            modifiers: Modifiers {
+                control: true,
+                ..Default::default()
+            },
+            key: ",".into(),
+            key_char: None,
+        };
+
+        assert_eq!(
+            hotkey_from_keystroke(&keystroke).as_deref(),
+            Some("control+Comma")
+        );
+        assert_eq!(
+            hotkey_from_keystroke(&Keystroke::parse("ctrl-,").unwrap()).as_deref(),
+            Some("control+Comma")
         );
     }
 

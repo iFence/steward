@@ -8,7 +8,8 @@ use steward_plugin_contract::{LaunchRequest, PluginNotice};
 use tracing::{error, warn};
 
 use crate::config::{
-    CHECK_UPDATES_SETTING, LANGUAGE_SETTING, SUMMON_HOTKEY_SETTING, THEME_COLOR_SETTING,
+    CHECK_UPDATES_SETTING, LANGUAGE_SETTING, SETTINGS_HOTKEY_SETTING, SUMMON_HOTKEY_SETTING,
+    THEME_COLOR_SETTING,
 };
 use crate::services::{PluginLaunchOutcome, RowAction, WindowCommand};
 use crate::state::{AppState, PluginRuntimeEvent};
@@ -69,6 +70,23 @@ pub(crate) fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                     Err(error) => error!(error = %format!("{error:#}"), "change summon hotkey"),
                 }
             }
+            WindowCommand::SetSettingsHotkey(requested) => {
+                match crate::hotkeys::replace_settings_hotkey(state, &requested) {
+                    Ok(hotkey) => {
+                        let value = hotkey.to_string();
+                        let storage = state.borrow().storage.clone();
+                        if let Err(error) = storage
+                            .borrow()
+                            .set_setting(SETTINGS_HOTKEY_SETTING, &value)
+                        {
+                            error!(error = %format!("{error:#}"), "persist settings hotkey");
+                        }
+                        state.borrow().services.set_settings_hotkey(value);
+                        state.borrow().services.request_launcher_focus();
+                    }
+                    Err(error) => error!(error = %format!("{error:#}"), "change settings hotkey"),
+                }
+            }
             WindowCommand::SetCheckUpdatesOnStartup(enabled) => {
                 let storage = state.borrow().storage.clone();
                 if let Err(error) = storage.borrow().set_setting(
@@ -83,6 +101,7 @@ pub(crate) fn drain_commands(cx: &mut AsyncApp, state: &Rc<RefCell<AppState>>) {
                     .services
                     .set_check_updates_on_startup(enabled);
             }
+            WindowCommand::OpenSettings => open_settings(cx, state),
             WindowCommand::Quit => {
                 cx.update(|cx| cx.quit());
             }

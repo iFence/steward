@@ -50,5 +50,7 @@ pub const LANGUAGE_SETTING: &str = "language";
 /// Storage key for the persisted summon hotkey (a `HotKey::into_string()`
 /// string, e.g. `control+alt+Space`).
 pub const SUMMON_HOTKEY_SETTING: &str = "summon_hotkey";
+/// Storage key for the launcher-scoped settings shortcut.
+pub const SETTINGS_HOTKEY_SETTING: &str = "settings_hotkey";
 /// Storage key for checking GitHub Releases when Steward starts.
 pub const CHECK_UPDATES_SETTING: &str = "check_updates_on_startup";

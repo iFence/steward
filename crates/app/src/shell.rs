@@ -22,6 +22,11 @@ const MAX_VISIBLE_ROWS: usize = 8;
 const ROW_HEIGHT: f32 = 42.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(40);
 const ACTION_MENU_MIN_HEIGHT: f32 = 380.0;
+const ACTION_MENU_HEADER_HEIGHT: f32 = 40.0;
+const ACTION_MENU_ROW_HEIGHT: f32 = 32.0;
+const ACTION_MENU_FOOTER_HEIGHT: f32 = 39.0;
+const ACTION_MENU_EMPTY_HEIGHT: f32 = 40.0;
+const ACTION_MENU_TOP_PADDING: f32 = 8.0;
 const STATUS_HINT_HEIGHT: f32 = 26.0;
 /// Keep reasserting the field across the activation/IME hand-off instead of
 /// relying on one focus command landing on the right frame.
@@ -386,6 +391,18 @@ pub fn StewardLauncher() -> impl IntoElement {
     bind_launcher_key("enter", false, key_handler.clone());
     bind_launcher_key("ctrl+k", false, key_handler.clone());
     bind_launcher_key("escape", false, key_handler);
+    let open_settings_handler: Rc<dyn Fn(&str)> = {
+        let app = app.clone();
+        Rc::new(move |pressed| {
+            let configured = crate::hotkeys::launcher_shortcut(&app.settings_hotkey());
+            if configured.is_some_and(|configured| configured.eq_ignore_ascii_case(pressed)) {
+                app.send_window_command(WindowCommand::OpenSettings);
+            }
+        })
+    };
+    let settings_shortcut = crate::hotkeys::launcher_shortcut(&app.settings_hotkey())
+        .unwrap_or_else(|| "ctrl+,".into());
+    bind_launcher_key(&settings_shortcut, false, open_settings_handler);
 
     add_input_focus(&input_ref);
     let has_rows = move || rows.with(|rows| !rows.is_empty());
@@ -415,6 +432,7 @@ pub fn StewardLauncher() -> impl IntoElement {
             primary_action_label(current_action().as_ref(), &app.ui_strings())
         })
     };
+    let settings_button_app = app.clone();
 
     view()
         .size_full()
@@ -496,7 +514,9 @@ pub fn StewardLauncher() -> impl IntoElement {
                         .border_t(px(1.0))
                         .border_color(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.04))
                         .window_drag(false)
-                        .child(selection_status_icon(rows, selected))
+                        .child(selection_status_icon(rows, selected, move || {
+                            settings_button_app.send_window_command(WindowCommand::OpenSettings);
+                        }))
                         .child(
                             view()
                                 .flex_row()
@@ -566,9 +586,19 @@ fn launcher_height_with_actions(visible_rows: usize) -> f32 {
     launcher_height(visible_rows).max(ACTION_MENU_MIN_HEIGHT)
 }
 
+fn action_menu_height(visible_actions: usize) -> f32 {
+    let actions_height = if visible_actions == 0 {
+        ACTION_MENU_EMPTY_HEIGHT
+    } else {
+        visible_actions as f32 * ACTION_MENU_ROW_HEIGHT
+    };
+    ACTION_MENU_TOP_PADDING + ACTION_MENU_HEADER_HEIGHT + actions_height + ACTION_MENU_FOOTER_HEIGHT
+}
+
 fn selection_status_icon(
     rows: Signal<Vec<LauncherRow>>,
     selected: Signal<usize>,
+    on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
     let icon = move || {
         rows.with(|rows| {
@@ -580,14 +610,26 @@ fn selection_status_icon(
     let has_icon =
         move || rows.with(|rows| rows.get(selected.get()).is_some_and(|r| r.icon.is_some()));
     view()
-        .w(px(18.0))
-        .h(px(18.0))
+        .test_id("launcher-settings")
+        .w(px(24.0))
+        .h(px(24.0))
+        .rounded(px(6.0))
         .items_center()
         .justify_center()
-        .when(has_icon(), move |status| {
-            status.child(image(icon).w(px(18.0)).h(px(18.0)).flex_shrink_0())
-        })
-        .when(!has_icon(), |status| status.child(generic_status_icon()))
+        .hover(|style| style.bg(rgb(steward_ui_components::palette::FOREGROUND).opacity(0.08)))
+        .cursor_pointer()
+        .on_press(on_press)
+        .child(
+            view()
+                .w(px(18.0))
+                .h(px(18.0))
+                .items_center()
+                .justify_center()
+                .when(has_icon(), move |status| {
+                    status.child(image(icon).w(px(18.0)).h(px(18.0)).flex_shrink_0())
+                })
+                .when(!has_icon(), |status| status.child(generic_status_icon())),
+        )
 }
 
 fn generic_status_icon() -> impl IntoElement {
@@ -668,9 +710,9 @@ fn primary_action_label(action: Option<&RowAction>, strings: &crate::i18n::UiStr
         Some(RowAction::DismissNotice) => strings.launcher_close.clone(),
         Some(RowAction::ConfirmNotice { label, .. }) => label.clone(),
         Some(RowAction::OpenPlugin { .. }) => strings.launcher_open_plugin.clone(),
-        Some(RowAction::RevealInExplorer(_) | RowAction::ShowProperties(_)) | None => {
-            strings.launcher_open.clone()
-        }
+        Some(RowAction::RevealInExplorer(_)) => strings.launcher_open_location.clone(),
+        Some(RowAction::ShowProperties(_)) => strings.launcher_properties.clone(),
+        None => strings.launcher_open.clone(),
     }
 }
 
@@ -714,11 +756,10 @@ fn status_keycap(content: impl IntoElement) -> impl IntoElement {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum ActionMenuItemKind {
     Primary,
-    ApplicationWindow,
-    RecentFiles,
     RunAsAdministrator,
-    RunAsDifferentUser,
     ShowInFileExplorer,
+    CopyPath,
+    ShowProperties,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -757,7 +798,8 @@ fn primary_action_icon(action: Option<&RowAction>) -> ActionPanelIcon {
         Some(RowAction::ConfirmNotice { .. }) => ActionPanelIcon::Play,
         Some(RowAction::OpenPlugin { .. }) => ActionPanelIcon::Package,
         Some(RowAction::RevealInExplorer(_)) => ActionPanelIcon::FolderOpen,
-        Some(RowAction::ShowProperties(_)) | None => ActionPanelIcon::Application,
+        Some(RowAction::ShowProperties(_)) => ActionPanelIcon::Info,
+        None => ActionPanelIcon::Application,
     }
 }
 
@@ -765,58 +807,53 @@ fn action_menu_items(
     strings: &crate::i18n::UiStrings,
     action: Option<&RowAction>,
 ) -> Vec<ActionMenuItem> {
-    let has_path = action.and_then(row_path).is_some();
-    let can_run_as_administrator = action.is_some_and(can_run_as_administrator);
-    vec![
-        ActionMenuItem {
-            kind: ActionMenuItemKind::Primary,
-            label: primary_action_label(action, strings),
-            icon: primary_action_icon(action),
-            keys: &[],
-            enter: true,
-            enabled: action.is_some(),
-        },
-        ActionMenuItem {
-            kind: ActionMenuItemKind::ApplicationWindow,
-            label: strings.launcher_action_application_window.clone(),
-            icon: ActionPanelIcon::ApplicationWindow,
-            keys: &["Ctrl", "N"],
-            enter: false,
-            enabled: false,
-        },
-        ActionMenuItem {
-            kind: ActionMenuItemKind::RecentFiles,
-            label: strings.launcher_action_recent_files.clone(),
-            icon: ActionPanelIcon::History,
-            keys: &["Ctrl", "O"],
-            enter: false,
-            enabled: false,
-        },
-        ActionMenuItem {
+    let mut items = vec![ActionMenuItem {
+        kind: ActionMenuItemKind::Primary,
+        label: primary_action_label(action, strings),
+        icon: primary_action_icon(action),
+        keys: &[],
+        enter: true,
+        enabled: action.is_some(),
+    }];
+    if action.is_some_and(can_run_as_administrator) {
+        items.push(ActionMenuItem {
             kind: ActionMenuItemKind::RunAsAdministrator,
             label: strings.launcher_action_run_as_administrator.clone(),
             icon: ActionPanelIcon::Shield,
             keys: &["Ctrl", "Shift"],
             enter: true,
-            enabled: can_run_as_administrator,
-        },
-        ActionMenuItem {
-            kind: ActionMenuItemKind::RunAsDifferentUser,
-            label: strings.launcher_action_run_as_different_user.clone(),
-            icon: ActionPanelIcon::Users,
-            keys: &["Alt", "Shift"],
-            enter: true,
-            enabled: false,
-        },
-        ActionMenuItem {
-            kind: ActionMenuItemKind::ShowInFileExplorer,
-            label: strings.launcher_action_show_in_file_explorer.clone(),
-            icon: ActionPanelIcon::FolderOpen,
-            keys: &[],
-            enter: false,
-            enabled: has_path,
-        },
-    ]
+            enabled: true,
+        });
+    }
+    if action.and_then(row_path).is_some() {
+        items.extend([
+            ActionMenuItem {
+                kind: ActionMenuItemKind::ShowInFileExplorer,
+                label: strings.launcher_action_show_in_file_explorer.clone(),
+                icon: ActionPanelIcon::FolderOpen,
+                keys: &[],
+                enter: false,
+                enabled: true,
+            },
+            ActionMenuItem {
+                kind: ActionMenuItemKind::CopyPath,
+                label: strings.launcher_copy_path.clone(),
+                icon: ActionPanelIcon::Copy,
+                keys: &[],
+                enter: false,
+                enabled: true,
+            },
+            ActionMenuItem {
+                kind: ActionMenuItemKind::ShowProperties,
+                label: strings.launcher_properties.clone(),
+                icon: ActionPanelIcon::Info,
+                keys: &[],
+                enter: false,
+                enabled: true,
+            },
+        ]);
+    }
+    items
 }
 
 fn can_run_as_administrator(action: &RowAction) -> bool {
@@ -840,9 +877,15 @@ fn action_menu_command(
             .cloned()
             .map(RowAction::RevealInExplorer)
             .map(WindowCommand::Activate),
-        ActionMenuItemKind::ApplicationWindow
-        | ActionMenuItemKind::RecentFiles
-        | ActionMenuItemKind::RunAsDifferentUser => None,
+        ActionMenuItemKind::CopyPath => action
+            .and_then(row_path)
+            .map(|path| RowAction::CopyText(path.display().to_string()))
+            .map(WindowCommand::Activate),
+        ActionMenuItemKind::ShowProperties => action
+            .and_then(row_path)
+            .cloned()
+            .map(RowAction::ShowProperties)
+            .map(WindowCommand::Activate),
     }
 }
 
@@ -927,11 +970,13 @@ fn action_menu_content(
     let strings = app.ui_strings();
     let search_placeholder = strings.launcher_action_search.clone();
     let no_results = strings.launcher_action_no_results.clone();
+    let height_action = current_action.clone();
+    let height_strings = strings.clone();
     let actions = view()
         .flex_1()
         .flex_col()
         .px(px(8.0))
-        .pt(px(8.0))
+        .pt(px(ACTION_MENU_TOP_PADDING))
         .child({
             let current_action_for_items = current_action.clone();
             let strings = strings.clone();
@@ -980,7 +1025,7 @@ fn action_menu_content(
                 move || {
                     view()
                         .w_full()
-                        .h(px(40.0))
+                        .h(px(ACTION_MENU_EMPTY_HEIGHT))
                         .items_center()
                         .justify_center()
                         .child(text(no_results.clone()).text_size(px(12.0)).text_color(rgb(
@@ -992,14 +1037,19 @@ fn action_menu_content(
 
     view()
         .w_full()
-        .h(px(280.0))
+        .h(move || {
+            let action = height_action();
+            let items = action_menu_items(&height_strings, action.as_ref());
+            let visible_actions = filtered_action_indices(&items, &action_search.get()).len();
+            px(action_menu_height(visible_actions))
+        })
         .flex_col()
         .bg(rgb(0x363636))
         .child(action_menu_header(current_row, strings.application.clone()))
         .child(actions)
         .child(
             view()
-                .h(px(39.0))
+                .h(px(ACTION_MENU_FOOTER_HEIGHT))
                 .w_full()
                 .px(px(16.0))
                 .flex_row()
@@ -1060,7 +1110,7 @@ fn action_panel_row(
         .on_select(on_select)
         .close_on_select(options.close_on_select)
         .w_full()
-        .h(px(32.0))
+        .h(px(ACTION_MENU_ROW_HEIGHT))
         .px(px(8.0))
         .rounded(px(8.0))
         .flex_row()
@@ -1139,7 +1189,6 @@ fn action_shortcut_keycap(content: impl IntoElement) -> impl IntoElement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActionPanelIcon {
     Application,
-    ApplicationWindow,
     Play,
     File,
     Copy,
@@ -1147,10 +1196,9 @@ enum ActionPanelIcon {
     Settings,
     Close,
     Package,
-    History,
     Shield,
-    Users,
     FolderOpen,
+    Info,
     Search,
 }
 
@@ -1164,7 +1212,7 @@ fn action_menu_header(
     let has_icon = move || has_icon_row().icon.is_some();
     let icon_source: Rc<dyn Fn() -> String> = Rc::new(move || icon_row().icon.unwrap_or_default());
     view()
-        .h(px(40.0))
+        .h(px(ACTION_MENU_HEADER_HEIGHT))
         .w_full()
         .px(px(16.0))
         .flex_row()
@@ -1223,9 +1271,6 @@ fn action_panel_icon_sized(kind: ActionPanelIcon, size: f32) -> impl IntoElement
                     ActionPanelIcon::Application => {
                         "M4 4 H20 A2 2 0 0 1 22 6 V18 A2 2 0 0 1 20 20 H4 A2 2 0 0 1 2 18 V6 A2 2 0 0 1 4 4 Z M10 4 V8 M2 8 H22 M6 4 V8"
                     }
-                    ActionPanelIcon::ApplicationWindow => {
-                        "M5 3 H19 A2 2 0 0 1 21 5 V19 A2 2 0 0 1 19 21 H5 A2 2 0 0 1 3 19 V5 A2 2 0 0 1 5 3 Z M3 9 H21"
-                    }
                     ActionPanelIcon::Play => "M6 3 L20 12 L6 21 Z",
                     ActionPanelIcon::File => {
                         "M15 2 H6 A2 2 0 0 0 4 4 V20 A2 2 0 0 0 6 22 H18 A2 2 0 0 0 20 20 V7 Z M14 2 V6 A2 2 0 0 0 16 8 H20"
@@ -1243,17 +1288,14 @@ fn action_panel_icon_sized(kind: ActionPanelIcon, size: f32) -> impl IntoElement
                     ActionPanelIcon::Package => {
                         "M21 8 A2 2 0 0 0 20 6.27 L13 2.27 A2 2 0 0 0 11 2.27 L4 6.27 A2 2 0 0 0 3 8 V16 A2 2 0 0 0 4 17.73 L11 21.73 A2 2 0 0 0 13 21.73 L20 17.73 A2 2 0 0 0 21 16 Z M3.3 7 L12 12 L20.7 7 M12 22 V12"
                     }
-                    ActionPanelIcon::History => {
-                        "M3 12 A9 9 0 1 0 12 3 A9.75 9.75 0 0 0 5.26 5.74 L3 8 M3 3 V8 H8 M12 7 V12 L16 14"
-                    }
                     ActionPanelIcon::Shield => {
                         "M20 13 C20 18 16.5 20.5 12.34 21.95 A1 1 0 0 1 11.67 21.94 C7.5 20.5 4 18 4 13 V6 A1 1 0 0 1 5 5 C7 5 9.5 3.8 11.24 2.28 A1.17 1.17 0 0 1 12.76 2.28 C14.51 3.81 17 5 19 5 A1 1 0 0 1 20 6 Z M9 12 L11 14 L15 10"
                     }
-                    ActionPanelIcon::Users => {
-                        "M18 21 A8 8 0 0 0 2 21 M10 3 A5 5 0 1 0 10 13 A5 5 0 1 0 10 3 Z M22 20 C22 16.63 20 13.5 18 12 A5 5 0 0 0 17.55 3.7"
-                    }
                     ActionPanelIcon::FolderOpen => {
                         "M6 14 L7.5 11.1 A2 2 0 0 1 9.24 10 H20 A2 2 0 0 1 21.94 12.5 L20.4 18.5 A2 2 0 0 1 18.45 20 H4 A2 2 0 0 1 2 18 V5 A2 2 0 0 1 4 3 H7.9 A2 2 0 0 1 9.59 3.9 L10.4 5.1 A2 2 0 0 0 12.07 6 H18 A2 2 0 0 1 20 8 V10"
+                    }
+                    ActionPanelIcon::Info => {
+                        "M12 2 A10 10 0 1 0 12 22 A10 10 0 1 0 12 2 Z M12 16 V12 M12 8 H12.01"
                     }
                     ActionPanelIcon::Search => {
                         "M11 3 A8 8 0 1 0 11 19 A8 8 0 1 0 11 3 Z M21 21 L16.7 16.7"
@@ -1268,12 +1310,14 @@ fn row_path(action: &RowAction) -> Option<&std::path::PathBuf> {
     match action {
         RowAction::LaunchApp(path)
         | RowAction::RunAsAdministrator(path)
-        | RowAction::OpenFile(path) => Some(path),
+        | RowAction::OpenFile(path)
+        | RowAction::RevealInExplorer(path)
+        | RowAction::ShowProperties(path) => Some(path),
         _ => None,
     }
 }
 
-fn bind_launcher_key(key: &'static str, repeat: bool, handler: Rc<dyn Fn(&str)>) {
+fn bind_launcher_key(key: &str, repeat: bool, handler: Rc<dyn Fn(&str)>) {
     on_key_with(
         key,
         KeyOptions {
@@ -1338,9 +1382,9 @@ mod tests {
     use steward_ui_components::LauncherRow;
 
     use super::{
-        action_menu_command, action_menu_items, filtered_action_indices, launcher_height,
-        launcher_height_with_actions, next_action_selection, next_selection, primary_action_label,
-        row_path, submission_action, ActionMenuItemKind, StewardLauncher,
+        action_menu_command, action_menu_height, action_menu_items, filtered_action_indices,
+        launcher_height, launcher_height_with_actions, next_action_selection, next_selection,
+        primary_action_label, row_path, submission_action, ActionMenuItemKind, StewardLauncher,
     };
     use crate::{
         i18n::UiStrings,
@@ -1413,6 +1457,9 @@ mod tests {
         assert_eq!(launcher_height(8), 438.0);
         assert_eq!(launcher_height_with_actions(0), 380.0);
         assert_eq!(launcher_height_with_actions(8), 438.0);
+        assert_eq!(action_menu_height(0), 127.0);
+        assert_eq!(action_menu_height(1), 119.0);
+        assert_eq!(action_menu_height(5), 247.0);
     }
 
     #[test]
@@ -1452,11 +1499,17 @@ mod tests {
             items[matches[0]].kind,
             ActionMenuItemKind::ShowInFileExplorer
         );
+        let matches = filtered_action_indices(&items, "copy path");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(items[matches[0]].kind, ActionMenuItemKind::CopyPath);
+        let matches = filtered_action_indices(&items, "properties");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(items[matches[0]].kind, ActionMenuItemKind::ShowProperties);
         assert!(filtered_action_indices(&items, "missing action").is_empty());
     }
 
     #[test]
-    fn action_menu_keyboard_navigation_skips_unavailable_actions() {
+    fn action_menu_keyboard_navigation_cycles_through_available_actions() {
         let strings = ui_strings("Search");
         let action = RowAction::LaunchApp(PathBuf::from(r"C:\Windows\notepad.exe"));
         let items = action_menu_items(&strings, Some(&action));
@@ -1482,6 +1535,14 @@ mod tests {
                 Some(ActionMenuItemKind::ShowInFileExplorer),
                 1
             ),
+            Some(ActionMenuItemKind::CopyPath)
+        );
+        assert_eq!(
+            next_action_selection(&items, &all, Some(ActionMenuItemKind::CopyPath), 1),
+            Some(ActionMenuItemKind::ShowProperties)
+        );
+        assert_eq!(
+            next_action_selection(&items, &all, Some(ActionMenuItemKind::ShowProperties), 1),
             Some(ActionMenuItemKind::Primary)
         );
 
@@ -1490,11 +1551,9 @@ mod tests {
             next_action_selection(&items, &administrator, None, 1),
             Some(ActionMenuItemKind::RunAsAdministrator)
         );
-        let application_window = filtered_action_indices(&items, "application window");
-        assert_eq!(
-            next_action_selection(&items, &application_window, None, 1),
-            None
-        );
+        assert!(filtered_action_indices(&items, "application window").is_empty());
+        assert!(filtered_action_indices(&items, "recent files").is_empty());
+        assert!(filtered_action_indices(&items, "different user").is_empty());
     }
 
     #[test]
@@ -1522,6 +1581,16 @@ mod tests {
         assert!(matches!(
             action_menu_command(ActionMenuItemKind::ShowInFileExplorer, Some(&app)),
             Some(WindowCommand::Activate(RowAction::RevealInExplorer(target)))
+                if target == path
+        ));
+        assert!(matches!(
+            action_menu_command(ActionMenuItemKind::CopyPath, Some(&app)),
+            Some(WindowCommand::Activate(RowAction::CopyText(target)))
+                if target == path.display().to_string()
+        ));
+        assert!(matches!(
+            action_menu_command(ActionMenuItemKind::ShowProperties, Some(&app)),
+            Some(WindowCommand::Activate(RowAction::ShowProperties(target)))
                 if target == path
         ));
     }
@@ -1559,6 +1628,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                "control+Comma".into(),
                 false,
             ),
             Arc::new(AtomicU64::new(0)),
@@ -1582,12 +1652,20 @@ mod tests {
 
         app.press("text:Actions").unwrap();
         app.wait_for("text:Search for actions...").unwrap();
-        app.wait_for("text:Application Window").unwrap();
+        app.wait_for("text:Show in File Explorer").unwrap();
+        app.wait_for("text:Copy path").unwrap();
+        app.wait_for("text:Properties").unwrap();
+        app.wait_for_gone("text:Application Window", Duration::from_millis(500))
+            .unwrap();
+        app.wait_for_gone("text:Open Files... / Recent", Duration::from_millis(500))
+            .unwrap();
+        app.wait_for_gone("text:Run as Different User", Duration::from_millis(500))
+            .unwrap();
 
         app.type_text("id:action-search", "administrator").unwrap();
         app.wait_for("text:administrator").unwrap();
         app.wait_for("text:Run as Administrator").unwrap();
-        app.wait_for_gone("text:Application Window", Duration::from_millis(500))
+        app.wait_for_gone("text:Copy path", Duration::from_millis(500))
             .unwrap();
         app.press_key("enter").unwrap();
 
@@ -1599,6 +1677,29 @@ mod tests {
             )),
             "{commands:?}"
         );
+
+        app.wait_for_gone("id:action-search", Duration::from_millis(500))
+            .unwrap();
+        app.press("text:Actions").unwrap();
+        app.wait_for("id:action-search").unwrap();
+        app.type_text("id:action-search", "copy path").unwrap();
+        app.press_key("enter").unwrap();
+        assert!(command_rx.try_iter().any(|command| matches!(
+            command,
+            WindowCommand::Activate(RowAction::CopyText(path))
+                if path == app_path.display().to_string()
+        )));
+
+        app.wait_for_gone("id:action-search", Duration::from_millis(500))
+            .unwrap();
+        app.press("text:Actions").unwrap();
+        app.wait_for("id:action-search").unwrap();
+        app.type_text("id:action-search", "properties").unwrap();
+        app.press_key("enter").unwrap();
+        assert!(command_rx.try_iter().any(|command| matches!(
+            command,
+            WindowCommand::Activate(RowAction::ShowProperties(path)) if path == app_path
+        )));
 
         app.wait_for_gone("id:action-search", Duration::from_millis(500))
             .unwrap();
@@ -1655,6 +1756,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                "control+Comma".into(),
                 false,
             ),
             Arc::new(AtomicU64::new(0)),
@@ -1775,6 +1877,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                "control+Comma".into(),
                 false,
             ),
             search_revision.clone(),
@@ -1850,6 +1953,49 @@ mod tests {
     }
 
     #[test]
+    fn settings_button_and_ctrl_comma_request_the_settings_window() {
+        let placeholder = "Search apps, files, settings, or type a command...";
+        let (request_tx, _request_rx) = crossbeam_channel::unbounded::<SearchRequest>();
+        let (command_tx, command_rx) = crossbeam_channel::unbounded();
+        let services = Arc::new(AppServices::new(
+            request_tx,
+            command_tx,
+            UiSettings::new(
+                "en".into(),
+                ui_strings(placeholder),
+                "#863bff".into(),
+                false,
+                "control+alt+Space".into(),
+                "control+Comma".into(),
+                false,
+            ),
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let config = EngineConfig {
+            context: EngineContext::default().with(std::sync::Arc::new(services.launcher())),
+            ..EngineConfig::new(Root::of::<StewardLauncher>())
+        };
+        let mut app = Headless::start(config).unwrap();
+
+        app.wait_for("id:launcher-settings").unwrap();
+        app.press("id:launcher-settings").unwrap();
+        assert!(command_rx
+            .try_iter()
+            .any(|command| matches!(command, WindowCommand::OpenSettings)));
+
+        app.press_key("ctrl+,").unwrap();
+        assert!(command_rx
+            .try_iter()
+            .any(|command| matches!(command, WindowCommand::OpenSettings)));
+
+        services.set_settings_hotkey("alt+KeyP");
+        app.press_key("ctrl+,").unwrap();
+        assert!(!command_rx
+            .try_iter()
+            .any(|command| matches!(command, WindowCommand::OpenSettings)));
+    }
+
+    #[test]
     fn summoning_again_clears_the_launcher_query() {
         let placeholder = "Search apps, files, settings, or type a command...";
         let (request_tx, _request_rx) = crossbeam_channel::unbounded();
@@ -1863,6 +2009,7 @@ mod tests {
                 "#863bff".into(),
                 false,
                 "control+alt+Space".into(),
+                "control+Comma".into(),
                 false,
             ),
             Arc::new(AtomicU64::new(0)),

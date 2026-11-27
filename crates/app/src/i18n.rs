@@ -192,6 +192,8 @@ mod tests {
                 "launcher-action-show-in-file-explorer",
                 "launcher-action-search",
                 "launcher-action-no-results",
+                "settings-hotkeys",
+                "settings-settings-hotkey",
                 "settings-update-check-on-startup",
                 "settings-update-idle",
                 "settings-checking-for-updates",

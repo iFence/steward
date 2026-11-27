@@ -144,6 +144,7 @@ fn main() {
         .unwrap_or_else(|| format!("#{DEFAULT_ACCENT:06x}"));
     let autostart = autostart::autostart_enabled();
     let summon_hotkey = hotkeys::persisted_summon_hotkey(&storage.borrow()).to_string();
+    let settings_hotkey = hotkeys::persisted_settings_hotkey(&storage.borrow()).to_string();
     let check_updates_on_startup = storage
         .borrow()
         .get_setting(CHECK_UPDATES_SETTING)
@@ -175,6 +176,7 @@ fn main() {
             accent,
             autostart,
             summon_hotkey,
+            settings_hotkey,
             check_updates_on_startup,
         ),
         search_revision,
@@ -206,6 +208,7 @@ fn main() {
         tray: RefCell::new(None),
         hotkey_manager: None,
         summon_hotkey: None,
+        settings_hotkey: None,
         hotkey_registry: crate::hotkey_registry::HotkeyRegistry::default(),
         plugin_windows: Default::default(),
         plugin_events: plugin_event_tx,
@@ -229,6 +232,25 @@ fn main() {
             let handle =
                 window::open_launcher_window(cx, state.clone(), services.clone(), data_dir.clone());
             state.borrow_mut().window = Some(handle);
+            let hotkey_state = state.clone();
+            let hotkey_services = services.clone();
+            cx.intercept_keystrokes(move |event, window, cx| {
+                let launcher_id = hotkey_state
+                    .borrow()
+                    .window
+                    .map(|handle| handle.window_id());
+                if launcher_id != Some(window.window_handle().window_id()) {
+                    return;
+                }
+                let configured = hotkey_services.settings_hotkey();
+                if settings::hotkey_from_keystroke(&event.keystroke).as_deref()
+                    == Some(configured.as_str())
+                {
+                    hotkey_services.send_window_command(services::WindowCommand::OpenSettings);
+                    cx.stop_propagation();
+                }
+            })
+            .detach();
             if std::env::var_os("STEWARD_SHOW_SETTINGS").is_some() {
                 window::open_settings_window(cx, state.clone(), services.clone(), data_dir.clone());
             }
