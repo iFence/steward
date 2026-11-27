@@ -238,6 +238,7 @@ mod tests {
                 schema_version: 3,
                 id: "com.example.embedded".into(),
                 name: "Embedded".into(),
+                author: None,
                 version: "1.0.0".into(),
                 min_host_version: Some("0.5.0".into()),
                 icon: None,

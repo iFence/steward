@@ -57,6 +57,7 @@ pub fn scaffold_plugin(options: ScaffoldOptions) -> Result<ScaffoldReport> {
         schema_version: SCHEMA_VERSION,
         id: options.id.clone(),
         name: options.name.clone(),
+        author: None,
         version: options.version.clone(),
         min_host_version: Some(HOST_API_VERSION.into()),
         icon: None,

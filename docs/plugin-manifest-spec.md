@@ -11,6 +11,7 @@ the signed `plugin.nshpkg` referenced by the manifest.
   "schemaVersion": 3,
   "id": "it.aspirin.calendar",
   "name": "Calendar",
+  "author": "Steward Team",
   "version": "0.1.4",
   "minHostVersion": "1.1.0",
   "package": "plugin.nshpkg",
@@ -47,6 +48,7 @@ Fields:
 | `schemaVersion`  | number | yes         | `3` for new packages; `2` remains accepted for installed compatibility.                                                |
 | `id`             | string | yes         | Reverse-domain id; must match `nsh.json`.                                                                              |
 | `name`           | string | yes         | Display name.                                                                                                          |
+| `author`         | string | no          | Repository or publisher display name, up to 128 bytes. Official Steward plugins are labelled as official in Settings. |
 | `version`        | string | yes         | Must match the package app version.                                                                                    |
 | `minHostVersion` | string | third-party | Minimum semantic Steward plugin host API version. Required for new non-official packages.                              |
 | `icon`           | string | recommended | Inline SVG launcher icon. Official plugins must provide it; older manifests receive Steward's generic plugin fallback. |

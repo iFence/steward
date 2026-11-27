@@ -129,7 +129,9 @@ impl Signer {
             "schemaVersion": 2,
             "id": self.plugin_id,
             "name": "Test Plugin",
+            "author": "Test Author",
             "version": version,
+            "icon": "<svg viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"8\"/></svg>",
             "package": "plugin.nshpkg",
             "commands": [{
                 "name": "test",
@@ -609,6 +611,12 @@ fn marketplace_indexes_and_installs_verified_local_archives() {
     assert_eq!(report.entries, 1);
     let index = store.marketplace().unwrap();
     assert_eq!(index.entries[0].id, "com.example.test");
+    assert_eq!(index.entries[0].author.as_deref(), Some("Test Author"));
+    assert_eq!(index.entries[0].command_count, 1);
+    assert!(index.entries[0]
+        .icon
+        .as_deref()
+        .is_some_and(|icon| icon.starts_with("<svg")));
     assert_eq!(index.entries[0].admission_policy_version, None);
     assert_eq!(index.publishers[0].key_id, signer.release.public().id());
 

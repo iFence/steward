@@ -77,6 +77,7 @@ mod tests {
                 schema_version: SCHEMA_VERSION,
                 id: "it.aspirin.calendar".into(),
                 name: "Calendar".into(),
+                author: None,
                 version: "0.2.3".into(),
                 min_host_version: None,
                 icon: Some(icon.into()),

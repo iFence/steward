@@ -26,6 +26,7 @@ use steward_plugin_store::{
 use steward_storage::{NewCapabilityGrant, Storage};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct PluginCapabilitySnapshot {
     pub(crate) descriptor: CapabilityDescriptor,
     pub(crate) grant_ids: Vec<i64>,
@@ -34,6 +35,7 @@ pub(crate) struct PluginCapabilitySnapshot {
     pub(crate) release_allowed: bool,
 }
 
+#[allow(dead_code)]
 impl PluginCapabilitySnapshot {
     pub(crate) fn allowed(&self) -> bool {
         self.release_allowed
@@ -45,6 +47,8 @@ impl PluginCapabilitySnapshot {
 pub(crate) struct PluginManagementSnapshot {
     pub(crate) busy: bool,
     pub(crate) catalog: PluginCatalog,
+    pub(crate) publishers: BTreeMap<String, PluginPublisherSnapshot>,
+    #[allow(dead_code)]
     pub(crate) capabilities: BTreeMap<String, Vec<PluginCapabilitySnapshot>>,
     pub(crate) preferences: BTreeMap<String, BTreeMap<String, Value>>,
     pub(crate) capability_audit: BTreeMap<String, Vec<PluginCapabilityAuditSnapshot>>,
@@ -62,6 +66,7 @@ impl Default for PluginManagementSnapshot {
                 marketplace_errors: Vec::new(),
                 revocations: None,
             },
+            publishers: BTreeMap::new(),
             capabilities: BTreeMap::new(),
             preferences: BTreeMap::new(),
             capability_audit: BTreeMap::new(),
@@ -69,6 +74,12 @@ impl Default for PluginManagementSnapshot {
             error: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PluginPublisherSnapshot {
+    pub(crate) display_name: String,
+    pub(crate) key_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +183,7 @@ impl PluginManagementPort {
                     Err(error) => (None, Some(format!("{error:#}"))),
                 };
                 let catalog = store.catalog();
+                let publishers = publisher_snapshots(&store);
                 let capabilities = storage
                     .as_ref()
                     .map(|storage| capability_snapshots(&catalog, storage))
@@ -188,6 +200,7 @@ impl PluginManagementPort {
                     *current = PluginManagementSnapshot {
                         busy: false,
                         catalog,
+                        publishers,
                         capabilities,
                         preferences,
                         capability_audit,
@@ -216,14 +229,17 @@ impl PluginManagementPort {
         self.send(Command::Refresh);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn sync_marketplace(&self) {
         self.send(Command::SyncMarketplace);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn install(&self, plugin_id: impl Into<String>) {
         self.send(Command::Install(plugin_id.into()));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn install_path(&self, path: impl Into<PathBuf>) {
         self.send(Command::InstallPath(path.into()));
     }
@@ -240,6 +256,7 @@ impl PluginManagementPort {
         self.send(Command::Rollback(plugin_id.into()));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn grant_capability(
         &self,
         plugin_id: impl Into<String>,
@@ -253,6 +270,7 @@ impl PluginManagementPort {
         });
     }
 
+    #[allow(dead_code)]
     pub(crate) fn revoke_capability(
         &self,
         plugin_id: impl Into<String>,
@@ -369,6 +387,7 @@ impl PluginManagementPort {
         self.revision.fetch_add(1, Ordering::Release);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn show_error(&self, error: String) {
         if let Ok(mut current) = self.state.write() {
             current.error = Some(error);
@@ -384,6 +403,24 @@ impl PluginManagementPort {
     }
 }
 
+fn publisher_snapshots(store: &PluginStore) -> BTreeMap<String, PluginPublisherSnapshot> {
+    store
+        .publishers()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|publisher| {
+            (
+                publisher.id,
+                PluginPublisherSnapshot {
+                    display_name: publisher.display_name,
+                    key_ids: publisher.keys.into_iter().map(|key| key.key_id).collect(),
+                },
+            )
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
 enum Command {
     Refresh,
     SyncMarketplace,
@@ -827,6 +864,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             id: "com.example.test".into(),
             name: "Test".into(),
+            author: None,
             version: "1.2.3".into(),
             min_host_version: Some("0.1.0".into()),
             icon: None,

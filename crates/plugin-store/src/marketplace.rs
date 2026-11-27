@@ -18,8 +18,14 @@ use crate::{
 pub struct MarketplaceEntry {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     pub version: String,
     pub build: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub command_count: usize,
     pub artifact: String,
     pub artifact_sha256: String,
     pub package_sha256: String,
@@ -199,8 +205,11 @@ pub(crate) fn sync(store: &PluginStore, public_admission: bool) -> Result<Market
         let candidate = MarketplaceEntry {
             id: inspection.app_id.clone(),
             name: inspection.name.clone(),
+            author: inspection.manifest.author.clone(),
             version: inspection.version.clone(),
             build: inspection.build,
+            icon: inspection.manifest.icon.clone(),
+            command_count: inspection.manifest.commands.len(),
             artifact: display,
             artifact_sha256: sha256_file(&path)?,
             package_sha256: inspection.package_sha256.clone(),

@@ -260,6 +260,7 @@ fn load_cached_plugins(conn: &Connection) -> Result<Vec<PluginMeta>> {
             schema_version: SCHEMA_VERSION,
             id: row.get(0)?,
             name: row.get(1)?,
+            author: None,
             version: row.get(2)?,
             min_host_version: row.get(3)?,
             icon: row.get(6)?,

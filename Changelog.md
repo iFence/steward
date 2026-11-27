@@ -121,8 +121,14 @@ Conventions:
 - **General settings layout**: General settings now aligns titles and controls
   on opposite sides and separates each item with a subtle divider and roomier
   vertical spacing.
+- **General settings dividers**: the language dropdown no longer overlaps the
+  divider below its row.
 - **Plugin settings header**: the Plugins page no longer shows the redundant
   management summary above its actions and installed-plugin details.
+- **Plugin card layout**: Settings > Plugins now presents installed plugins as
+  compact cards with icons, versions, authors, command counts, trust state,
+  and actions. A search field replaces the former management and marketplace
+  controls.
 - **Redesigned About page**: Settings > About now has a centered brand
   presentation, a compact updates card with progress and release notes, and a
   direct changelog link.

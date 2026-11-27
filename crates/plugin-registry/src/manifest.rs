@@ -22,6 +22,8 @@ pub struct PluginManifest {
     pub schema_version: u16,
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     pub version: String,
     #[serde(
         rename = "minHostVersion",
@@ -53,6 +55,15 @@ impl PluginManifest {
         }
         if self.name.trim().is_empty() {
             return Err(ManifestError("name must not be empty".into()));
+        }
+        if self
+            .author
+            .as_ref()
+            .is_some_and(|author| author.trim().is_empty() || author.len() > 128)
+        {
+            return Err(ManifestError(
+                "author must contain 1 to 128 bytes when present".into(),
+            ));
         }
         if semver::Version::parse(&self.version).is_err() {
             return Err(ManifestError(
@@ -616,6 +627,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             id: "it.aspirin.calendar".into(),
             name: "Calendar".into(),
+            author: None,
             version: "0.3.0".into(),
             min_host_version: None,
             icon: None,
@@ -705,6 +717,11 @@ mod tests {
         assert!(bad.validate().is_err());
         bad = manifest();
         bad.min_host_version = Some("host-api".into());
+        assert!(bad.validate().is_err());
+        bad = manifest();
+        bad.author = Some("  ".into());
+        assert!(bad.validate().is_err());
+        bad.author = Some("a".repeat(129));
         assert!(bad.validate().is_err());
     }
 

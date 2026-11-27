@@ -6,9 +6,9 @@ use std::{
 };
 
 use gpui::{
-    div, img, px, rgb, Anchor, AnyElement, App, Context, FocusHandle, FontWeight, Image,
-    ImageFormat, ImageSource, InteractiveElement, IntoElement, Keystroke, ParentElement,
-    PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, img, px, rgb, Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle,
+    FontWeight, Image, ImageFormat, ImageSource, InteractiveElement, IntoElement, Keystroke,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
 };
 use gpui_kit::{
     assets::IconName,
@@ -16,6 +16,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants as _},
         group_box::GroupBoxVariant,
         h_flex,
+        input::{Input, InputEvent, InputState},
         menu::{DropdownMenu as _, PopupMenuItem},
         scroll::ScrollableElement as _,
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -35,6 +36,7 @@ use crate::{
     updates::UpdateState,
 };
 use steward_plugin_registry::PluginPreferenceKind;
+use steward_plugin_store::{InstalledPlugin, MarketplaceEntry};
 use steward_ui_components::palette;
 
 const LANGUAGES: [(&str, &str); 7] = [
@@ -73,6 +75,8 @@ pub(crate) struct StewardSettings {
     recording_hotkey: bool,
     hotkey_focus: FocusHandle,
     hotkey_status: SharedString,
+    plugin_search: Entity<InputState>,
+    _plugin_search_subscription: Subscription,
 }
 
 type BoolGetter = Rc<dyn Fn(&App) -> bool>;
@@ -114,6 +118,7 @@ fn settings_row(
         div()
             .w_full()
             .min_h(px(32.0))
+            .py_1()
             .border_b_1()
             .border_color(cx.theme().border.opacity(0.35))
             .child(content)
@@ -206,7 +211,7 @@ fn settings_dropdown_control(
 
 impl StewardSettings {
     pub(crate) fn new(
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
         services: Arc<AppServices>,
         i18n: Rc<Localization>,
@@ -218,6 +223,12 @@ impl StewardSettings {
         let hotkey = services.summon_hotkey();
         let check_updates_on_startup = services.check_updates_on_startup();
         let hotkey_focus = cx.focus_handle();
+        let plugin_search = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(SharedString::from(i18n.translate("settings-plugin-search")))
+        });
+        let _plugin_search_subscription =
+            cx.subscribe_in(&plugin_search, window, Self::on_plugin_search_event);
         services.plugin_management().refresh();
 
         Self {
@@ -231,6 +242,20 @@ impl StewardSettings {
             recording_hotkey: false,
             hotkey_focus,
             hotkey_status: SharedString::default(),
+            plugin_search,
+            _plugin_search_subscription,
+        }
+    }
+
+    fn on_plugin_search_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            cx.notify();
         }
     }
 
@@ -353,6 +378,7 @@ impl Render for StewardSettings {
         let plugin_snapshot = plugin_port.snapshot();
         let developer_diagnostics = services.developer_diagnostics();
         let plugin_i18n = self.i18n.clone();
+        let plugin_search = self.plugin_search.clone();
         let plugin_preference_groups =
             render_plugin_preferences(plugin_port.clone(), &plugin_snapshot);
         Settings::new(SharedString::from(format!(
@@ -533,12 +559,14 @@ impl Render for StewardSettings {
                     let snapshot = plugin_snapshot;
                     let developer_diagnostics = developer_diagnostics.clone();
                     let i18n = plugin_i18n;
+                    let plugin_search = plugin_search.clone();
                     move |_options, _window, cx| {
                         render_plugins(
                             port.clone(),
                             snapshot.clone(),
                             developer_diagnostics.clone(),
                             i18n.clone(),
+                            &plugin_search,
                             cx,
                         )
                     }
@@ -752,61 +780,182 @@ fn render_plugin_preferences(
         .collect()
 }
 
+fn render_plugin_icon(icon: Option<&str>, cx: &App) -> AnyElement {
+    let icon = icon.map(str::trim).filter(|icon| !icon.is_empty());
+    match icon {
+        Some(icon) => {
+            let image = Arc::new(Image::from_bytes(
+                ImageFormat::Svg,
+                icon.as_bytes().to_vec(),
+            ));
+            img(ImageSource::Image(image))
+                .size(px(40.0))
+                .flex_shrink_0()
+                .into_any_element()
+        }
+        None => Icon::new(IconName::Puzzle)
+            .size(px(32.0))
+            .flex_shrink_0()
+            .text_color(cx.theme().muted_foreground)
+            .into_any_element(),
+    }
+}
+
+fn render_section_heading(title: String, count: usize, cx: &App) -> AnyElement {
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(
+            div()
+                .text_size(px(14.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .px_2()
+                .py(px(1.0))
+                .rounded(px(999.0))
+                .bg(cx.theme().muted)
+                .text_size(px(10.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(count.to_string()),
+        )
+        .into_any_element()
+}
+
+fn latest_marketplace_entry<'a>(
+    snapshot: &'a PluginManagementSnapshot,
+    plugin_id: &str,
+) -> Option<&'a MarketplaceEntry> {
+    snapshot
+        .catalog
+        .marketplace
+        .entries
+        .iter()
+        .filter(|entry| entry.id == plugin_id)
+        .max_by(|left, right| {
+            compare_versions(&left.version, &right.version)
+                .then_with(|| left.build.cmp(&right.build))
+        })
+}
+
+fn plugin_author(
+    snapshot: &PluginManagementSnapshot,
+    plugin_id: &str,
+    manifest_author: Option<&str>,
+    publisher_id: Option<&str>,
+    publisher_key_id: Option<&str>,
+    i18n: &Localization,
+) -> String {
+    if plugin_id.starts_with("it.aspirin.") {
+        return i18n.translate("settings-plugin-official");
+    }
+    if let Some(author) = manifest_author.filter(|author| !author.trim().is_empty()) {
+        return author.to_owned();
+    }
+    let publisher_id = publisher_id.filter(|value| !value.trim().is_empty());
+    let publisher_key_id = publisher_key_id.filter(|value| !value.trim().is_empty());
+    if let Some(publisher) = publisher_id.and_then(|id| snapshot.publishers.get(id)) {
+        return publisher.display_name.clone();
+    }
+    if let Some(publisher) = publisher_key_id.and_then(|key_id| {
+        snapshot
+            .publishers
+            .values()
+            .find(|publisher| publisher.key_ids.iter().any(|known| known == key_id))
+    }) {
+        return publisher.display_name.clone();
+    }
+    publisher_id
+        .map(compact_identifier)
+        .or_else(|| publisher_key_id.map(compact_identifier))
+        .unwrap_or_else(|| i18n.translate("settings-plugin-unknown-publisher"))
+}
+
+fn plugin_matches_query(plugin: &InstalledPlugin, author: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let mut values = vec![
+        plugin.manifest.name.as_str(),
+        plugin.manifest.id.as_str(),
+        plugin.manifest.version.as_str(),
+        author,
+    ];
+    values.extend(
+        plugin
+            .manifest
+            .commands
+            .iter()
+            .map(|command| command.title.as_str()),
+    );
+    values
+        .into_iter()
+        .any(|value| value.to_lowercase().contains(query))
+}
+
+fn compact_identifier(value: &str) -> String {
+    if value.chars().count() <= 18 {
+        return value.to_owned();
+    }
+    let start = value.chars().take(10).collect::<String>();
+    let end = value
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{start}...{end}")
+}
+
 fn render_plugins(
     port: PluginManagementPort,
     snapshot: PluginManagementSnapshot,
     developer_diagnostics: DeveloperDiagnosticsPort,
     i18n: Rc<Localization>,
+    plugin_search: &Entity<InputState>,
     cx: &mut App,
 ) -> impl IntoElement {
-    let refresh_port = port.clone();
-    let sync_port = port.clone();
-    let local_zip_port = port.clone();
-    let local_directory_port = port.clone();
     let developer_mode = developer_diagnostics.is_enabled();
     let busy = snapshot.busy;
-    let mut content = v_flex().gap_3().w_full().child(
-        h_flex()
-            .gap_2()
-            .items_center()
-            .flex_wrap()
-            .child(
-                Button::new("plugins-install-local-zip")
-                    .label(i18n.translate("settings-plugin-install-zip"))
-                    .outline()
-                    .compact()
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        prompt_local_plugin(local_zip_port.clone(), false, cx);
-                    }),
+    let query = plugin_search.read(cx).value().trim().to_lowercase();
+    let matching_plugins = snapshot
+        .catalog
+        .installed
+        .iter()
+        .filter(|plugin| {
+            let marketplace_entry = latest_marketplace_entry(&snapshot, &plugin.manifest.id);
+            let publisher_key_id = plugin
+                .inspection
+                .as_ref()
+                .and_then(|inspection| inspection.publisher_key_id.as_deref());
+            let author = plugin_author(
+                &snapshot,
+                &plugin.manifest.id,
+                plugin.manifest.author.as_deref(),
+                marketplace_entry.and_then(|entry| entry.publisher_id.as_deref()),
+                publisher_key_id,
+                &i18n,
+            );
+            plugin_matches_query(plugin, &author, &query)
+        })
+        .collect::<Vec<_>>();
+    let mut content = v_flex().gap_4().w_full().child(
+        Input::new(plugin_search)
+            .id("plugins-search")
+            .prefix(
+                Icon::new(IconName::Search)
+                    .size(px(16.0))
+                    .text_color(cx.theme().muted_foreground),
             )
-            .child(
-                Button::new("plugins-install-local-directory")
-                    .label(i18n.translate("settings-plugin-install-directory"))
-                    .outline()
-                    .compact()
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        prompt_local_plugin(local_directory_port.clone(), true, cx);
-                    }),
-            )
-            .child(
-                Button::new("plugins-refresh")
-                    .label(i18n.translate("settings-plugin-refresh"))
-                    .outline()
-                    .compact()
-                    .loading(busy)
-                    .disabled(busy)
-                    .on_click(move |_, _, _| refresh_port.refresh()),
-            )
-            .child(
-                Button::new("plugins-sync-marketplace")
-                    .label(i18n.translate("settings-plugin-sync-marketplace"))
-                    .outline()
-                    .compact()
-                    .disabled(busy)
-                    .on_click(move |_, _, _| sync_port.sync_marketplace()),
-            ),
+            .cleanable(true)
+            .w_full(),
     );
 
     if let Some(message) = &snapshot.message {
@@ -818,14 +967,6 @@ fn render_plugins(
         );
     }
     if let Some(error) = &snapshot.error {
-        content = content.child(
-            div()
-                .text_size(px(12.0))
-                .text_color(cx.theme().danger)
-                .child(error.clone()),
-        );
-    }
-    for error in &snapshot.catalog.marketplace_errors {
         content = content.child(
             div()
                 .text_size(px(12.0))
@@ -846,12 +987,11 @@ fn render_plugins(
         );
     }
 
-    content = content.child(
-        div()
-            .text_size(px(14.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(i18n.translate("settings-plugin-installed")),
-    );
+    content = content.child(render_section_heading(
+        i18n.translate("settings-plugin-installed"),
+        matching_plugins.len(),
+        cx,
+    ));
     if snapshot.catalog.installed.is_empty() {
         content = content.child(
             div()
@@ -859,58 +999,31 @@ fn render_plugins(
                 .text_color(cx.theme().muted_foreground)
                 .child(i18n.translate("settings-plugin-no-plugins")),
         );
+    } else if matching_plugins.is_empty() {
+        content = content.child(
+            div()
+                .text_size(px(12.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(i18n.translate("settings-plugin-no-search-results")),
+        );
     }
-    for plugin in &snapshot.catalog.installed {
+    let mut installed_cards = div().w_full().grid().grid_cols(2).gap_3();
+    for plugin in matching_plugins {
         let plugin_id = plugin.manifest.id.clone();
-        let capabilities = snapshot
-            .capabilities
-            .get(&plugin_id)
-            .cloned()
-            .unwrap_or_default();
-        let (status, status_color) = match &plugin.inspection {
-            Some(inspection) if inspection.trusted && inspection.policy.passed => (
-                i18n.translate("settings-plugin-trusted"),
-                cx.theme().primary,
-            ),
-            Some(inspection) if inspection.trusted => (
-                i18n.translate("settings-plugin-policy-failed"),
-                cx.theme().danger,
-            ),
-            Some(inspection) if inspection.signature_valid => (
-                i18n.translate("settings-plugin-untrusted"),
-                cx.theme().danger,
-            ),
-            _ => (
-                i18n.translate("settings-plugin-invalid-signature"),
-                cx.theme().danger,
-            ),
-        };
-        let publisher = plugin
+        let publisher_key_id = plugin
             .inspection
             .as_ref()
-            .and_then(|inspection| inspection.publisher_key_id.clone())
-            .unwrap_or_else(|| i18n.translate("settings-plugin-unknown-publisher"));
-        let package_sha = plugin
-            .inspection
-            .as_ref()
-            .map(|inspection| {
-                inspection
-                    .package_sha256
-                    .chars()
-                    .take(16)
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-        let update = snapshot
-            .catalog
-            .marketplace
-            .entries
-            .iter()
-            .filter(|entry| entry.id == plugin.manifest.id)
-            .max_by(|left, right| {
-                compare_versions(&left.version, &right.version)
-                    .then_with(|| left.build.cmp(&right.build))
-            })
+            .and_then(|inspection| inspection.publisher_key_id.as_deref());
+        let marketplace_entry = latest_marketplace_entry(&snapshot, &plugin_id);
+        let author = plugin_author(
+            &snapshot,
+            &plugin_id,
+            plugin.manifest.author.as_deref(),
+            marketplace_entry.and_then(|entry| entry.publisher_id.as_deref()),
+            publisher_key_id,
+            &i18n,
+        );
+        let update = marketplace_entry
             .filter(|entry| compare_versions(&entry.version, &plugin.manifest.version).is_gt())
             .cloned();
         let update_port = port.clone();
@@ -926,7 +1039,7 @@ fn render_plugins(
             .first()
             .map(|history| history.version.as_str())
             .unwrap_or_default();
-        let mut actions = h_flex().gap_2();
+        let mut actions = h_flex().flex_wrap().gap_1();
         if update.is_some() {
             actions = actions.child(
                 Button::new(format!("plugin-update-{plugin_id}"))
@@ -951,14 +1064,6 @@ fn render_plugins(
                     .on_click(move |_, _, _| rollback_port.rollback(rollback_id.clone())),
             );
         }
-        actions = actions.child(
-            Button::new(format!("plugin-remove-{plugin_id}"))
-                .label(i18n.translate("settings-plugin-remove"))
-                .outline()
-                .compact()
-                .disabled(busy)
-                .on_click(move |_, _, _| remove_port.remove(remove_id.clone())),
-        );
         if developer_mode {
             actions = actions.child(
                 Button::new(format!("plugin-reload-{plugin_id}"))
@@ -969,316 +1074,106 @@ fn render_plugins(
                     .on_click(move |_, _, _| reload_port.reload_developer(&reload_id)),
             );
         }
-        content = content.child(
+        installed_cards = installed_cards.child(
             v_flex()
                 .w_full()
-                .gap_2()
+                .min_w(px(0.0))
+                .gap_3()
                 .p_3()
                 .rounded(cx.theme().radius)
                 .border_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().muted)
+                .bg(cx.theme().background)
+                .hover(|this| this.bg(cx.theme().muted.opacity(0.65)))
                 .child(
                     h_flex()
-                        .justify_between()
+                        .items_start()
+                        .gap_3()
+                        .child(render_plugin_icon(plugin.manifest.icon.as_deref(), cx))
                         .child(
                             v_flex()
+                                .flex_1()
+                                .min_w(px(0.0))
                                 .gap_1()
                                 .child(
-                                    div()
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(format!(
-                                            "{} {}",
-                                            plugin.manifest.name, plugin.manifest.version
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "{}: {publisher}",
-                                            i18n.translate("settings-plugin-publisher")
-                                        )),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(status_color)
-                                .child(status),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!(
-                            "{}: {}",
-                            i18n.translate("settings-plugin-package-hash"),
-                            if package_sha.is_empty() {
-                                "-"
-                            } else {
-                                package_sha.as_str()
-                            }
-                        )),
-                )
-                .when_some(plugin.error.clone(), |this, error| {
-                    this.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(cx.theme().danger)
-                            .child(error),
-                    )
-                })
-                .when(
-                    plugin
-                        .inspection
-                        .as_ref()
-                        .is_some_and(|inspection| !inspection.policy.warnings.is_empty()),
-                    |this| {
-                        this.child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} {}",
-                                    i18n.translate("settings-plugin-policy-review"),
-                                    plugin
-                                        .inspection
-                                        .as_ref()
-                                        .map(|inspection| inspection.policy.warnings.len())
-                                        .unwrap_or(0)
-                                )),
-                        )
-                    },
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(i18n.translate("settings-plugin-capabilities")),
-                )
-                .when(capabilities.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(i18n.translate("settings-plugin-no-capabilities")),
-                    )
-                })
-                .children(capabilities.into_iter().map(|capability| {
-                    let allowed = capability.allowed();
-                    let grant_ids = capability.grant_ids;
-                    let automatic = capability.automatic;
-                    let legacy_compatible = capability.legacy_compatible;
-                    let release_allowed = capability.release_allowed;
-                    let descriptor = capability.descriptor;
-                    let (capability_status, capability_color) = if !release_allowed {
-                        (
-                            i18n.translate("settings-plugin-capability-blocked"),
-                            cx.theme().danger,
-                        )
-                    } else if automatic {
-                        (
-                            i18n.translate("settings-plugin-capability-automatic"),
-                            cx.theme().muted_foreground,
-                        )
-                    } else if legacy_compatible {
-                        (
-                            i18n.translate("settings-plugin-capability-legacy"),
-                            cx.theme().primary,
-                        )
-                    } else if allowed {
-                        (
-                            i18n.translate("settings-plugin-capability-granted"),
-                            cx.theme().primary,
-                        )
-                    } else {
-                        (
-                            i18n.translate("settings-plugin-capability-denied"),
-                            cx.theme().danger,
-                        )
-                    };
-                    let action = if descriptor.sensitive
-                        && release_allowed
-                        && !legacy_compatible
-                        && !automatic
-                    {
-                        if grant_ids.is_empty() {
-                            let grant_port = port.clone();
-                            let plugin_id = plugin_id.clone();
-                            let permission = descriptor.permission.clone();
-                            let scope = descriptor.scope.clone();
-                            let button_id = format!(
-                                "plugin-grant-{plugin_id}-{}-{}",
-                                descriptor.permission, descriptor.scope
-                            );
-                            Some(
-                                Button::new(button_id)
-                                    .label(i18n.translate("settings-plugin-capability-allow"))
-                                    .primary()
-                                    .compact()
-                                    .disabled(busy)
-                                    .on_click(move |_, _, _| {
-                                        grant_port.grant_capability(
-                                            plugin_id.clone(),
-                                            permission.clone(),
-                                            scope.clone(),
-                                        )
-                                    }),
-                            )
-                        } else {
-                            let revoke_port = port.clone();
-                            let plugin_id = plugin_id.clone();
-                            let permission = descriptor.permission.clone();
-                            let scope = descriptor.scope.clone();
-                            let button_id = format!(
-                                "plugin-revoke-{plugin_id}-{}-{}",
-                                descriptor.permission, descriptor.scope
-                            );
-                            Some(
-                                Button::new(button_id)
-                                    .label(i18n.translate("settings-plugin-capability-revoke"))
-                                    .outline()
-                                    .compact()
-                                    .disabled(busy)
-                                    .on_click(move |_, _, _| {
-                                        revoke_port.revoke_capability(
-                                            plugin_id.clone(),
-                                            permission.clone(),
-                                            scope.clone(),
-                                        )
-                                    }),
-                            )
-                        }
-                    } else {
-                        None
-                    };
-                    v_flex()
-                        .w_full()
-                        .gap_1()
-                        .p_2()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .gap_2()
-                                .child(
-                                    v_flex()
-                                        .gap_1()
+                                    h_flex()
+                                        .w_full()
+                                        .items_center()
+                                        .gap_2()
                                         .child(
                                             div()
-                                                .text_size(px(11.0))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(descriptor.permission.clone()),
+                                                .min_w(px(0.0))
+                                                .flex_1()
+                                                .truncate()
+                                                .text_size(px(14.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(plugin.manifest.name.clone()),
                                         )
                                         .child(
                                             div()
+                                                .flex_shrink_0()
+                                                .px_2()
+                                                .py(px(1.0))
+                                                .rounded(px(999.0))
+                                                .bg(cx.theme().muted)
                                                 .text_size(px(10.0))
                                                 .text_color(cx.theme().muted_foreground)
-                                                .child(descriptor.scope.clone()),
+                                                .child(format!("v{}", plugin.manifest.version)),
                                         ),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(10.0))
-                                        .text_color(capability_color)
-                                        .child(capability_status),
+                                        .w_full()
+                                        .truncate()
+                                        .text_size(px(11.0))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} · {}",
+                                            i18n.translate("settings-plugin-author"),
+                                            author
+                                        )),
                                 ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(descriptor.description),
-                        )
-                        .when_some(action, |this, action| {
-                            this.child(h_flex().justify_end().child(action))
-                        })
-                }))
-                .child(actions),
-        );
-    }
-
-    content = content.child(
-        div()
-            .text_size(px(14.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(i18n.translate("settings-plugin-marketplace")),
-    );
-    let installed_ids = snapshot
-        .catalog
-        .installed
-        .iter()
-        .map(|plugin| plugin.manifest.id.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    let mut available = snapshot
-        .catalog
-        .marketplace
-        .entries
-        .iter()
-        .filter(|entry| !installed_ids.contains(entry.id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    available.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| compare_versions(&right.version, &left.version))
-    });
-    if available.is_empty() {
-        content = content.child(
-            div()
-                .text_size(px(12.0))
-                .text_color(cx.theme().muted_foreground)
-                .child(i18n.translate("settings-plugin-marketplace-empty")),
-        );
-    }
-    for entry in available {
-        let install_port = port.clone();
-        let plugin_id = entry.id.clone();
-        content = content.child(
-            h_flex()
-                .w_full()
-                .justify_between()
-                .items_center()
-                .p_3()
-                .rounded(cx.theme().radius)
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(format!("{} {}", entry.name, entry.version)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} {}",
-                                    i18n.translate("settings-plugin-publisher"),
-                                    entry.publisher_key_id
-                                )),
                         ),
                 )
                 .child(
-                    Button::new(format!("plugin-install-{plugin_id}"))
-                        .label(i18n.translate("settings-plugin-install"))
-                        .primary()
-                        .compact()
-                        .disabled(busy)
-                        .on_click(move |_, _, _| install_port.install(plugin_id.clone())),
+                    h_flex()
+                        .w_full()
+                        .items_end()
+                        .justify_between()
+                        .gap_2()
+                        .child(actions)
+                        .child(
+                            div()
+                                .id(format!("plugin-remove-{plugin_id}"))
+                                .size(px(28.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(7.0))
+                                .text_color(cx.theme().muted_foreground)
+                                .aria_label(i18n.translate("settings-plugin-remove"))
+                                .cursor_pointer()
+                                .hover(|this| {
+                                    this.bg(cx.theme().danger.opacity(0.12))
+                                        .text_color(cx.theme().danger)
+                                })
+                                .on_click(move |_, _, _| {
+                                    if !busy {
+                                        remove_port.remove(remove_id.clone());
+                                    }
+                                })
+                                .child(
+                                    Icon::default()
+                                        .data(include_bytes!("../../../assets/icons/trash.svg"))
+                                        .size(px(16.0)),
+                                ),
+                        ),
                 ),
         );
     }
+
+    content = content.child(installed_cards);
 
     if developer_mode {
         content = content.child(render_developer_diagnostics(
@@ -1291,30 +1186,6 @@ fn render_plugins(
     }
 
     content
-}
-
-fn prompt_local_plugin(port: PluginManagementPort, directory: bool, cx: &mut App) {
-    let paths = cx.prompt_for_paths(PathPromptOptions {
-        files: !directory,
-        directories: directory,
-        multiple: false,
-        prompt: Some(if directory {
-            "Select plugin package folder".into()
-        } else {
-            "Select plugin package ZIP".into()
-        }),
-    });
-    cx.spawn(async move |_| match paths.await {
-        Ok(Ok(Some(paths))) => {
-            if let Some(path) = paths.into_iter().next() {
-                port.install_path(path);
-            }
-        }
-        Ok(Ok(None)) => {}
-        Ok(Err(error)) => port.show_error(format!("Open the plugin picker: {error}")),
-        Err(_) => port.show_error("The plugin picker closed unexpectedly.".into()),
-    })
-    .detach();
 }
 
 fn render_developer_diagnostics(
@@ -1941,6 +1812,9 @@ fn component_locale(language: &str) -> &'static str {
 mod tests {
     use super::*;
     use gpui::{AssetSource as _, Modifiers};
+    use steward_plugin_registry::{
+        PluginCommand, PluginManifest, Trigger, TriggerType, PACKAGE_FILE, SCHEMA_VERSION,
+    };
 
     #[test]
     fn recorded_keystroke_becomes_a_persistable_hotkey() {
@@ -2003,6 +1877,67 @@ mod tests {
             .load("icons/puzzle.svg")
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn official_plugins_use_the_official_author_label() {
+        let snapshot = PluginManagementSnapshot::default();
+        let i18n = Localization::new_with_language(Some("zh")).unwrap();
+        assert_eq!(
+            plugin_author(&snapshot, "it.aspirin.calendar", None, None, None, &i18n),
+            "官方"
+        );
+        assert_eq!(
+            plugin_author(
+                &snapshot,
+                "com.example.plugin",
+                Some("Repository Author"),
+                None,
+                None,
+                &i18n
+            ),
+            "Repository Author"
+        );
+    }
+
+    #[test]
+    fn plugin_search_matches_metadata_and_commands() {
+        let plugin = InstalledPlugin {
+            manifest: PluginManifest {
+                schema_version: SCHEMA_VERSION,
+                id: "com.example.notes".into(),
+                name: "Notes".into(),
+                author: Some("Repository Author".into()),
+                version: "1.2.3".into(),
+                min_host_version: None,
+                icon: None,
+                package: PACKAGE_FILE.into(),
+                preferences: Default::default(),
+                commands: vec![PluginCommand {
+                    name: "notes".into(),
+                    title: "Quick Notes".into(),
+                    keywords: Vec::new(),
+                    trigger: Trigger {
+                        kind: TriggerType::Command,
+                        value: None,
+                    },
+                    presentation: None,
+                }],
+            },
+            directory: Default::default(),
+            package_path: Default::default(),
+            inspection: None,
+            error: None,
+            history: Vec::new(),
+        };
+        let author = "Repository Author";
+
+        assert!(plugin_matches_query(&plugin, author, "notes"));
+        assert!(plugin_matches_query(&plugin, author, "example"));
+        assert!(plugin_matches_query(&plugin, author, "1.2.3"));
+        assert!(plugin_matches_query(&plugin, author, "repository"));
+        assert!(plugin_matches_query(&plugin, author, "quick"));
+        assert!(!plugin_matches_query(&plugin, author, "calendar"));
     }
 
     #[test]
