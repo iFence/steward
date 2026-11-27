@@ -9,9 +9,9 @@ use steward_plugin_contract::capabilities::{
     describe_declared_capabilities, is_legacy_official_plugin_id, CALENDAR_HOLIDAYS,
     CLIPBOARD_HISTORY, CLIPBOARD_WRITE, EXEC_CANCEL, EXEC_RUN, FEEDBACK_CONFIRM, FEEDBACK_PROGRESS,
     FEEDBACK_TOAST, FS_CANCEL_WALK, FS_GRANTS, FS_PICK, FS_READ_TEXT, FS_WALK, FS_WRITE_TEXT,
-    NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET, SECRETS_DELETE, SECRETS_GET, SECRETS_LIST,
-    SECRETS_SET, STORAGE_GET, STORAGE_SET, SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH,
-    SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
+    NAVIGATION_BACK, NAVIGATION_SET_TITLE, NET_FETCH, PREFERENCES_ALL, PREFERENCES_GET,
+    SECRETS_DELETE, SECRETS_GET, SECRETS_LIST, SECRETS_SET, STORAGE_GET, STORAGE_SET,
+    SYSTEM_APPLICATIONS, SYSTEM_OPEN_PATH, SYSTEM_OPEN_WITH, SYSTEM_REVEAL_PATH, WINDOW_CLOSE,
 };
 use steward_plugin_contract::{CapabilityDescriptor, HOST_API_VERSION};
 use steward_plugin_registry::PluginManifest;
@@ -503,6 +503,8 @@ fn host_allowed(name: &str) -> bool {
             | SECRETS_LIST
             | CALENDAR_HOLIDAYS
             | WINDOW_CLOSE
+            | NAVIGATION_BACK
+            | NAVIGATION_SET_TITLE
             | PREFERENCES_GET
             | PREFERENCES_ALL
             | FEEDBACK_TOAST
@@ -623,8 +625,10 @@ mod capability_policy_tests {
     use super::*;
 
     #[test]
-    fn filesystem_and_system_open_host_calls_are_in_the_release_allowlist() {
+    fn official_host_calls_are_in_the_release_allowlist() {
         for name in [
+            NAVIGATION_BACK,
+            NAVIGATION_SET_TITLE,
             FS_PICK,
             FS_WALK,
             FS_READ_TEXT,

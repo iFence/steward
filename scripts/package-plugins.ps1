@@ -42,8 +42,13 @@ foreach ($name in $names) {
     # Read UTF-8 explicitly: Windows PowerShell 5.1 defaults to the ANSI code
     # page, which mangles the non-ASCII keywords a manifest may carry (`日历`).
     $meta = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifest | ConvertFrom-Json
+    $id = [string]$meta.id
     $version = $meta.version
-    if ($meta.schemaVersion -notin @(2, 3) -or $meta.package -ne "plugin.nshpkg") {
+    if (
+        [string]::IsNullOrWhiteSpace($id) -or
+        $meta.schemaVersion -notin @(2, 3) -or
+        $meta.package -ne "plugin.nshpkg"
+    ) {
         throw "plugin.json in $dir is not NSH schema v2 or v3"
     }
     if (-not $version) {
@@ -69,13 +74,13 @@ foreach ($name in $names) {
         }
     }
 
-    $stage = Join-Path $env:TEMP "steward-pkg-$name"
+    $stage = Join-Path $env:TEMP "steward-pkg-$id"
     if (Test-Path $stage) {
         Remove-Item -Recurse -Force -LiteralPath $stage
     }
-    New-Item -ItemType Directory -Force -Path (Join-Path $stage $name) | Out-Null
-    Copy-Item -LiteralPath $manifest -Destination (Join-Path $stage $name)
-    Copy-Item -LiteralPath $package -Destination (Join-Path $stage $name)
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage $id) | Out-Null
+    Copy-Item -LiteralPath $manifest -Destination (Join-Path $stage $id)
+    Copy-Item -LiteralPath $package -Destination (Join-Path $stage $id)
 
     $zip = Join-Path $OutDir "steward-plugin-$name-$version.zip"
     if (Test-Path $zip) {
@@ -98,10 +103,10 @@ foreach ($name in $names) {
         try {
             foreach ($fileName in @("plugin.json", "plugin.nshpkg")) {
                 $entry = $zipArchive.CreateEntry(
-                    "$name/$fileName",
+                    "$id/$fileName",
                     [System.IO.Compression.CompressionLevel]::Optimal
                 )
-                $source = Join-Path (Join-Path $stage $name) $fileName
+                $source = Join-Path (Join-Path $stage $id) $fileName
                 $input = [System.IO.File]::OpenRead($source)
                 try {
                     $output = $entry.Open()

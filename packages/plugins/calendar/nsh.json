@@ -9,7 +9,12 @@
     }
   },
   "capabilities": {
-    "host": ["steward.calendar.holidays", "steward.navigation.back", "steward.navigation.setTitle"],
+    "host": [
+      "steward.calendar.holidays",
+      "steward.navigation.back",
+      "steward.navigation.setTitle",
+      "steward.net.fetch"
+    ],
     "network": {
       "http": [
         {
