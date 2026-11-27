@@ -54,9 +54,12 @@ try {
         $previousCi = $env:CI
         try {
             $env:CI = "true"
+            # The artifact is rebuilt in this job, so its tarball checksum can
+            # differ between runners. Refresh the temporary fixture lock while
+            # still requiring pnpm to install and inspect the exact local file.
             & corepack pnpm install `
                 --ignore-workspace `
-                --frozen-lockfile `
+                --update-checksums `
                 --store-dir (Join-Path $tempRoot "pnpm-store") `
                 --package-import-method copy
             if ($LASTEXITCODE -ne 0) {
