@@ -84,6 +84,7 @@ settings-up-to-date = Steward est à jour
 settings-update-check-failed = Impossible de rechercher les mises à jour
 settings-check-for-updates = Rechercher les mises à jour
 settings-download-and-install = Télécharger et installer
+settings-update-later = Plus tard
 settings-release-notes = Nouveautés
 plugin = Plugin
 calculator = Calculatrice

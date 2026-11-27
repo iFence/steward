@@ -84,6 +84,7 @@ settings-up-to-date = Steward가 최신 버전입니다
 settings-update-check-failed = 업데이트를 확인할 수 없습니다
 settings-check-for-updates = 업데이트 확인
 settings-download-and-install = 다운로드 및 설치
+settings-update-later = 나중에
 settings-release-notes = 업데이트 내용
 plugin = 플러그인
 calculator = 계산기

@@ -48,6 +48,7 @@ jobs:
         run: |
           export PATH="/usr/bin:$PATH"
           bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog.md > /dev/null
+          bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog-zh-CN.md > /dev/null
 
   build-msi:
     name: Build MSI
@@ -246,14 +247,16 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # `Changelog.md` is the single source of truth for the release notes; the
-      # script exits non-zero when the tag has no matching `## vX.Y.Z` section,
-      # so a release can never be published with an empty body.
+      # Both changelogs are release-note sources. The scripts exit non-zero when
+      # the tag has no matching `## vX.Y.Z` section, so a release can never be
+      # published with a missing language.
       - name: Extract release notes
         shell: bash
         run: |
           export PATH="/usr/bin:$PATH"
           bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog.md > release-notes.md
+          printf '\n\n---\n\n## 中文\n\n' >> release-notes.md
+          bash scripts/extract-release-notes.sh "$GITHUB_REF_NAME" Changelog-zh-CN.md >> release-notes.md
 
       - name: Publish the release
         shell: bash

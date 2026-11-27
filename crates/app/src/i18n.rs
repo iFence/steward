@@ -202,6 +202,7 @@ mod tests {
                 "settings-update-check-failed",
                 "settings-check-for-updates",
                 "settings-download-and-install",
+                "settings-update-later",
                 "settings-release-notes",
                 "settings-plugins",
                 "settings-plugin-capabilities",

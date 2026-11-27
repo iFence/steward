@@ -84,6 +84,7 @@ settings-up-to-date = Steward 已是最新版本
 settings-update-check-failed = 无法检查更新
 settings-check-for-updates = 检查更新
 settings-download-and-install = 下载并安装
+settings-update-later = 稍后
 settings-release-notes = 更新内容
 plugin = 插件
 calculator = 计算器

@@ -14,6 +14,7 @@ use gpui_kit::{
     assets::IconName,
     component::{
         button::{Button, ButtonVariants as _},
+        dialog::DialogFooter,
         group_box::GroupBoxVariant,
         h_flex,
         input::{Input, InputEvent, InputState},
@@ -23,7 +24,7 @@ use gpui_kit::{
         switch::Switch,
         text::TextView,
         v_flex, ActiveTheme, AxisExt as _, Disableable as _, FocusableExt as _, Icon, Sizable as _,
-        Theme, ThemeMode,
+        Theme, ThemeMode, WindowExt as _,
     },
     prelude::FluentBuilder,
 };
@@ -33,7 +34,7 @@ use crate::{
     i18n::Localization,
     plugin_management::{PluginManagementPort, PluginManagementSnapshot},
     services::{AppServices, WindowCommand},
-    updates::UpdateState,
+    updates::{localized_release_notes, UpdateState},
 };
 use steward_plugin_registry::PluginPreferenceKind;
 use steward_plugin_store::{InstalledPlugin, MarketplaceEntry};
@@ -77,6 +78,7 @@ pub(crate) struct StewardSettings {
     hotkey_status: SharedString,
     plugin_search: Entity<InputState>,
     _plugin_search_subscription: Subscription,
+    pending_update_dialog: bool,
 }
 
 type BoolGetter = Rc<dyn Fn(&App) -> bool>;
@@ -244,6 +246,7 @@ impl StewardSettings {
             hotkey_status: SharedString::default(),
             plugin_search,
             _plugin_search_subscription,
+            pending_update_dialog: false,
         }
     }
 
@@ -256,6 +259,31 @@ impl StewardSettings {
     ) {
         if matches!(event, InputEvent::Change) {
             cx.notify();
+        }
+    }
+
+    fn open_pending_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.pending_update_dialog {
+            return;
+        }
+        match self.services.update_port().state() {
+            UpdateState::Available {
+                latest_version,
+                release_notes,
+                ..
+            } => {
+                self.pending_update_dialog = false;
+                open_update_available_dialog(
+                    window,
+                    self.services.clone(),
+                    self.i18n.clone(),
+                    latest_version,
+                    release_notes,
+                    cx,
+                );
+            }
+            UpdateState::Checking => {}
+            _ => self.pending_update_dialog = false,
         }
     }
 
@@ -306,6 +334,7 @@ impl StewardSettings {
 
 impl Render for StewardSettings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.open_pending_update_dialog(window, cx);
         window.set_window_title(&format!("Steward {}", self.i18n.translate("app-settings")));
         let view = cx.entity();
         let services = self.services.clone();
@@ -486,7 +515,7 @@ impl Render for StewardSettings {
             SettingPage::new(self.i18n.translate("settings-hotkeys"))
                 .icon(Icon::default().data(include_bytes!("../../../assets/icons/keyboard.svg")))
                 .group(SettingGroup::new().item(SettingItem::new(
-                    self.i18n.translate("settings-summon-steward"),
+                    self.i18n.translate("settings-global-hotkey"),
                     SettingField::render(move |_options, window, cx| {
                         let settings = hotkey_field.read(cx);
                         let focus = settings.hotkey_focus.clone();
@@ -579,8 +608,14 @@ impl Render for StewardSettings {
                     SettingItem::render({
                         let services = services.clone();
                         let i18n = self.i18n.clone();
+                        let settings = view.clone();
                         move |_options, _window, cx| {
-                            render_about_updates(services.clone(), i18n.clone(), cx)
+                            render_about_updates(
+                                services.clone(),
+                                i18n.clone(),
+                                settings.clone(),
+                                cx,
+                            )
                         }
                     }),
                 )),
@@ -1401,6 +1436,7 @@ fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
 fn render_about_updates(
     services: Arc<AppServices>,
     i18n: Rc<Localization>,
+    settings: Entity<StewardSettings>,
     cx: &mut App,
 ) -> impl IntoElement {
     let state = services.update_port().state();
@@ -1473,14 +1509,9 @@ fn render_about_updates(
         None
     };
 
-    let release_notes = if let UpdateState::Available { release_notes, .. } = &state {
-        (!release_notes.trim().is_empty()).then(|| release_notes.clone())
-    } else {
-        None
-    };
-
     let check_services = services.clone();
     let install_services = services.clone();
+    let check_settings = settings.clone();
     let mut buttons = h_flex().gap_2().flex_shrink_0();
     buttons = buttons.child(
         Button::new("settings-check-updates")
@@ -1489,7 +1520,11 @@ fn render_about_updates(
             .compact()
             .loading(matches!(state, UpdateState::Checking))
             .disabled(busy)
-            .on_click(move |_, _, _| {
+            .on_click(move |_, _, cx| {
+                check_settings.update(cx, |settings, cx| {
+                    settings.pending_update_dialog = true;
+                    cx.notify();
+                });
                 check_services.update_port().check_for_updates(true);
             }),
     );
@@ -1665,35 +1700,64 @@ fn render_about_updates(
                 )
                 .child(updates_card),
         )
-        .when_some(release_notes, |this, notes| {
-            this.child(
-                v_flex()
+}
+
+fn open_update_available_dialog(
+    window: &mut Window,
+    services: Arc<AppServices>,
+    i18n: Rc<Localization>,
+    latest_version: semver::Version,
+    release_notes: String,
+    cx: &mut App,
+) {
+    let title = format!(
+        "{} v{latest_version}",
+        i18n.translate("settings-update-available")
+    );
+    let later = i18n.translate("settings-update-later");
+    let download = i18n.translate("settings-download-and-install");
+    let notes = localized_release_notes(&release_notes, &i18n.language());
+
+    window.open_dialog(cx, move |dialog, _, _| {
+        let install_services = services.clone();
+        dialog
+            .title(title.clone())
+            .close_button(false)
+            .w(px(640.0))
+            .child(
+                div()
                     .w_full()
-                    .gap_2()
+                    .max_h(px(360.0))
+                    .overflow_y_scrollbar()
+                    .rounded(px(8.0))
                     .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(i18n.translate("settings-release-notes")),
-                    )
-                    .child(
-                        div()
+                        TextView::markdown("update-release-notes-dialog", notes.clone())
                             .w_full()
-                            .max_h(px(190.0))
-                            .overflow_y_scrollbar()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().muted)
-                            .p_3()
-                            .child(
-                                TextView::markdown("settings-update-release-notes", notes)
-                                    .w_full()
-                                    .selectable(true),
-                            ),
+                            .selectable(true),
                     ),
             )
-        })
+            .footer(
+                DialogFooter::new()
+                    .justify_end()
+                    .child(
+                        Button::new("update-dialog-later")
+                            .label(later.clone())
+                            .outline()
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("update-dialog-install")
+                            .label(download.clone())
+                            .primary()
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                install_services
+                                    .update_port()
+                                    .download_and_install(install_services.clone());
+                            }),
+                    ),
+            )
+    });
 }
 
 pub(crate) fn init_ui(cx: &mut App, accent: &str) {

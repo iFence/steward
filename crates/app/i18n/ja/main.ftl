@@ -84,6 +84,7 @@ settings-up-to-date = Steward は最新です
 settings-update-check-failed = 更新を確認できませんでした
 settings-check-for-updates = 更新を確認
 settings-download-and-install = ダウンロードしてインストール
+settings-update-later = 後で
 settings-release-notes = 更新内容
 plugin = プラグイン
 calculator = 電卓

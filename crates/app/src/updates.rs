@@ -317,6 +317,41 @@ fn check_latest_release(manual: bool) -> Result<Option<UpdateInfo>> {
     }))
 }
 
+pub(crate) fn localized_release_notes(body: &str, language: &str) -> String {
+    let body = body.replace("\r\n", "\n");
+    let chinese_marker = ["## 中文说明", "## 中文"]
+        .into_iter()
+        .find_map(|marker| body.find(marker).map(|index| (index, marker)));
+    let Some((index, marker)) = chinese_marker else {
+        return trim_release_notes(&body);
+    };
+
+    if language.to_ascii_lowercase().starts_with("zh") {
+        let chinese = trim_release_notes(&body[index + marker.len()..]);
+        if !chinese.is_empty() {
+            return chinese;
+        }
+    }
+
+    let english = trim_release_notes(&body[..index]);
+    if english.is_empty() {
+        trim_release_notes(&body)
+    } else {
+        english
+    }
+}
+
+fn trim_release_notes(notes: &str) -> String {
+    let mut lines = notes.lines().collect::<Vec<_>>();
+    while lines
+        .last()
+        .is_some_and(|line| line.trim().is_empty() || line.trim() == "---")
+    {
+        lines.pop();
+    }
+    lines.join("\n").trim().to_string()
+}
+
 fn http_agent() -> Agent {
     Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
@@ -584,5 +619,29 @@ mod tests {
             checksum_url: "https://github.com/iFence/steward/releases/download/v0.3.2/SHA256SUMS-msi.txt".into(),
         }
         .has_update());
+    }
+
+    #[test]
+    fn release_notes_follow_the_selected_language() {
+        let notes = "### Improvements\n\n- English item\n\n---\n\n## 中文说明\n\n### 优化改进\n\n- 中文条目";
+        assert_eq!(
+            localized_release_notes(notes, "en"),
+            "### Improvements\n\n- English item"
+        );
+        assert_eq!(
+            localized_release_notes(notes, "zh"),
+            "### 优化改进\n\n- 中文条目"
+        );
+        assert_eq!(
+            localized_release_notes(
+                "### Improvements\n\n- English item\n\n---\n\n## 中文\n\n### 优化改进\n\n- 中文条目",
+                "zh-CN"
+            ),
+            "### 优化改进\n\n- 中文条目"
+        );
+        assert_eq!(
+            localized_release_notes("### Only English\n\n- Item", "zh"),
+            "### Only English\n\n- Item"
+        );
     }
 }

@@ -84,6 +84,7 @@ settings-up-to-date = Steward обновлён до последней верс�
 settings-update-check-failed = Не удалось проверить обновления
 settings-check-for-updates = Проверить обновления
 settings-download-and-install = Скачать и установить
+settings-update-later = Позже
 settings-release-notes = Что нового
 plugin = Плагин
 calculator = Калькулятор

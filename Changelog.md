@@ -10,6 +10,12 @@ Conventions:
 
 ## Unreleased
 
+No unreleased changes yet.
+
+---
+
+## v0.4.0
+
 ### Plugin Ecosystem
 
 - **Publisher and marketplace operations**: public-marketplace operators can
@@ -126,12 +132,13 @@ Conventions:
 - **Plugin settings header**: the Plugins page no longer shows the redundant
   management summary above its actions and installed-plugin details.
 - **Plugin card layout**: Settings > Plugins now presents installed plugins as
-  compact cards with icons, versions, authors, command counts, trust state,
-  and actions. A search field replaces the former management and marketplace
-  controls.
+  compact cards with colored icons, versions, authors, and actions. A search
+  field replaces the former management and marketplace controls.
 - **Redesigned About page**: Settings > About now has a centered brand
-  presentation, a compact updates card with progress and release notes, and a
-  direct changelog link.
+  presentation, a compact updates card, and a direct changelog link.
+- **Localized update dialogs**: manual update checks now select the release
+  notes matching the current interface language and show an available release
+  in a Markdown-rendered dialog. Up-to-date checks remain inline.
 - **SVG result icons**: calendar plugin results and URL actions once again show
   their SVG icons instead of leaving the icon column blank.
 - **Tray version**: the tray context menu now shows the running Steward version

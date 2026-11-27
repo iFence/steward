@@ -84,6 +84,7 @@ settings-up-to-date = Steward ist auf dem neuesten Stand
 settings-update-check-failed = Updates konnten nicht geprüft werden
 settings-check-for-updates = Nach Updates suchen
 settings-download-and-install = Herunterladen und installieren
+settings-update-later = Später
 settings-release-notes = Neuerungen
 plugin = Plugin
 calculator = Rechner
