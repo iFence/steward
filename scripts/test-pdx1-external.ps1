@@ -59,6 +59,7 @@ try {
             # still requiring pnpm to install and inspect the exact local file.
             & corepack pnpm install `
                 --ignore-workspace `
+                --no-frozen-lockfile `
                 --update-checksums `
                 --store-dir (Join-Path $tempRoot "pnpm-store") `
                 --package-import-method copy
