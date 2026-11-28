@@ -5,6 +5,27 @@
 
 $ErrorActionPreference = "Stop"
 
+function Get-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $LiteralPath
+    )
+
+    $stream = [System.IO.File]::OpenRead($LiteralPath)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha256.ComputeHash($stream)
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+
+    return ([System.BitConverter]::ToString($hash)).Replace("-", "")
+}
+
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 foreach ($command in @("cargo", "nsh")) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
@@ -111,7 +132,7 @@ mount(App);
     if (-not (Test-Path -LiteralPath $installedPackage)) {
         throw "PDX-2 package was not installed into the isolated plugin directory"
     }
-    $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedPackage).Hash
+    $firstHash = Get-Sha256Hex -LiteralPath $installedPackage
 
     $appSource = Join-Path $project "App.tsx"
     $updatedSource = (Get-Content -Raw -Encoding UTF8 -LiteralPath $appSource) -replace "revision one", "revision two"
@@ -120,7 +141,7 @@ mount(App);
     if ($LASTEXITCODE -ne 0) {
         throw "second same-version PDX-2 development replacement failed"
     }
-    $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedPackage).Hash
+    $secondHash = Get-Sha256Hex -LiteralPath $installedPackage
     if ($firstHash -eq $secondHash) {
         throw "same-version development replacement did not activate the rebuilt package"
     }
